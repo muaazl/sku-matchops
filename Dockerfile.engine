@@ -1,0 +1,30 @@
+# Dedicated Docker image for SKU MatchOps ML Engine (Compute Plane)
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+COPY engine/requirements.txt /app/engine/requirements.txt
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/engine/requirements.txt && \
+    pip install --no-cache-dir -r /app/backend/requirements.txt
+
+COPY engine /app/engine
+COPY scripts /app/scripts
+COPY docker-entrypoint-engine.py /app/docker-entrypoint-engine.py
+
+EXPOSE 8001
+
+ENTRYPOINT ["python", "/app/docker-entrypoint-engine.py"]

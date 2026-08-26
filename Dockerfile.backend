@@ -1,0 +1,36 @@
+# Dedicated Docker image for SKU MatchOps Backend Gateway (Control Plane)
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cloudflared binary for instant tunnel support
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then CF_ARCH="amd64"; \
+    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then CF_ARCH="arm64"; \
+    else CF_ARCH="amd64"; fi && \
+    curl -L --output /usr/local/bin/cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" && \
+    chmod +x /usr/local/bin/cloudflared
+
+RUN pip install --no-cache-dir --upgrade pip
+
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+
+COPY backend /app/backend
+COPY engine /app/engine
+COPY scripts /app/scripts
+COPY docker-entrypoint.py /app/docker-entrypoint.py
+
+EXPOSE 8000
+
+ENTRYPOINT ["python", "/app/docker-entrypoint.py"]

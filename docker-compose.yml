@@ -1,0 +1,104 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: sku_matchops_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./engine/qdrant_data:/qdrant/storage:z
+    restart: unless-stopped
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.11.0
+    container_name: sku_matchops_meilisearch
+    ports:
+      - "7700:7700"
+    environment:
+      - MEILI_HOST=0.0.0.0:7700
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=bismillah
+    volumes:
+      - ./data/meilisearch_data:/meilisearch_data
+    restart: unless-stopped
+
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: sku_matchops_engine
+    ports:
+      - "8001:8001"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - BACKEND_URL=http://backend:8000
+      - ENGINE_PORT=8001
+      - USE_INT8_MODELS=true
+      - TZ=Asia/Colombo
+    env_file:
+      - .env
+    volumes:
+      - ./engine:/app/engine
+      - ./data:/app/data
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: sku_matchops_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MEILI_URL=http://meilisearch:7700
+      - MEILI_MASTER_KEY=bismillah
+      - ENGINE_URL=http://engine:8001
+      - BACKEND_INTERNAL_URL=http://backend:8000
+      - TZ=Asia/Colombo
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app/backend
+      - ./engine:/app/engine
+      - ./data:/app/data
+    depends_on:
+      - meilisearch
+      - engine
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sku_matchops_frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app/frontend
+      - /app/frontend/node_modules
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  tunnel:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: sku_matchops_tunnel
+    entrypoint: ["python", "/app/backend/run_tunnel.py"]
+    command: ["--url", "http://backend:8000"]
+    environment:
+      - BACKEND_URL=http://backend:8000
+      - APPS_SCRIPT_URL=${APPS_SCRIPT_URL:-}
+      - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID:-}
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app/backend
+    depends_on:
+      - backend
+    restart: unless-stopped

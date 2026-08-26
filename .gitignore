@@ -1,0 +1,102 @@
+# ==============================================================================
+# SKU MatchOps — Git Ignore Configuration
+# ==============================================================================
+
+# Operating System & IDE Artifacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tunnel Binaries & Executables
+*.exe
+*.dll
+*.so
+*.dylib
+cloudflared.exe
+ngrok.exe
+*.tmp
+.cloudflared_output.tmp
+
+# Python & Testing Artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+verify_cache.py
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Runtime Database & Log Files
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+*.log
+*.log*
+app.log
+data/*.log
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/meilisearch_data/
+
+# Engine Caching, ONNX Weights & Vector Stores
+engine/qdrant_data/
+engine/cache/
+engine/onnx_models/
+engine/data/*.db
+engine/data/*.db-wal
+engine/data/*.db-shm
+engine/data/*.log
+cache/
+input_skus/
+output_results/
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# Frontend Build & Dependencies
+frontend/node_modules/
+frontend/.vite/
+frontend/build/
+frontend/dist/
+frontend/.pnp
+frontend/.pnp.js
+frontend/.pnpm-store/
+frontend/coverage/
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.DS_Store
+frontend/.idea/
+
+# Transient Workspace Files
+scratch/
+walkthrough.md
