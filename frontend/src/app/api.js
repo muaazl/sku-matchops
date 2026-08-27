@@ -3,7 +3,6 @@ import axios from 'axios';
 // ── Dynamic Backend URL Resolution ──────────────────────────────────────────
 // Locally: uses localhost:8000 (no tunnel needed).
 // On Vercel: fetches the tunnel URL from the _config tab of the catalog sheet
-//            (published as CSV). This updates automatically when start_tunnel.ps1 runs.
 
 const LOCAL_BACKEND = 'http://localhost:8000';
 const SHEET_ID = import.meta.env.VITE_GOOGLE_SHEET_ID || '';

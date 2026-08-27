@@ -31,6 +31,8 @@ services:
       - "8001:8001"
     environment:
       - QDRANT_URL=http://qdrant:6333
+      - MEILI_URL=http://meilisearch:7700
+      - MEILI_MASTER_KEY=bismillah
       - BACKEND_URL=http://backend:8000
       - ENGINE_PORT=8001
       - USE_INT8_MODELS=true
@@ -42,6 +44,7 @@ services:
       - ./data:/app/data
     depends_on:
       - qdrant
+      - meilisearch
     restart: unless-stopped
 
   backend:
@@ -84,21 +87,3 @@ services:
       - backend
     restart: unless-stopped
 
-  tunnel:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    container_name: sku_matchops_tunnel
-    entrypoint: ["python", "/app/backend/run_tunnel.py"]
-    command: ["--url", "http://backend:8000"]
-    environment:
-      - BACKEND_URL=http://backend:8000
-      - APPS_SCRIPT_URL=${APPS_SCRIPT_URL:-}
-      - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID:-}
-    env_file:
-      - .env
-    volumes:
-      - ./backend:/app/backend
-    depends_on:
-      - backend
-    restart: unless-stopped

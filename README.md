@@ -76,9 +76,9 @@ docker compose up -d
 ### 3. Ingest Demo Sample Data (Instant Offline Mode)
 To seed the catalog, train classifiers, and vectorize embeddings immediately from the pre-packaged sample dataset:
 ```bash
-docker compose exec backend python -m backend.sync_catalog --sample
+docker compose exec engine python -m engine.sync_catalog --sample
 ```
-*(Or locally outside Docker: `python -m backend.sync_catalog --sample`)*
+*(Or locally outside Docker: `python -m engine.sync_catalog --sample`)*
 
 ### 4. Access Services
 - **Web Dashboard**: [http://localhost:5173](http://localhost:5173)
@@ -96,7 +96,7 @@ SKU MatchOps supports two flexible modes of catalog ingestion:
 The repository includes a ready-to-run demo dataset at [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) containing 500 Food dishes, 500 Market retail products, and taxonomy dictionaries.
 To reset and load this sample data into the system:
 ```bash
-python -m backend.sync_catalog --sample
+docker compose exec engine python -m engine.sync_catalog --sample
 ```
 
 ### Option B: Live Google Sheets Integration
@@ -112,11 +112,11 @@ You can connect your own Google Sheet catalog by following these steps:
      GOOGLE_SHEET_ID=your_extracted_sheet_id_here
      ```
 4. **Trigger Sync**:
-   - **Via Web UI**: Navigate to **Catalog Management → Sync / Rebuild Cache** in the dashboard.
-   - **Via CLI**:
+   - Run the catalog sync command to fetch from Google Sheets, index into Meilisearch, vectorize embeddings into Qdrant, and train classifiers:
      ```bash
-     python -m backend.sync_catalog
+     docker compose exec engine python -m engine.sync_catalog
      ```
+     *(Or locally outside Docker: `python -m engine.sync_catalog`)*
 
 ### Google Sheet Tab Schema
 
@@ -137,12 +137,15 @@ You can connect your own Google Sheet catalog by following these steps:
 
 ## Local Development (Without Docker)
 
-If you prefer running services directly on your host machine:
+If you prefer running the Python and Node services directly on your host machine:
 
 ### 1. Prerequisites
 - Python 3.10+
 - Node.js 18+ and `npm` / `pnpm`
-- Running instances of **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`)
+- Running instances of **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these two database containers using Docker:
+  ```bash
+  docker compose up -d qdrant meilisearch
+  ```
 
 ### 2. Python Environment Setup
 ```bash

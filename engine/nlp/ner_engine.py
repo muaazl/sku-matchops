@@ -53,30 +53,47 @@ class NEREngine:
     # ─────────────────────────────────────────────────────────────
 
     def _load_model(self):
-        logger.info("[NER] Loading GLiNER from local ONNX directory...")
+        import os
         from gliner import GLiNER
+        
+        # 1. Try loading from local ONNX directory if model.onnx exists
+        if os.path.exists(config.GLINER_ONNX):
+            try:
+                self.model = GLiNER.from_pretrained(
+                    config.GLINER_MODEL,
+                    load_onnx_model=True,
+                    fix_mistral_regex=True,
+                )
+                logger.info("[NER] GLiNER loaded successfully in ONNX mode.")
+                return
+            except Exception as e:
+                logger.warning(f"[NER] Local ONNX load failed: {e}")
+        
+        # 2. Try downloading ONNX model on demand if missing
         try:
-            # Load from the local directory (engine/onnx_models/gliner).
-            # fix_mistral_regex=True silences the incorrect regex pattern warning from the tokenizer.
-            # load_onnx_model=True uses the model.onnx file for faster CPU inference.
+            from engine.export_onnx import export_gliner
+            logger.info("[NER] GLiNER ONNX model not found locally. Downloading ONNX model...")
+            export_gliner()
             self.model = GLiNER.from_pretrained(
                 config.GLINER_MODEL,
                 load_onnx_model=True,
                 fix_mistral_regex=True,
             )
             logger.info("[NER] GLiNER loaded successfully in ONNX mode.")
+            return
         except Exception as e:
-            logger.warning(f"[NER] ONNX load failed, falling back to PyTorch: {e}")
-            try:
-                self.model = GLiNER.from_pretrained(
-                    config.GLINER_MODEL,
-                    local_files_only=True,
-                    fix_mistral_regex=True,
-                )
-                logger.info("[NER] GLiNER loaded successfully in PyTorch mode.")
-            except Exception as e2:
-                logger.error(f"[NER] All GLiNER load attempts failed: {e2}")
-                self.model = None
+            logger.warning(f"[NER] Auto-export/download of GLiNER ONNX failed: {e}; falling back to Hugging Face PyTorch...")
+
+        # 3. Fallback to direct PyTorch model from Hugging Face Hub
+        try:
+            self.model = GLiNER.from_pretrained(
+                "urchade/gliner_medium-v2.1",
+                fix_mistral_regex=True,
+            )
+            logger.info("[NER] GLiNER loaded successfully from Hugging Face Hub.")
+        except Exception as e2:
+            logger.error(f"[NER] All GLiNER load attempts failed: {e2}")
+            self.model = None
 
     def warmup(self):
         if self.model:
