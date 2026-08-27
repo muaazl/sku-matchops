@@ -78,7 +78,7 @@ To seed the catalog, train classifiers, and vectorize embeddings immediately fro
 ```bash
 docker compose exec engine python -m engine.sync_catalog --sample
 ```
-*(Or locally outside Docker: `python -m engine.sync_catalog --sample`)*
+*(Optional: Run `docker compose restart backend` to immediately refresh backend memory caches with the seeded catalog).*
 
 ### 4. Access Services
 - **Web Dashboard**: [http://localhost:5173](http://localhost:5173)
@@ -153,13 +153,15 @@ If you prefer running the Python and Node services directly on your host machine
 python -m venv venv
 source venv/bin/activate  # On Windows: .\venv\Scripts\Activate.ps1
 
+# Install CPU PyTorch first (fast & lightweight)
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
 # Install dependencies
 pip install -r backend/requirements.txt
 pip install -r engine/requirements.txt
 
-# Export and quantize ONNX models (one-time setup)
-python engine/export_onnx.py
-python engine/quantize_models.py
+# Ingest sample catalog data & prepare ONNX models
+python -m engine.sync_catalog --sample
 ```
 
 ### 3. Run Microservices
