@@ -19,6 +19,7 @@ openpyxl>=3.1.0
 # Utilities
 tqdm>=4.65
 rich>=13.0
+meilisearch>=0.30.0
 
 # ONNX Export
 onnxscript>=0.7

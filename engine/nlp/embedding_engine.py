@@ -36,6 +36,17 @@ class EmbeddingEngine:
 
         def _load_bi_encoder():
             logger.info(f"[EMBED] Loading BGE-M3 Hybrid Bi-Encoder (ONNX) from {config.BI_ENCODER_ONNX}...")
+            self.flag_model = None
+            
+            # Auto-export if missing
+            if not os.path.exists(config.BI_ENCODER_ONNX):
+                try:
+                    from engine.export_onnx import export_bge_m3
+                    logger.info("[EMBED] BGE-M3 ONNX not found. Initiating on-demand export...")
+                    export_bge_m3()
+                except Exception as exp_err:
+                    logger.warning(f"[EMBED] Auto-export BGE-M3 failed ({exp_err}); will attempt PyTorch fallback.")
+
             try:
                 try:
                     self.tokenizer = AutoTokenizer.from_pretrained(
@@ -49,11 +60,28 @@ class EmbeddingEngine:
                 )
                 logger.info("[EMBED] BGE-M3 ONNX hybrid bi-encoder loaded (dense + sparse).")
             except Exception as e:
-                logger.error(f"[EMBED] Bi-Encoder ONNX unavailable ({e}).")
+                logger.warning(f"[EMBED] Bi-Encoder ONNX unavailable ({e}); falling back to PyTorch FlagEmbedding...")
+                try:
+                    from FlagEmbedding import BGEM3FlagModel
+                    self.flag_model = BGEM3FlagModel(config.BI_ENCODER_MODEL, use_fp16=False)
+                    logger.info("[EMBED] PyTorch BGEM3FlagModel loaded successfully as fallback.")
+                except Exception as fe_err:
+                    logger.error(f"[EMBED] PyTorch BGEM3FlagModel fallback failed: {fe_err}")
                 self.bi_session = None
 
         def _load_cross_encoder():
             logger.info(f"[EMBED] Loading BGE-Reranker Cross-Encoder (ONNX) from {config.CROSS_ENCODER_ONNX}...")
+            self.cross_encoder_fallback = None
+            
+            # Auto-export if missing
+            if not os.path.exists(config.CROSS_ENCODER_ONNX):
+                try:
+                    from engine.export_onnx import export_bge_reranker
+                    logger.info("[EMBED] BGE-Reranker ONNX not found. Initiating on-demand export...")
+                    export_bge_reranker()
+                except Exception as exp_err:
+                    logger.warning(f"[EMBED] Auto-export BGE-Reranker failed ({exp_err}); will attempt PyTorch fallback.")
+
             try:
                 try:
                     self.rerank_tokenizer = AutoTokenizer.from_pretrained(
@@ -71,6 +99,7 @@ class EmbeddingEngine:
                 try:
                     from sentence_transformers import CrossEncoder
                     self.cross_encoder_fallback = CrossEncoder(config.CROSS_ENCODER_MODEL, device="cpu")
+                    logger.info("[EMBED] sentence-transformers CrossEncoder loaded successfully.")
                 except Exception as e2:
                     logger.error(f"[EMBED] sentence-transformers CrossEncoder also failed: {e2}")
                     self.cross_encoder_fallback = None
@@ -98,10 +127,10 @@ class EmbeddingEngine:
 
     def encode(self, texts: List[str], batch_size: int = config.EMBED_BATCH_SIZE) -> Dict[str, Union[np.ndarray, List[dict]]]:
         """
-        Generates hybrid embeddings for a list of texts using the hybrid ONNX model.
+        Generates hybrid embeddings for a list of texts using the hybrid ONNX model or PyTorch fallback.
         """
-        if not self.bi_session:
-            logger.error("[EMBED] bi_session is not loaded. Cannot encode.")
+        if not self.bi_session and not getattr(self, "flag_model", None):
+            logger.error("[EMBED] Neither bi_session nor flag_model is loaded. Cannot encode.")
             return {"dense": np.array([]), "sparse": []}
 
         if not texts:
@@ -110,7 +139,6 @@ class EmbeddingEngine:
         if not hasattr(self, '_str_cache'):
             self._str_cache = {}
             
-        # Optional: prevent infinite growth of cache
         if len(self._str_cache) > 500000:
             self._str_cache.clear()
 
@@ -125,28 +153,38 @@ class EmbeddingEngine:
             all_dense = []
             all_sparse = []
             
-            for i in range(0, len(missing_texts), batch_size):
-                batch = missing_texts[i : i + batch_size]
-                inputs = self.tokenizer(batch, padding=True, truncation=True, return_tensors="np")
-                ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
-                
-                # Run hybrid ONNX model
-                outputs = self.bi_session.run(None, ort_inputs)
-                dense_vecs = outputs[0]
-                sparse_weights = outputs[1]
-                
-                # Dense post-processing (L2 norm)
-                norms = np.linalg.norm(dense_vecs, axis=1, keepdims=True)
-                all_dense.append(dense_vecs / norms)
-                
-                # Sparse post-processing (aggregate max weight per token id)
-                for b in range(len(batch)):
-                    d = {}
-                    for tok_id, w in zip(inputs["input_ids"][b], sparse_weights[b]):
-                        if w > 0:
-                            tok_id = int(tok_id)
-                            d[tok_id] = max(d.get(tok_id, 0.0), float(w))
-                    all_sparse.append(d)
+            if self.bi_session:
+                for i in range(0, len(missing_texts), batch_size):
+                    batch = missing_texts[i : i + batch_size]
+                    inputs = self.tokenizer(batch, padding=True, truncation=True, return_tensors="np")
+                    ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
+                    
+                    # Run hybrid ONNX model
+                    outputs = self.bi_session.run(None, ort_inputs)
+                    dense_vecs = outputs[0]
+                    sparse_weights = outputs[1]
+                    
+                    # Dense post-processing (L2 norm)
+                    norms = np.linalg.norm(dense_vecs, axis=1, keepdims=True)
+                    norms = np.where(norms == 0, 1e-12, norms)
+                    all_dense.append(dense_vecs / norms)
+                    
+                    # Sparse post-processing
+                    for b in range(len(batch)):
+                        d = {}
+                        for tok_id, w in zip(inputs["input_ids"][b], sparse_weights[b]):
+                            if w > 0:
+                                tok_id = int(tok_id)
+                                d[tok_id] = max(d.get(tok_id, 0.0), float(w))
+                        all_sparse.append(d)
+            elif self.flag_model:
+                # PyTorch FlagEmbedding fallback
+                for i in range(0, len(missing_texts), batch_size):
+                    batch = missing_texts[i : i + batch_size]
+                    out = self.flag_model.encode(batch, return_dense=True, return_sparse=True)
+                    all_dense.append(out["dense_vecs"])
+                    for lex_dict in out["lexical_weights"]:
+                        all_sparse.append({int(k): float(v) for k, v in lex_dict.items()})
 
             flat_dense = np.vstack(all_dense) if all_dense else np.array([])
             for i, text in enumerate(missing_texts):

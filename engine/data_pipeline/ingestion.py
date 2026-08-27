@@ -631,7 +631,7 @@ class DataIngestion:
             
             # Sync to Meilisearch
             try:
-                from backend.app.services.meilisearch_service import sync_dataframe_to_meili
+                from engine.data_pipeline.meilisearch_sync import sync_dataframe_to_meili
                 sync_dataframe_to_meili(cat_df_raw, domain)
             except Exception as meili_err:
                 logger.error(f"[MEILI] Failed to sync updated catalog to Meilisearch: {meili_err}")

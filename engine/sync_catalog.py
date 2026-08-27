@@ -230,6 +230,12 @@ def run_sync(
             if do_qdrant:
                 logger.info(f"[{domain.upper()}] Step 3: Training classifiers & Syncing Qdrant vectors...")
                 try:
+                    from engine.export_onnx import export_all_models_if_needed
+                    export_all_models_if_needed()
+                except Exception as exp_err:
+                    logger.warning(f"ONNX export verification check: {exp_err}")
+                    
+                try:
                     sync_qdrant_vectors(domain, force_reset=force_reset or from_sample)
                 except Exception as e:
                     logger.error(f"[{domain.upper()}] Failed to sync Qdrant vectors / train classifiers: {e}", exc_info=True)
