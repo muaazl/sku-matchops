@@ -59,6 +59,11 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 
 The entire 5-service stack boots automatically with 1 command, including automatic model downloading, ONNX export, and INT8 dynamic quantization.
 
+> [!IMPORTANT]
+> **First-Run Startup Notice (Model Downloads)**:
+> On the very first run, the system automatically downloads and sets up the pre-trained NLP transformer models (**BGE-M3**, **BGE-Reranker-v2-M3**, and **GLiNER Medium**, ~2.5 GB total) and applies INT8 dynamic quantization for CPU acceleration.
+> Depending on your internet bandwidth and CPU, **this initial startup and vector sync will take a few minutes**. Subsequent runs use the cached INT8 ONNX models and initialize almost instantly.
+
 ### 1. Clone and Configure
 ```bash
 git clone https://github.com/muaazl/sku-matchops.git
