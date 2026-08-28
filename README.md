@@ -141,7 +141,7 @@ If you prefer running the Python and Node services directly on your host machine
 
 ### 1. Prerequisites
 - Python 3.10+ (Python 3.11 recommended)
-- Node.js 18+ and `npm` / `pnpm`
+- Node.js 18+ and `pnpm` (install via `npm install -g pnpm`)
 - Running instances of **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these two database containers using Docker:
   ```bash
   docker compose up -d qdrant meilisearch
@@ -174,8 +174,9 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 # Terminal 3 — Start Frontend Development Server
 cd frontend
-npm install
-npm run start
+npm install -g pnpm  # Install pnpm if not already installed
+pnpm install
+pnpm start
 ```
 
 ---

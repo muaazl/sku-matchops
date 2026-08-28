@@ -6,8 +6,9 @@ system (theme, layout, components) and trimmed down to just this app.
 ## Run
 
 ```bash
-npm install
-npm start        # http://localhost:5173
+npm install -g pnpm  # If pnpm is not already installed
+pnpm install
+pnpm start           # http://localhost:5173
 ```
 
 ## Structure
