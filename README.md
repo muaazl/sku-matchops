@@ -140,7 +140,7 @@ You can connect your own Google Sheet catalog by following these steps:
 If you prefer running the Python and Node services directly on your host machine:
 
 ### 1. Prerequisites
-- Python 3.10+
+- Python 3.10+ (Python 3.11 recommended)
 - Node.js 18+ and `npm` / `pnpm`
 - Running instances of **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these two database containers using Docker:
   ```bash
@@ -149,9 +149,9 @@ If you prefer running the Python and Node services directly on your host machine
 
 ### 2. Python Environment Setup
 ```bash
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: .\venv\Scripts\Activate.ps1
+# Create and activate virtual environment (using Python 3.11)
+py -3.11 -m venv venv        # On Linux: python3.11 -m venv venv
+.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
 
 # Install CPU PyTorch first (fast & lightweight)
 pip install torch --index-url https://download.pytorch.org/whl/cpu
