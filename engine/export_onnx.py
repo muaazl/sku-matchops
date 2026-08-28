@@ -146,7 +146,7 @@ def cleanup():
     if os.path.exists(TMP_DIR):
         shutil.rmtree(TMP_DIR, ignore_errors=True)
 
-def export_all_models_if_needed(force: bool = False):
+def export_all_models_if_needed(force: bool = False, quantize: bool = True):
     ensure_dirs()
     export_bge_m3(force=force)
     export_bge_reranker(force=force)
@@ -154,6 +154,20 @@ def export_all_models_if_needed(force: bool = False):
     cleanup()
     logger.info("ONNX base export verification complete.")
 
+    if quantize:
+        try:
+            from engine.quantize_models import quantize_all_if_needed
+            logger.info("Triggering INT8 dynamic quantization for exported models...")
+            quantize_all_if_needed(force=force)
+        except Exception as e:
+            logger.warning(f"INT8 dynamic quantization step encountered an issue: {e}")
+
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="SKU MatchOps ONNX Exporter & Downloader")
+    parser.add_argument("--force", action="store_true", help="Force re-export even if models exist")
+    parser.add_argument("--no-quantize", action="store_true", help="Skip INT8 dynamic quantization after export")
+    args = parser.parse_args()
+
     logger.info("Starting ONNX Model Export for MatchOps...")
-    export_all_models_if_needed()
+    export_all_models_if_needed(force=args.force, quantize=not args.no_quantize)

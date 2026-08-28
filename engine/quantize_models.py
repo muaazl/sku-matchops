@@ -115,7 +115,10 @@ def verify_reranker():
     for (q, doc), f_val, i_val in zip(pairs, fp32_logits.flatten(), int8_logits.flatten()):
         print(f"  - ({q} <-> {doc}): FP32={f_val:.4f}, INT8={i_val:.4f} (diff = {abs(f_val - i_val):.4f})")
 
-def quantize_all_if_needed(verify: bool = False, force: bool = False):
+def quantize_all_if_needed(verify: bool = False, force: bool = False, cleanup_fp32: bool = None):
+    if cleanup_fp32 is None:
+        cleanup_fp32 = os.getenv("CLEANUP_FP32_MODELS", "true").lower() == "true"
+
     bge_in = os.path.join(ONNX_DIR, "bge_m3", "model.onnx")
     bge_out = os.path.join(ONNX_DIR, "bge_m3", "model_int8.onnx")
     
@@ -142,10 +145,28 @@ def quantize_all_if_needed(verify: bool = False, force: bool = False):
         verify_bge_m3()
         verify_reranker()
 
+    # Reclaim disk space if INT8 models exist and cleanup is enabled
+    if cleanup_fp32:
+        for model_path, int8_path, name in [
+            (bge_in, bge_out, "BGE-M3"),
+            (rerank_in, rerank_out, "BGE-RERANKER"),
+        ]:
+            if os.path.exists(int8_path) and os.path.exists(model_path):
+                try:
+                    os.remove(model_path)
+                    print(f"[{name}] [CLEANUP] Deleted unquantized FP32 model: {model_path}")
+                    for suffix in ["_data", ".data"]:
+                        data_path = model_path + suffix
+                        if os.path.exists(data_path):
+                            os.remove(data_path)
+                except Exception as e:
+                    print(f"[{name}] [WARN] Could not remove FP32 model {model_path}: {e}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SKU MatchOps INT8 Dynamic Quantizer")
     parser.add_argument("--verify", action="store_true", help="Run FP32 vs INT8 verification benchmarks")
     parser.add_argument("--force", action="store_true", help="Force re-quantization even if output exists")
+    parser.add_argument("--no-cleanup", action="store_true", help="Keep FP32 model files after quantization")
     args = parser.parse_args()
 
-    quantize_all_if_needed(verify=args.verify, force=args.force)
+    quantize_all_if_needed(verify=args.verify, force=args.force, cleanup_fp32=not args.no_cleanup)

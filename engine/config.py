@@ -70,6 +70,8 @@ ONNX_DIR = os.path.join(BASE_DIR, "onnx_models")
 
 # Toggle for INT8 Quantized models (75% smaller RAM/Disk, 3-4x faster loading/inference)
 USE_INT8_MODELS = os.getenv("USE_INT8_MODELS", "true").lower() == "true"
+# Toggle to clean up large FP32 ONNX weights after INT8 quantization to reclaim ~4.4 GB disk space
+CLEANUP_FP32_MODELS = os.getenv("CLEANUP_FP32_MODELS", "true").lower() == "true"
 
 # --- AI Models ---
 BI_ENCODER_MODEL = "BAAI/bge-m3"

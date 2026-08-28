@@ -58,8 +58,9 @@ def main():
         # Check BGE-M3
         if use_int8:
             if not os.path.exists(bge_int8):
-                needs_quantization = True
-                if not os.path.exists(bge_fp32):
+                if os.path.exists(bge_fp32):
+                    needs_quantization = True
+                else:
                     needs_export = True
         else:
             if not os.path.exists(bge_fp32):
@@ -68,8 +69,9 @@ def main():
         # Check Reranker
         if use_int8:
             if not os.path.exists(rerank_int8):
-                needs_quantization = True
-                if not os.path.exists(rerank_fp32):
+                if os.path.exists(rerank_fp32):
+                    needs_quantization = True
+                else:
                     needs_export = True
         else:
             if not os.path.exists(rerank_fp32):
@@ -80,19 +82,19 @@ def main():
             needs_export = True
 
         if needs_export:
-            print("[SETUP] Required base ONNX models are missing. Initiating one-time export/download...", flush=True)
+            print("[SETUP] Required models are missing. Initiating one-time download, ONNX export & INT8 quantization...", flush=True)
             env = os.environ.copy()
             env["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
             subprocess.run([sys.executable, "engine/export_onnx.py"], check=True, env=env)
-            print("[SETUP] Base ONNX models exported successfully!", flush=True)
+            print("[SETUP] Models exported and quantized successfully!", flush=True)
 
-        if needs_quantization and use_int8:
+        if needs_quantization and use_int8 and (not os.path.exists(bge_int8) or not os.path.exists(rerank_int8)):
             print("[SETUP] Running INT8 dynamic quantization for memory optimization...", flush=True)
             subprocess.run([sys.executable, "engine/quantize_models.py"], check=True)
             print("[SETUP] INT8 quantization complete!", flush=True)
 
         if not needs_export and not needs_quantization:
-            print("[OK] All required ONNX INT8 models and configs are present (cached).", flush=True)
+            print("[OK] All required ONNX models and configs are present (cached).", flush=True)
 
     except Exception as e:
         print(f"Error checking/preparing ONNX models: {e}", flush=True)
