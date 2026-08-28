@@ -32,7 +32,7 @@ class BGEHybridONNXWrapper(nn.Module):
         sparse_weights = sparse_weights.squeeze(-1)
         return dense_vecs, sparse_weights
 
-def export_bge_m3(force: bool = False, quantize: bool = True):
+def export_bge_m3(force: bool = False):
     target_dir = os.path.join(ONNX_DIR, "bge_m3")
     onnx_fp32 = os.path.join(target_dir, "model.onnx")
     onnx_int8 = os.path.join(target_dir, "model_int8.onnx")
@@ -40,14 +40,6 @@ def export_bge_m3(force: bool = False, quantize: bool = True):
     
     if not force and (os.path.exists(onnx_int8) or os.path.exists(onnx_fp32)) and os.path.exists(tokenizer_file):
         logger.info("BGE-M3 ONNX model already exists. Skipping export.")
-        if quantize and not os.path.exists(onnx_int8) and os.path.exists(onnx_fp32):
-            try:
-                from engine.quantize_models import quantize_model
-                quantize_model(onnx_fp32, onnx_int8, "BGE-M3")
-                if os.getenv("CLEANUP_FP32_MODELS", "true").lower() == "true" and os.path.exists(onnx_int8):
-                    os.remove(onnx_fp32)
-            except Exception as q_err:
-                logger.warning(f"Failed to quantize existing BGE-M3: {q_err}")
         return
 
     logger.info("Exporting Hybrid BGE-M3 (Dense + Sparse) to ONNX...")
@@ -90,85 +82,78 @@ def export_bge_m3(force: bool = False, quantize: bool = True):
         del inputs
         gc.collect()
         logger.info(f"BGE-M3 Hybrid exported successfully to {onnx_fp32}")
-
-        if quantize and (os.getenv("USE_INT8_MODELS", "true").lower() == "true"):
-            from engine.quantize_models import quantize_model
-            quantize_model(onnx_fp32, onnx_int8, "BGE-M3")
-            if os.getenv("CLEANUP_FP32_MODELS", "true").lower() == "true" and os.path.exists(onnx_int8):
-                try:
-                    os.remove(onnx_fp32)
-                    logger.info("[BGE-M3] Deleted unquantized FP32 model to reclaim disk.")
-                except Exception as e:
-                    logger.warning(f"Could not remove FP32 model {onnx_fp32}: {e}")
     except Exception as e:
         logger.error(f"Failed to export Hybrid BGE-M3: {e}")
         raise
 
-def export_bge_reranker(force: bool = False, quantize: bool = True):
+def export_bge_reranker(force: bool = False):
     target_dir = os.path.join(ONNX_DIR, "reranker")
-    onnx_fp32 = os.path.join(target_dir, "model.onnx")
+    onnx_file = os.path.join(target_dir, "model.onnx")
     onnx_int8 = os.path.join(target_dir, "model_int8.onnx")
     tokenizer_file = os.path.join(target_dir, "tokenizer.json")
 
-    if not force and (os.path.exists(onnx_int8) or os.path.exists(onnx_fp32)) and os.path.exists(tokenizer_file):
-        logger.info("BGE-Reranker ONNX model already exists. Skipping export.")
-        if quantize and not os.path.exists(onnx_int8) and os.path.exists(onnx_fp32):
-            try:
-                from engine.quantize_models import quantize_model
-                quantize_model(onnx_fp32, onnx_int8, "BGE-RERANKER")
-                if os.getenv("CLEANUP_FP32_MODELS", "true").lower() == "true" and os.path.exists(onnx_int8):
-                    os.remove(onnx_fp32)
-            except Exception as q_err:
-                logger.warning(f"Failed to quantize existing BGE-Reranker: {q_err}")
+    if not force and (os.path.exists(onnx_int8) or os.path.exists(onnx_file)) and os.path.exists(tokenizer_file):
+        logger.info("BGE-Reranker ONNX model already exists. Skipping download.")
         return
 
-    logger.info("Exporting BGE-Reranker-v2-M3 Cross-Encoder to ONNX...")
+    logger.info("Downloading pre-exported BGE-Reranker-v2-M3 ONNX model from Hugging Face...")
     try:
         import gc
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
-
+        from huggingface_hub import snapshot_download
         os.makedirs(target_dir, exist_ok=True)
-        tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-v2-m3")
-        model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-v2-m3")
-        model.eval()
 
-        inputs = tokenizer(["query"], ["passage"], padding=True, truncation=True, return_tensors="pt")
-
-        logger.info("Tracing and exporting BGE-Reranker via torch.onnx.export...")
-        torch.onnx.export(
-            model,
-            (inputs["input_ids"], inputs["attention_mask"]),
-            onnx_fp32,
-            input_names=['input_ids', 'attention_mask'],
-            output_names=['logits'],
-            dynamic_axes={
-                'input_ids': {0: 'batch_size', 1: 'sequence_length'},
-                'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
-                'logits': {0: 'batch_size'}
-            },
-            opset_version=14,
-            do_constant_folding=True,
+        snapshot_download(
+            repo_id="onnx-community/bge-reranker-v2-m3-ONNX",
+            local_dir=target_dir,
+            allow_patterns=["*.json", "*.txt", "*.model", "model.onnx", "model.onnx_data", "onnx/model.onnx", "onnx/model.onnx_data"]
         )
 
-        tokenizer.save_pretrained(target_dir)
-        del model
-        del tokenizer
-        del inputs
-        gc.collect()
-        logger.info(f"BGE-Reranker exported successfully to {onnx_fp32}")
+        nested_onnx = os.path.join(target_dir, "onnx", "model.onnx")
+        if os.path.exists(nested_onnx):
+            shutil.move(nested_onnx, onnx_file)
+            nested_data = os.path.join(target_dir, "onnx", "model.onnx_data")
+            if os.path.exists(nested_data):
+                shutil.move(nested_data, os.path.join(target_dir, "model.onnx_data"))
+            shutil.rmtree(os.path.join(target_dir, "onnx"), ignore_errors=True)
 
-        if quantize and (os.getenv("USE_INT8_MODELS", "true").lower() == "true"):
-            from engine.quantize_models import quantize_model
-            quantize_model(onnx_fp32, onnx_int8, "BGE-RERANKER")
-            if os.getenv("CLEANUP_FP32_MODELS", "true").lower() == "true" and os.path.exists(onnx_int8):
-                try:
-                    os.remove(onnx_fp32)
-                    logger.info("[BGE-RERANKER] Deleted unquantized FP32 model to reclaim disk.")
-                except Exception as e:
-                    logger.warning(f"Could not remove FP32 model {onnx_fp32}: {e}")
+        gc.collect()
+        logger.info(f"Downloaded BGE-Reranker ONNX model successfully to {target_dir}")
     except Exception as e:
-        logger.error(f"Failed to export BGE-Reranker: {e}")
-        raise
+        logger.warning(f"Direct download of BGE-Reranker ONNX failed ({e}); falling back to local PyTorch export...")
+        try:
+            import gc
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+            os.makedirs(target_dir, exist_ok=True)
+            tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-v2-m3")
+            model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-v2-m3")
+            model.eval()
+
+            inputs = tokenizer(["query"], ["passage"], padding=True, truncation=True, return_tensors="pt")
+
+            torch.onnx.export(
+                model,
+                (inputs["input_ids"], inputs["attention_mask"]),
+                onnx_file,
+                input_names=['input_ids', 'attention_mask'],
+                output_names=['logits'],
+                dynamic_axes={
+                    'input_ids': {0: 'batch_size', 1: 'sequence_length'},
+                    'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
+                    'logits': {0: 'batch_size'}
+                },
+                opset_version=14,
+                do_constant_folding=True,
+            )
+            tokenizer.save_pretrained(target_dir)
+            del model
+            del tokenizer
+            del inputs
+            gc.collect()
+            logger.info(f"BGE-Reranker exported successfully to {onnx_file}")
+        except Exception as e2:
+            logger.error(f"Failed to export BGE-Reranker: {e2}")
+            raise
 
 def export_gliner(force: bool = False):
     target_dir = os.path.join(ONNX_DIR, "gliner")
@@ -210,11 +195,19 @@ def cleanup():
 
 def export_all_models_if_needed(force: bool = False, quantize: bool = True):
     ensure_dirs()
-    export_bge_m3(force=force, quantize=quantize)
-    export_bge_reranker(force=force, quantize=quantize)
+    export_bge_m3(force=force)
+    export_bge_reranker(force=force)
     export_gliner(force=force)
     cleanup()
-    logger.info("ONNX model preparation complete.")
+    logger.info("ONNX base export verification complete.")
+
+    if quantize:
+        try:
+            import subprocess
+            logger.info("Triggering INT8 dynamic quantization in a dedicated isolated process...")
+            subprocess.run([sys.executable, os.path.join(BASE_DIR, "quantize_models.py")], check=True)
+        except Exception as e:
+            logger.warning(f"INT8 dynamic quantization step encountered an issue: {e}")
 
 if __name__ == "__main__":
     import argparse
