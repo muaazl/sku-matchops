@@ -189,7 +189,7 @@ pnpm start
 | `BACKEND_INTERNAL_URL` | `http://localhost:8000` | Internal backend gateway URL. |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant vector database URL. |
 | `MEILI_URL` | `http://localhost:7700` | Meilisearch server URL. |
-| `MEILI_MASTER_KEY` | `bismillah` | Meilisearch API master key. |
+| `MEILI_MASTER_KEY` | `meilimasterkey` | Meilisearch API master key. |
 | `USE_INT8_MODELS` | `true` | Enables INT8 dynamic quantization for CPU speedup. |
 | `GOOGLE_SHEET_ID` | — | Google Sheet ID containing catalog and taxonomy tabs. |
 

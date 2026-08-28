@@ -51,7 +51,7 @@ QDRANT_MEMMAP_THRESHOLD = int(os.getenv("QDRANT_MEMMAP_THRESHOLD", "5000"))
 
 # --- Meilisearch Configuration ---
 MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
-MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY", "bismillah")
+MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY", "meilimasterkey")
 
 # --- Database & Domain Constants ---
 DOMAIN_MARKET = "market"
