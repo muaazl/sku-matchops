@@ -172,10 +172,12 @@ python -m engine.sync_catalog --sample
 ### 3. Run Microservices
 ```bash
 # Terminal 1 — Start ML Inference Engine
-uvicorn engine.server:app --host 0.0.0.0 --port 8001 --reload
+.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
+uvicorn engine.server:app --host 0.0.0.0 --port 8001
 
 # Terminal 2 — Start Backend API Gateway
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
+uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 # Terminal 3 — Start Frontend Development Server
 cd frontend
