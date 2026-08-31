@@ -86,7 +86,7 @@ class SKUMatcher:
 
         # Build lookup maps for fast O(1) exact matching and O(1) token-sort fuzzy bypass
         self.exact_match_map: Dict[str, int] = {}
-        self.token_sorted_map: Dict[str, int] = {}
+        self.token_sorted_map: Dict[str, List[int]] = {}
 
         for i, row in self.raw_catalog.iterrows():
             clean_txt = str(row.get("clean_text") or "").strip()
@@ -98,8 +98,10 @@ class SKUMatcher:
                 self.exact_match_map[clean_txt] = i
 
             sorted_tokens = " ".join(sorted(no_weights.split())).strip()
-            if sorted_tokens and sorted_tokens != "None" and sorted_tokens not in self.token_sorted_map:
-                self.token_sorted_map[sorted_tokens] = i
+            if sorted_tokens and sorted_tokens != "None":
+                if sorted_tokens not in self.token_sorted_map:
+                    self.token_sorted_map[sorted_tokens] = []
+                self.token_sorted_map[sorted_tokens].append(i)
 
     def search_candidates(self, input_vec_dense: np.ndarray, input_vec_sparse: Dict[str, float], bt_filter: Optional[str] = None) -> pd.DataFrame:
         """Retrieves top-K candidates from the vector store using hybrid search, optionally filtered by BT."""
@@ -184,35 +186,50 @@ class SKUMatcher:
 
             # Early fuzzy search on weight-stripped text (O(1) Hash Map Optimization)
             sorted_input_tokens = " ".join(sorted(str(input_no_weights).split()))
-            cat_idx_sorted = self.token_sorted_map.get(sorted_input_tokens)
+            cand_indices = self.token_sorted_map.get(sorted_input_tokens)
 
-            if cat_idx_sorted is not None:
-                c_idx = cat_idx_sorted
-                cat_row = self.raw_catalog.iloc[c_idx]
-                catalog_w_data = cat_row.get("weight_val")
+            if cand_indices:
+                if isinstance(cand_indices, int):
+                    cand_indices = [cand_indices]
 
-                combined_score, weight_reason = 100.0, ""
-                weight_mismatch = False
+                selected_idx = cand_indices[0]
+                weight_reason = ""
+                combined_score = 100.0
 
-                # Weight logic boost/penalty
-                if input_w_data[0] is not None and catalog_w_data is not None and isinstance(catalog_w_data, (tuple, list)) and catalog_w_data[0] is not None:
+                if input_w_data[0] is not None:
                     in_val, _, in_type = input_w_data
-                    cat_val, _, cat_type = catalog_w_data
-                    if in_type == cat_type:
-                        max_val = max(in_val, cat_val)
-                        diff_pct = abs(in_val - cat_val) / max_val * 100 if max_val > 0 else 0
-                        if diff_pct < 1.0:
-                            combined_score = min(100.0, combined_score + 2.0)
-                            weight_reason = f" | Weight Match ({int(in_val)})"
-                        elif diff_pct > 10.0:
-                            weight_mismatch = True
+                    best_match_idx = None
+                    min_diff_pct = float("inf")
 
-                if weight_mismatch:
-                    # Do not bypass if weights mismatch (e.g. single item vs multipack); pass to AI retrieval
-                    ai_indices.append(i)
-                else:
-                    best_reason = f"Fuzzy Match (100%){weight_reason}"
-                    bypass_results[i] = (self.raw_catalog.iloc[c_idx], combined_score, "High Confidence", best_reason)
+                    for c_idx in cand_indices:
+                        cat_row = self.raw_catalog.iloc[c_idx]
+                        catalog_w_data = cat_row.get("weight_val")
+                        if catalog_w_data is not None and isinstance(catalog_w_data, (tuple, list)) and catalog_w_data[0] is not None:
+                            cat_val, _, cat_type = catalog_w_data
+                            if in_type == cat_type:
+                                max_val = max(in_val, cat_val)
+                                diff_pct = abs(in_val - cat_val) / max_val * 100 if max_val > 0 else 0
+                                if diff_pct < min_diff_pct:
+                                    min_diff_pct = diff_pct
+                                    best_match_idx = c_idx
+
+                    if best_match_idx is not None:
+                        selected_idx = best_match_idx
+                        cat_row = self.raw_catalog.iloc[selected_idx]
+                        catalog_w_data = cat_row.get("weight_val")
+                        cat_val = catalog_w_data[0]
+                        if min_diff_pct < 1.0:
+                            weight_reason = f" | Weight Match ({int(in_val)})"
+                        else:
+                            weight_reason = f" | Weight Mismatch ({int(in_val)} vs {int(cat_val)})"
+                    else:
+                        cat_row = self.raw_catalog.iloc[selected_idx]
+                        catalog_w_data = cat_row.get("weight_val")
+                        if catalog_w_data is not None and isinstance(catalog_w_data, (tuple, list)) and catalog_w_data[0] is not None:
+                            weight_reason = f" | Weight Mismatch ({int(in_val)} vs {int(catalog_w_data[0])})"
+
+                best_reason = f"Fuzzy Match (100%){weight_reason}"
+                bypass_results[i] = (self.raw_catalog.iloc[selected_idx], combined_score, "High Confidence", best_reason)
             else:
                 ai_indices.append(i)
 
@@ -359,7 +376,7 @@ class SKUMatcher:
         pair_map = [] # stores (sku_index, q_type, cand_idx, clean_text)
         
         for i in ai_indices:
-            clean_in = clean_inputs[i]
+            clean_in_no_w = input_no_weights_list[i]
             
             # Combine all candidates for this SKU and sort by Qdrant score
             all_cands_list = []
@@ -378,7 +395,8 @@ class SKUMatcher:
                 txt = cand_row.get("clean_text", "")
                 if txt not in seen_texts:
                     seen_texts.add(txt)
-                    cross_pairs.append([clean_in, txt])
+                    txt_no_w = str(cand_row.get("clean_no_weights") or TextPipeline.strip_weights(txt)).strip()
+                    cross_pairs.append([clean_in_no_w, txt_no_w])
                     pair_map.append((i, q_type, cand_idx, txt))
                         
         cross_scores_list = []
@@ -439,7 +457,7 @@ class SKUMatcher:
                         final_score_f = -10.0
                         status_f = "Rejected"
                         reasons_f = ""
-
+                        best_cand_score_f = -100.0
                         for idx, cand_row in candidates_filtered.head(5).iterrows():
                             cand_score = cand_row['cross_score']
                             cand_row_copy = cand_row.drop('cross_score').copy()
@@ -451,18 +469,20 @@ class SKUMatcher:
                                 input_category=input_category, predicted_bt=bt_filter
                             )
 
-                            if best_match_row_f is None or f_score > final_score_f:
-                                best_match_row_f = cand_row_copy
-                                final_score_f = f_score
-                                status_f = f_status
-                                reasons_f = f_reasons
+                            is_better = False
+                            if best_match_row_f is None:
+                                is_better = True
+                            elif f_score > final_score_f + 1e-4:
+                                is_better = True
+                            elif abs(f_score - final_score_f) <= 1e-4 and cand_score > best_cand_score_f:
+                                is_better = True
 
-                            if f_status == "High Confidence":
+                            if is_better:
                                 best_match_row_f = cand_row_copy
                                 final_score_f = f_score
                                 status_f = f_status
                                 reasons_f = f_reasons
-                                break
+                                best_cand_score_f = cand_score
 
                         if status_f == "High Confidence":
                             best_match_row = best_match_row_f
@@ -499,6 +519,7 @@ class SKUMatcher:
                         final_score_uf = -10.0
                         status_uf = "Rejected"
                         reasons_uf = ""
+                        best_cand_score_uf = -100.0
 
                         for idx, cand_row in candidates_unfiltered.head(5).iterrows():
                             cand_score = cand_row['cross_score']
@@ -511,18 +532,20 @@ class SKUMatcher:
                                 input_category=input_category, predicted_bt=bt_filter
                             )
 
-                            if best_match_row_uf is None or uf_score > final_score_uf:
-                                best_match_row_uf = cand_row_copy
-                                final_score_uf = uf_score
-                                status_uf = uf_status
-                                reasons_uf = uf_reasons
+                            is_better = False
+                            if best_match_row_uf is None:
+                                is_better = True
+                            elif uf_score > final_score_uf + 1e-4:
+                                is_better = True
+                            elif abs(uf_score - final_score_uf) <= 1e-4 and cand_score > best_cand_score_uf:
+                                is_better = True
 
-                            if uf_status == "High Confidence":
+                            if is_better:
                                 best_match_row_uf = cand_row_copy
                                 final_score_uf = uf_score
                                 status_uf = uf_status
                                 reasons_uf = uf_reasons
-                                break
+                                best_cand_score_uf = cand_score
 
                         if 'best_match_row_fallback' in locals() and final_score_fallback > final_score_uf:
                             best_match_row = best_match_row_fallback

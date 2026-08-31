@@ -336,9 +336,13 @@ class LogicGates:
             else:
                 diff_pct = abs(in_val - cat_val) / max_val * 100
                 if diff_pct < 1.0:
-                    score += 2.0
-                    reasons.append(f"Weight Match ({int(in_val)})")
-                    weight_matched = True
+                    text_ratio = fuzz.token_sort_ratio(input_no_weights, cat_no_weights)
+                    if is_fuzzy_bypass or text_ratio >= 80:
+                        score += 2.0
+                        reasons.append(f"Weight Match ({int(in_val)})")
+                        weight_matched = True
+                    else:
+                        reasons.append(f"Weight Match ({int(in_val)}) [Low Text Sim]")
                 elif diff_pct > 10.0:
                     reasons.append(f"Weight Mismatch ({int(in_val)} vs {int(cat_val)})")
 

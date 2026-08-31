@@ -134,25 +134,48 @@ def run_sku_audit(
             
     if exact_bypass_row is None and hasattr(pipeline, "token_sorted_map") and pipeline.token_sorted_map:
         sorted_input_tokens = " ".join(sorted(str(input_no_weights).split()))
-        cat_idx_sorted = pipeline.token_sorted_map.get(sorted_input_tokens)
-        if cat_idx_sorted is not None:
-            cat_row = pipeline.raw_catalog.iloc[cat_idx_sorted]
-            catalog_w_data = cat_row.get("weight_val")
-            input_w_data = TextPipeline.extract_weight_feature(clean_input)
-            
-            valid_bypass = True
-            if input_w_data[0] is not None and catalog_w_data is not None and isinstance(catalog_w_data, (tuple, list)) and catalog_w_data[0] is not None:
-                in_val, _, in_type = input_w_data
-                cat_val, _, cat_type = catalog_w_data
-                if in_type == cat_type:
-                    max_val = max(in_val, cat_val)
-                    diff_pct = abs(in_val - cat_val) / max_val * 100 if max_val > 0 else 0
-                    if diff_pct > 10.0:
-                        valid_bypass = False
+        cand_indices = pipeline.token_sorted_map.get(sorted_input_tokens)
+        if cand_indices:
+            if isinstance(cand_indices, int):
+                cand_indices = [cand_indices]
 
-            if valid_bypass:
-                exact_bypass_row = cat_row
-                exact_bypass_reason = "Whole-SKU Fuzzy Match (100%)"
+            selected_idx = cand_indices[0]
+            weight_reason = ""
+
+            if input_w_data[0] is not None:
+                in_val, _, in_type = input_w_data
+                best_match_idx = None
+                min_diff_pct = float("inf")
+
+                for c_idx in cand_indices:
+                    cat_row = pipeline.raw_catalog.iloc[c_idx]
+                    catalog_w_data = cat_row.get("weight_val")
+                    if catalog_w_data is not None and isinstance(catalog_w_data, (tuple, list)) and catalog_w_data[0] is not None:
+                        cat_val, _, cat_type = catalog_w_data
+                        if in_type == cat_type:
+                            max_val = max(in_val, cat_val)
+                            diff_pct = abs(in_val - cat_val) / max_val * 100 if max_val > 0 else 0
+                            if diff_pct < min_diff_pct:
+                                min_diff_pct = diff_pct
+                                best_match_idx = c_idx
+
+                if best_match_idx is not None:
+                    selected_idx = best_match_idx
+                    cat_row = pipeline.raw_catalog.iloc[selected_idx]
+                    catalog_w_data = cat_row.get("weight_val")
+                    cat_val = catalog_w_data[0]
+                    if min_diff_pct < 1.0:
+                        weight_reason = f" | Weight Match ({int(in_val)})"
+                    else:
+                        weight_reason = f" | Weight Mismatch ({int(in_val)} vs {int(cat_val)})"
+                else:
+                    cat_row = pipeline.raw_catalog.iloc[selected_idx]
+                    catalog_w_data = cat_row.get("weight_val")
+                    if catalog_w_data is not None and isinstance(catalog_w_data, (tuple, list)) and catalog_w_data[0] is not None:
+                        weight_reason = f" | Weight Mismatch ({int(in_val)} vs {int(catalog_w_data[0])})"
+
+            exact_bypass_row = pipeline.raw_catalog.iloc[selected_idx]
+            exact_bypass_reason = f"Whole-SKU Fuzzy Match (100%){weight_reason}"
 
     # -------------------------------------------------------------
     # Stage 2: Basic Type Prediction & Candidate Search
@@ -251,7 +274,10 @@ def run_sku_audit(
     # -------------------------------------------------------------
     # Stage 3: Cross-Encoder Scoring & Rankings
     # -------------------------------------------------------------
-    pairs = [[clean_input, c_txt] for c_txt in candidates["clean_text"]]
+    pairs = [
+        [input_no_weights, str(c_row.get("clean_no_weights") or TextPipeline.strip_weights(c_row.get("clean_text", ""))).strip()]
+        for _, c_row in candidates.iterrows()
+    ]
     cross_scores = pipeline.embedder.score_cross_encoder(pairs)
 
     input_tokens = len(clean_input.split())

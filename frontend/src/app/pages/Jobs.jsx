@@ -262,7 +262,7 @@ export default function Jobs() {
             </StyledTableBody>
           </Table>
           <TablePagination
-            rowsPerPageOptions={[10, 25]}
+            rowsPerPageOptions={[10, 25, 50, 100]}
             component="div"
             count={rows.length}
             rowsPerPage={rowsPerPage}

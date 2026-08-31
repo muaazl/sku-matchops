@@ -67,6 +67,7 @@ def get_jobs(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     page: int = 1,
+    limit: Optional[int] = None,
     db: sqlite3.Connection = Depends(get_db_connection)
 ):
     query = "SELECT * FROM jobs WHERE 1=1"
@@ -88,8 +89,10 @@ def get_jobs(
         query += " AND started_at <= ?"
         params.append(date_to)
         
-    query += " ORDER BY started_at DESC LIMIT 50 OFFSET ?"
-    params.append((page - 1) * 50)
+    query += " ORDER BY started_at DESC"
+    if limit is not None and limit > 0:
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit, (page - 1) * limit])
     
     rows = db.execute(query, params).fetchall()
     
