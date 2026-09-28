@@ -1,6 +1,6 @@
-# SKU MatchOps — Intelligent Domain-Aware SKU Matching & Classification Platform
+# SKU MatchOps
 
-SKU MatchOps is a high-throughput, domain-aware catalog reconciliation and entity extraction platform. It pairs hybrid multi-stage retrieval (dense/sparse vector search + typo-tolerant lexical search) with cross-encoder re-ranking, zero-shot entity recognition (NER), and a deterministic business rules engine into a microservice-oriented architecture.
+SKU MatchOps is an Automated Tagging Solution for PickMe Food and Market Products. Built on a microservice architecture combining hybrid vector search, cross-encoder re-ranking, zero-shot NER, and a deterministic rules engine.
 
 ---
 
@@ -34,7 +34,7 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 │  • GLiNER Zero-Shot Named Entity Rec │
 │  • INT8 Dynamic Quantization Runtime │
 └──────────────────┬───────────────────┘
-                   │ (HTTP:6333 / gRPC:6334)
+                   │ (HTTP:6333)
                    ▼
 ┌──────────────────────────────────────┐
 │        Qdrant Vector Database        │
@@ -55,66 +55,12 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 
 ---
 
-## Repository Directory Structure
-
-```
-sku-matchops/
-├── backend/                    # FastAPI Gateway & Rules Engine Service
-│   ├── app/
-│   │   ├── api/                # REST endpoints, routes, dependencies & schemas
-│   │   ├── core/               # App configuration, logging & SQLite canonical db
-│   │   ├── rules_engine/       # AST Condition Evaluator & Action Executor
-│   │   ├── services/           # Background batch worker & external integrations
-│   │   └── tests/              # Test suite (80+ unit and integration tests)
-│   ├── requirements.txt        # Backend Python dependencies
-│   └── main.py                 # Backend FastAPI entrypoint
-├── engine/                     # Decoupled High-Throughput ML Inference Engine
-│   ├── core/                   # Configuration, db initialization & resource loader
-│   ├── pipeline/               # Pipeline processor, audit tracer & async worker
-│   ├── templates/              # Keyword template suggestion engine
-│   ├── classification/         # Domain ArcFace classifiers & zero-shot tagger
-│   ├── matching/               # Multi-stage SKU matcher & logic gates
-│   ├── nlp/                    # BGE-M3 bi-encoder, re-ranker & GLiNER NER
-│   ├── data_pipeline/          # Ingestion, Qdrant vector store & Feather caching
-│   ├── requirements.txt        # ML Engine Python dependencies
-│   ├── server.py               # Engine FastAPI server
-│   └── main.py                 # Engine CLI & entrypoint
-├── models/                     # Centralized Model Artifacts & Weight Registry
-│   ├── arcface/                # Food & Market ArcFace ONNX models, INT8 & labels
-│   ├── bge_m3/                 # BGE-M3 dense/sparse ONNX model & tokenizer
-│   ├── reranker/               # BGE-Reranker-v2-M3 cross-encoder ONNX model
-│   └── gliner/                 # GLiNER zero-shot entity recognition model
-├── data/                       # Stateful Runtime Data (isolated from code)
-│   ├── app.db                  # Canonical SQLite database (WAL mode)
-│   ├── cache/                  # Fast zero-copy Feather mmap caches
-│   ├── qdrant/                 # Qdrant vector store database files
-│   ├── meilisearch/            # Meilisearch index database files
-│   ├── logs/                   # System runtime log files
-│   └── sample/                 # Pre-packaged SampleData.xlsx offline dataset
-├── scripts/                    # Operational, ML, Catalog & Database Tooling
-│   ├── database/               # migrate.py, query.py, clear_table.py
-│   ├── ml/                     # export_onnx.py, quantize.py, train_bt_head.py
-│   ├── catalog/                # sync.py, generate_keywords.py
-│   └── ops/                    # run_tunnel.py (Cloudflare quick tunnel)
-├── frontend/                   # React 18 + Vite Web Application
-│   ├── src/                    # Components, pages, hooks, state & services
-│   ├── package.json            # Managed with pnpm
-│   └── vite.config.ts          # Vite build configuration
-├── docker-compose.yml          # Production multi-container orchestration
-├── Dockerfile.backend          # Hardened backend Docker image definition
-└── Dockerfile.engine           # Hardened ML engine Docker image definition
-```
-
 ---
 
 ## Quickstart with Docker Compose
 
 The entire 5-service stack boots automatically with 1 command, including automatic model downloading, ONNX export, and INT8 dynamic quantization.
 
-> [!IMPORTANT]
-> **First-Run Startup Notice (Model Downloads)**:
-> On the very first run, the system automatically downloads and sets up the pre-trained NLP transformer models (**BGE-M3**, **BGE-Reranker-v2-M3**, and **GLiNER Medium**, ~2.5 GB total) and applies INT8 dynamic quantization for CPU acceleration.
-> Depending on your internet bandwidth and CPU, **this initial startup and vector sync will take a few minutes**. Subsequent runs use the cached INT8 ONNX models and initialize almost instantly.
 
 ### 1. Clone and Configure
 ```bash
@@ -131,23 +77,23 @@ docker compose up -d
 ```
 
 > [!NOTE]
-> **Development vs. hardened networking.** `docker compose up` also loads
-> `docker-compose.override.yml`, which publishes the internal service ports
-> (Qdrant `6333/6334`, Meilisearch `7700`, engine `8001`) to the host for local
-> debugging. For an exposure-hardened deployment, skip the override so that only
-> the backend (`8000`) and frontend (`5173`) are reachable from the host:
+> **Development vs. hardened networking.** `docker compose up` also loads `docker-compose.override.yml`, which publishes internal service ports (Qdrant `6333/6334`, Meilisearch `7700`, engine `8001`) to the host for local debugging. For a hardened deployment, skip the override so only the backend (`8000`) and frontend (`5173`) are exposed:
+>
 > ```bash
 > docker compose -f docker-compose.yml up -d
 > ```
-> The services still reach each other over the private compose network; use
-> `docker compose exec <service> …` to inspect the internal ones.
+>
+> Services still communicate over the private compose network; use `docker compose exec <service> …` to inspect internal ones.
 
 ### 3. Ingest Demo Sample Data (Instant Offline Mode)
-To seed the catalog, train classifiers, and vectorize embeddings immediately from the pre-packaged sample dataset:
+To seed the catalog, train classifiers, and vectorize embeddings from the pre-packaged sample dataset:
 ```bash
 docker compose exec engine python scripts/catalog/sync.py --sample
 ```
-*(Optional: Run `docker compose restart backend` to immediately refresh backend memory caches with the seeded catalog).*
+*(Optional: Run `docker compose restart backend` to refresh backend memory caches with the seeded catalog.)*
+
+> [!IMPORTANT]
+> **First-Run Model Downloads**: On the very first run, the system automatically downloads **BGE-M3**, **BGE-Reranker-v2-M3**, and **GLiNER Medium** (~2.5 GB total) and applies INT8 dynamic quantization. This initial startup will take a few minutes depending on bandwidth and CPU. Subsequent runs use cached models and initialize almost instantly.
 
 ### 4. Access Services
 - **Web Dashboard**: [http://localhost:5173](http://localhost:5173)
@@ -172,7 +118,7 @@ docker compose exec engine python scripts/catalog/sync.py --sample
 You can connect your own Google Sheet catalog by following these steps:
 
 1. **Create the Google Sheet**:
-   - Upload [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) to Google Drive and open it as a Google Sheet (or format your sheet tabs using the schema below).
+   - Upload [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) to Google Drive and open it as a Google Sheet.
 2. **Set Sharing**:
    - Set Sheet sharing permissions to **"Anyone with the link can view"**.
 3. **Configure Environment**:
@@ -220,8 +166,8 @@ If you prefer running the Python and Node services directly on your host machine
 ### 2. Python Environment Setup
 ```bash
 # Create and activate virtual environment (using Python 3.11)
-py -3.11 -m venv venv        # On Linux: python3.11 -m venv venv
-.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
+py -3.11 -m venv venv
+.\venv\Scripts\Activate.ps1
 
 # Install CPU PyTorch first (fast & lightweight)
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -237,11 +183,11 @@ python scripts/catalog/sync.py --sample
 ### 3. Run Microservices
 ```bash
 # Terminal 1 — Start ML Inference Engine
-.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
+.\venv\Scripts\Activate.ps1
 uvicorn engine.server:app --host 0.0.0.0 --port 8001
 
 # Terminal 2 — Start Backend API Gateway
-.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
+.\venv\Scripts\Activate.ps1
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 # Terminal 3 — Start Frontend Development Server
@@ -255,15 +201,20 @@ pnpm start
 
 ## Environment Variables
 
-| Variable | Default | Description |
+| Variable | Required | Description |
 | :--- | :--- | :--- |
-| `ENGINE_URL` | `http://localhost:8001` | URL of the ML inference engine microservice. |
-| `BACKEND_INTERNAL_URL` | `http://localhost:8000` | Internal backend gateway URL. |
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant vector database URL. |
-| `MEILI_URL` | `http://localhost:7700` | Meilisearch server URL. |
-| `MEILI_MASTER_KEY` | `meilimasterkey` | Meilisearch API master key. |
-| `USE_INT8_MODELS` | `true` | Enables INT8 dynamic quantization for CPU speedup. |
-| `GOOGLE_SHEET_ID` | — | Google Sheet ID containing catalog and taxonomy tabs. |
+| `GOOGLE_SHEET_ID` | Yes (live mode) | Google Sheet ID containing catalog and taxonomy tabs. |
+| `ENGINE_URL` | Yes | URL of the ML inference engine microservice. |
+| `BACKEND_INTERNAL_URL` | Yes | Internal backend gateway URL. |
+| `QDRANT_URL` | Yes | Qdrant vector database URL. |
+| `QDRANT_API_KEY` | No | Qdrant API key (for secured/cloud deployments). |
+| `MEILI_URL` | Yes | Meilisearch server URL. |
+| `MEILI_MASTER_KEY` | Yes | Meilisearch API master key. |
+| `USE_INT8_MODELS` | No | Enables INT8 dynamic quantization for CPU speedup. Defaults to `true`. |
+| `FOOD_BT_MODEL` | No | BasicType classifier for Food (`arcface` or `logreg`). Defaults to `arcface`. |
+| `MARKET_BT_MODEL` | No | BasicType classifier for Market (`arcface` or `logreg`). Defaults to `arcface`. |
+| `APPS_SCRIPT_URL` | No | Google Apps Script webhook URL for push-based catalog sync. |
+| `ENABLE_TUNNEL` | No | Set to `true` to auto-launch a Cloudflare quick tunnel on startup. |
 
 ---
 
