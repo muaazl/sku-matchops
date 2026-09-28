@@ -4,6 +4,10 @@ SKU MatchOps is an Automated Tagging Solution for PickMe Food and Market Product
 
 ---
 
+https://github.com/user-attachments/assets/c2354e4b-112e-4a6a-9045-d3391d1b29be
+
+---
+
 ## Architecture Overview
 
 SKU MatchOps is structured around a decoupled microservice architecture separating ML inference, API orchestration, and vector/lexical retrieval:
