@@ -28,9 +28,10 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 COPY backend /app/backend
 COPY engine /app/engine
+COPY scripts /app/scripts
 
-COPY docker-entrypoint.py /app/docker-entrypoint.py
+COPY docker-entrypoint-backend.py /app/docker-entrypoint-backend.py
 
 EXPOSE 8000
 
-ENTRYPOINT ["python", "/app/docker-entrypoint.py"]
+ENTRYPOINT ["python", "/app/docker-entrypoint-backend.py"]

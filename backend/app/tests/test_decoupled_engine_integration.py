@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from backend.app.api.routes import api_router
 from backend.app.schemas.models import BaseRequest, SKUItem
 from backend.app.services.worker import enqueue_job
-from engine.rules_engine.db.seed_rules import DB_PATH
+from backend.app.core.db import DB_PATH
 
 app = FastAPI()
 app.include_router(api_router)

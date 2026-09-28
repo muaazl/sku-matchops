@@ -16,15 +16,15 @@ from backend.app.api.routes import api_router
 from backend.app.middleware.audit_logging import AuditLoggingMiddleware
 from backend.app.middleware.etag import ETagMiddleware
 from backend.app.services.meilisearch_service import check_and_sync_meilisearch
-from backend.scripts.migrate_db import migrate
-from engine import config
+from scripts.database.migrate import migrate
+from engine.core import config
 from engine.rules_engine import refresh_rules_cache
-from engine.rules_engine.db.seed_rules import DB_PATH
+from backend.app.core.db import DB_PATH
 
 # Configure logging with standard stream and file handlers
-LOG_DIR = config.DB_DIR
+LOG_DIR = getattr(config, "LOG_DIR", config.DB_DIR)
 os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, "app.log")
+LOG_FILE = getattr(config, "LOG_FILE", os.path.join(LOG_DIR, "app.log"))
 
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)

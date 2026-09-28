@@ -5,7 +5,7 @@ from sentence_transformers import CrossEncoder
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-from engine import config
+from engine.core import config
 
 def export_bge_m3_onnx(model_name: str, export_path: str):
     """Reference exporter for standard single-head BGE-M3."""

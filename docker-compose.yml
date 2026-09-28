@@ -9,7 +9,7 @@ services:
       - "6333"
       - "6334"
     volumes:
-      - ./engine/qdrant_data:/qdrant/storage:z
+      - ./data/qdrant:/qdrant/storage:z
     restart: unless-stopped
 
   meilisearch:
@@ -22,7 +22,7 @@ services:
       - MEILI_ENV=development
       - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-meilimasterkey}
     volumes:
-      - ./data/meilisearch_data:/meili_data
+      - ./data/meilisearch:/meili_data
     restart: unless-stopped
 
   engine:
@@ -45,6 +45,8 @@ services:
     volumes:
       - ./engine:/app/engine
       - ./data:/app/data
+      - ./models:/app/models:ro
+      - ./scripts:/app/scripts
     depends_on:
       - qdrant
       - meilisearch
@@ -69,6 +71,7 @@ services:
       - ./backend:/app/backend
       - ./engine:/app/engine
       - ./data:/app/data
+      - ./scripts:/app/scripts
     depends_on:
       - meilisearch
       - engine

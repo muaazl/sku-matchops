@@ -9,10 +9,10 @@ import pandas as pd
 from typing import Dict, Any, List, Optional
 from rapidfuzz import fuzz, process
 
-from engine import config
+from engine.core import config
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.nlp.text_cleaner import TextPipeline
-from engine.resource_loader import _pipelines, get_pipeline, get_classifier
+from engine.core.resource_loader import _pipelines, get_pipeline, get_classifier
 
 logger = logging.getLogger("matchops.engine.template_suggest")
 

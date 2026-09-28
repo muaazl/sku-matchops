@@ -8,7 +8,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from engine import config
+from engine.core import config
 from engine.data_pipeline.cache_manager import calculate_df_hash
 from engine.utils.flavor_utils import build_food_flavors_info
 
@@ -114,7 +114,7 @@ class ZeroShotClassifier:
             raise RuntimeError(
                 f"[FAIL-FAST] Domain '{self.domain}' is configured with BT_MODEL='arcface', "
                 f"but required ONNX model file '{onnx_path}' or label mapping '{labels_path}' is missing. "
-                f"Please train and export the model using 'python -m engine.scripts.train_bt_head --domain {self.domain}' "
+                f"Please train and export the model using 'python -m scripts.ml.train_bt_head --domain {self.domain}' "
                 f"or configure {self.domain.upper()}_BT_MODEL=logreg in your environment."
             )
 
@@ -193,7 +193,7 @@ class ZeroShotClassifier:
         Embed training SKUs incrementally, caching the computed dense vectors.
         This bypasses the heavy embedding model evaluation for unchanged SKUs.
         """
-        from engine.config import CLASSIFIER_WEIGHTS
+        from engine.core.config import CLASSIFIER_WEIGHTS
 
         if not names_list:
             return np.empty((0, 1024))
@@ -313,7 +313,7 @@ class ZeroShotClassifier:
             df = self.cat_df.fillna("")
 
             # Drop rows with no BT or Third Tag label
-            from engine.config import get_third_tag_col, COL_GK, COL_NAME, COL_DESCRIPTION, COL_INPUT_CATEGORY
+            from engine.core.config import get_third_tag_col, COL_GK, COL_NAME, COL_DESCRIPTION, COL_INPUT_CATEGORY
             
             target_col = get_third_tag_col(self.domain)
             missing = {"Name", "basictype", target_col, COL_GK} - set(df.columns)
@@ -330,7 +330,7 @@ class ZeroShotClassifier:
                 return
 
             # Build query strings exactly matching inference (weighted multi-field embedding)
-            from engine.config import CLASSIFIER_WEIGHTS
+            from engine.core.config import CLASSIFIER_WEIGHTS
             names_list = df[COL_NAME].astype(str).str.strip().tolist()
             descs_list = df[COL_DESCRIPTION].astype(str).str.strip().tolist() if COL_DESCRIPTION in df.columns else [""] * len(df)
             col_cat = COL_INPUT_CATEGORY if COL_INPUT_CATEGORY in df.columns else ("category" if "category" in df.columns else "")

@@ -9,7 +9,7 @@ import joblib
 import pandas as pd
 import requests
 
-from engine import config as engine_config
+from engine.core import config as engine_config
 from engine.data_pipeline.cache_manager import calculate_row_hash, clean_price
 from engine.data_pipeline.ingestion import DataIngestion
 
@@ -56,7 +56,7 @@ def get_bt_gk_cache(domain: str) -> Dict[str, Any]:
 
     # Reconstruct from SQLite bt_gk_map table if pkl cache is missing
     try:
-        from engine.db import ensure_db_initialized
+        from engine.core.db import ensure_db_initialized
         conn = ensure_db_initialized()
         cur = conn.cursor()
         cur.execute("SELECT basictype, generic_keywords FROM bt_gk_map WHERE domain = ?", (domain,))

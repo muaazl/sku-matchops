@@ -12,16 +12,16 @@ from typing import List, Optional
 import requests
 
 from backend.app.schemas.models import SKUItem
-from engine.db import log_outbound_request
+from engine.core.db import log_outbound_request
 
 logger = logging.getLogger("matchops.portal_service")
 
-DEFAULT_PORTAL_URL = "https://food-portal-api-go.pickme.lk/v1/food/place/skus/csv/{merchantid}"
+DEFAULT_PORTAL_URL = "https://uni-portal-api.pickme.lk/food/v1/t0001/food/place/skus/csv/{merchantid}"
 PORTAL_URL = os.getenv("PORTAL_URL", DEFAULT_PORTAL_URL)
 
 # Portal error codes/messages indicating an invalid, blacklisted, or expired token.
 AUTH_ERROR_CODES = {"MER-4007", "MER-4006"}
-AUTH_ERROR_KEYWORDS = ("token blacklisted", "token expired", "invalid token", "unauthorized", "unauthenticated")
+AUTH_ERROR_KEYWORDS = ("token blacklisted", "token expired", "invalid token", "unauthorized", "unauthenticated", "signature verification failed")
 
 
 def parse_csv_text_to_skus(text: str) -> List[SKUItem]:

@@ -8,8 +8,7 @@ import logging
 import sqlite3
 import uuid
 
-from engine.rules_engine.db.seed_rules import DB_PATH
-from backend.app.core.db import get_next_job_id
+from backend.app.core.db import DB_PATH, get_next_job_id
 from backend.app.schemas.models import BaseRequest
 from backend.app.services.engine_client import dispatch_batch_job
 from backend.app.api.endpoints.engine_callbacks import _job_progress, _job_eta

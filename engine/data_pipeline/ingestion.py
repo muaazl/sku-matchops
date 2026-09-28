@@ -14,8 +14,8 @@ import shutil
 import sqlite3
 import threading
 
-from engine import config
-from engine.db import ensure_db_initialized
+from engine.core import config
+from engine.core.db import ensure_db_initialized
 
 logger = logging.getLogger("matchops.ingestion")
 
@@ -444,7 +444,7 @@ class DataIngestion:
             if not force_fetch:
                 raise RuntimeError(
                     f"[LOAD] No catalog data found in memory, Feather cache, or SQLite for domain '{domain}'. "
-                    f"Please run 'python -m engine.scripts.sync_catalog' to initialize the catalog."
+                    f"Please run 'python -m scripts.catalog.sync' to initialize the catalog."
                 )
 
             return DataIngestion.load_catalog_from_sheets(sheet_id, domain)
@@ -910,7 +910,7 @@ class DataIngestion:
 
             raise RuntimeError(
                 f"[LOAD] No classifier dictionaries found in SQLite or local cache for domain '{domain}'. "
-                f"Please run 'python -m engine.scripts.sync_catalog' to initialize dictionaries."
+                f"Please run 'python -m scripts.catalog.sync' to initialize dictionaries."
             )
 
         # Fetch from Sheets (only executed when force_fetch=True)

@@ -36,7 +36,8 @@ data/
 *.db-shm
 *.sqlite3
 
-# Engine caches, model weights and vector store (mounted / regenerated at runtime)
+# Models and engine caches (mounted via docker-compose volumes / regenerated at runtime)
+models/
 engine/cache/
 engine/qdrant_data/
 engine/onnx_models/

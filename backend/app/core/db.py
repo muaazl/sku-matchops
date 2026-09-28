@@ -1,6 +1,6 @@
 import sqlite3
-from engine.rules_engine.db.seed_rules import DB_PATH
-from engine.db import ensure_db_initialized
+from engine.core.config import DB_PATH
+from engine.core.db import ensure_db_initialized
 
 def get_db_connection():
     """FastAPI dependency for SQLite database connection."""

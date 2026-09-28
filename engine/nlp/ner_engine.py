@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", message=".*The regex pattern.*")
 import pandas as pd
 from rapidfuzz import fuzz, process
 
-from engine import config
+from engine.core import config
 
 logger = logging.getLogger("matchops.ner")
 
@@ -78,7 +78,7 @@ class NEREngine:
         
         # 2. Try downloading ONNX model on demand if missing
         try:
-            from engine.scripts.export_onnx import export_gliner
+            from scripts.ml.export_onnx import export_gliner
             logger.info("[NER] GLiNER ONNX model not found locally. Downloading ONNX model...")
             export_gliner()
             self.model = GLiNER.from_pretrained(

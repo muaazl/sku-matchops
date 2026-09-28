@@ -17,10 +17,10 @@ Each target takes a mode:
            the current state, or after a very large catalog change.
 
 Examples:
-  python -m engine.scripts.sync_catalog                          # sync everything (default)
-  python -m engine.scripts.sync_catalog --qdrant rebuild          # only rebuild Qdrant + classifier
-  python -m engine.scripts.sync_catalog --db rebuild --cache sync # rebuild SQLite, sync local cache
-  python -m engine.scripts.sync_catalog --sample                 # offline demo mode (full rebuild)
+  python -m scripts.catalog.sync                          # sync everything (default)
+  python -m scripts.catalog.sync --qdrant rebuild          # only rebuild Qdrant + classifier
+  python -m scripts.catalog.sync --db rebuild --cache sync # rebuild SQLite, sync local cache
+  python -m scripts.catalog.sync --sample                 # offline demo mode (full rebuild)
 
 Why --qdrant sync is safe to run from a different checkout pointed at the same shared
 Qdrant instance: it reconciles this checkout's local "already embedded" bookkeeping
@@ -56,11 +56,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("matchops.sync_catalog")
 
-from engine import config
-from engine.db import init_db, ensure_db_initialized, clear_db_cache
+from engine.core import config
+from engine.core.db import init_db, ensure_db_initialized, clear_db_cache
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.nlp.text_cleaner import TextPipeline
-from engine.resource_loader import get_pipeline, get_classifier, _get_vector_store
+from engine.core.resource_loader import get_pipeline, get_classifier, _get_vector_store
 
 
 def reset_sqlite_tables(domain: str = None):
@@ -328,7 +328,7 @@ def run(
             if qdrant_mode:
                 logger.info(f"[{domain.upper()}] --qdrant ({qdrant_mode})...")
                 try:
-                    from engine.scripts.export_onnx import export_all_models_if_needed
+                    from scripts.ml.export_onnx import export_all_models_if_needed
                     export_all_models_if_needed()
                 except Exception as exp_err:
                     logger.warning(f"ONNX export verification check: {exp_err}")

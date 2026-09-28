@@ -8,7 +8,7 @@ import logging
 import sys
 import threading
 import pandas as pd
-from engine import config
+from engine.core import config
 from engine.classification.classifier import ZeroShotClassifier
 from engine.classification.loader import (
     augment_bt_gk_map_with_training,

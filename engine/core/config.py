@@ -33,14 +33,19 @@ warnings.filterwarnings("ignore", message=".*The sentencepiece tokenizer that yo
 warnings.filterwarnings("ignore", message=".*incorrect regex pattern.*", category=UserWarning)
 
 # --- Path Configuration ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(BASE_DIR, "cache")
-STAGING_DIR = os.path.join(CACHE_DIR, "staged_sheets")
-QDRANT_DATA_DIR = os.path.join(BASE_DIR, "qdrant_data")
-
+# BASE_DIR points to the engine package directory
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR = os.path.dirname(BASE_DIR)
-DB_DIR = os.path.join(ROOT_DIR, "data")
-DB_PATH = os.path.join(DB_DIR, "sku-matchops.db")
+
+DATA_DIR = os.getenv("DATA_DIR", os.path.join(ROOT_DIR, "data"))
+CACHE_DIR = os.getenv("CACHE_DIR", os.path.join(DATA_DIR, "cache"))
+STAGING_DIR = os.path.join(CACHE_DIR, "staged_sheets")
+QDRANT_DATA_DIR = os.getenv("QDRANT_DATA_DIR", os.path.join(DATA_DIR, "qdrant"))
+
+DB_DIR = DATA_DIR
+DB_PATH = os.getenv("DB_PATH", os.path.join(DB_DIR, "sku-matchops.db"))
+LOG_DIR = os.getenv("LOG_DIR", os.path.join(DATA_DIR, "logs"))
+LOG_FILE = os.path.join(LOG_DIR, "app.log")
 
 # --- Qdrant Configuration ---
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -68,7 +73,8 @@ MEILI_INDEX_FOOD_DICTS = "food_dictionaries"
 CACHE_SALT = "MatchOps_v2"
 
 # --- ONNX Optimized Models ---
-ONNX_DIR = os.path.join(BASE_DIR, "onnx_models")
+ONNX_DIR = os.getenv("MODELS_DIR", os.path.join(ROOT_DIR, "models"))
+ARCFACE_DIR = os.path.join(ONNX_DIR, "arcface")
 
 # Toggle for INT8 Quantized models (75% smaller RAM/Disk, 3-4x faster loading/inference)
 USE_INT8_MODELS = os.getenv("USE_INT8_MODELS", "true").lower() == "true"
@@ -95,35 +101,47 @@ GLINER_ONNX = os.path.join(ONNX_DIR, "gliner", "model.onnx")
 FOOD_BT_MODEL = os.getenv("FOOD_BT_MODEL", "arcface").lower()
 MARKET_BT_MODEL = os.getenv("MARKET_BT_MODEL", "arcface").lower()
 
-FOOD_BT_ARCFACE_FP32 = os.path.join(ONNX_DIR, "food_bt_arcface.onnx")
-FOOD_BT_ARCFACE_INT8 = os.path.join(ONNX_DIR, "food_bt_arcface_int8.onnx")
-FOOD_BT_ARCFACE_LABELS = os.path.join(ONNX_DIR, "food_bt_arcface_labels.json")
+FOOD_BT_ARCFACE_FP32 = os.path.join(ARCFACE_DIR, "food_bt_arcface.onnx")
+FOOD_BT_ARCFACE_INT8 = os.path.join(ARCFACE_DIR, "food_bt_arcface_int8.onnx")
+FOOD_BT_ARCFACE_LABELS = os.path.join(ARCFACE_DIR, "food_bt_arcface_labels.json")
 
-MARKET_BT_ARCFACE_FP32 = os.path.join(ONNX_DIR, "market_bt_arcface.onnx")
-MARKET_BT_ARCFACE_INT8 = os.path.join(ONNX_DIR, "market_bt_arcface_int8.onnx")
-MARKET_BT_ARCFACE_LABELS = os.path.join(ONNX_DIR, "market_bt_arcface_labels.json")
+MARKET_BT_ARCFACE_FP32 = os.path.join(ARCFACE_DIR, "market_bt_arcface.onnx")
+MARKET_BT_ARCFACE_INT8 = os.path.join(ARCFACE_DIR, "market_bt_arcface_int8.onnx")
+MARKET_BT_ARCFACE_LABELS = os.path.join(ARCFACE_DIR, "market_bt_arcface_labels.json")
 
 def get_bt_model(domain: str) -> str:
     """Returns the configured BasicType model identifier ('arcface' or 'logreg') for a domain."""
     return FOOD_BT_MODEL if domain == DOMAIN_FOOD else MARKET_BT_MODEL
 
+def get_arcface_dir() -> str:
+    """Returns the effective ArcFace directory, preferring ONNX_DIR/arcface if present, else ONNX_DIR."""
+    custom = getattr(config, "ARCFACE_DIR", None) if "config" in globals() else None
+    if custom and custom != os.path.join(ROOT_DIR, "models", "arcface") and os.path.exists(custom):
+        return custom
+    arcface_sub = os.path.join(ONNX_DIR, "arcface")
+    if os.path.exists(arcface_sub):
+        return arcface_sub
+    return ONNX_DIR
+
 def get_bt_arcface_onnx_path(domain: str) -> str:
     """Returns the expected ONNX artifact path for the domain's ArcFace BT model."""
     int8_name = "food_bt_arcface_int8.onnx" if domain == DOMAIN_FOOD else "market_bt_arcface_int8.onnx"
     fp32_name = "food_bt_arcface.onnx" if domain == DOMAIN_FOOD else "market_bt_arcface.onnx"
-    int8_path = os.path.join(ONNX_DIR, int8_name)
-    fp32_path = os.path.join(ONNX_DIR, fp32_name)
+    target_dir = get_arcface_dir()
+    int8_path = os.path.join(target_dir, int8_name)
+    fp32_path = os.path.join(target_dir, fp32_name)
+
     if USE_INT8_MODELS and os.path.exists(int8_path):
         return int8_path
     if not USE_INT8_MODELS and os.path.exists(fp32_path):
         return fp32_path
-    # Default to INT8 path for fail-fast check
     return int8_path if USE_INT8_MODELS else fp32_path
 
 def get_bt_arcface_labels_path(domain: str) -> str:
     """Returns the path to the label encoder mapping JSON for the domain's ArcFace BT model."""
     labels_name = "food_bt_arcface_labels.json" if domain == DOMAIN_FOOD else "market_bt_arcface_labels.json"
-    return os.path.join(ONNX_DIR, labels_name)
+    target_dir = get_arcface_dir()
+    return os.path.join(target_dir, labels_name)
 
 # --- NER Configuration ---
 MARKET_NER_LABELS = [

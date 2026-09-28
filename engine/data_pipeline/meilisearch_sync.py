@@ -6,7 +6,7 @@ import pandas as pd
 import meilisearch
 from meilisearch.errors import MeilisearchApiError
 
-from engine import config
+from engine.core import config
 from engine.data_pipeline.cache_manager import clean_price
 
 logger = logging.getLogger("matchops.meilisearch_sync")
@@ -124,7 +124,7 @@ def sync_dictionaries_to_meili(domain: str, clear_existing: bool = True):
         logger.warning(f"[MEILI] Meilisearch is not available. Skipping dictionary sync for '{domain}'.")
         return
 
-    from engine.db import ensure_db_initialized
+    from engine.core.db import ensure_db_initialized
     conn = ensure_db_initialized()
     cursor = conn.cursor()
 

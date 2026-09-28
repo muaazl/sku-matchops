@@ -1,6 +1,6 @@
 import re
 from typing import Optional, Tuple
-from engine import config
+from engine.core import config
 
 class UnitConfig:
     """Configuration for unit normalization and physical form mapping."""

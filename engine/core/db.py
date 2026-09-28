@@ -3,7 +3,7 @@ import logging
 import os
 import sqlite3
 import uuid
-from engine import config
+from engine.core import config
 
 logger = logging.getLogger("matchops.db")
 

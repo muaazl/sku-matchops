@@ -16,8 +16,8 @@ from backend.app.services.catalog_service import (
     trigger_build_cache,
 )
 from backend.app.services.meilisearch_service import get_meili_client, is_meili_healthy
-from engine import config as engine_config
-from engine.db import ensure_db_initialized
+from engine.core import config as engine_config
+from engine.core.db import ensure_db_initialized
 
 logger = logging.getLogger("matchops.catalog_api")
 router = APIRouter()

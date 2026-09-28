@@ -14,11 +14,11 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from engine import config
-from engine.audit_engine import run_sku_audit
+from engine.core import config
+from engine.pipeline.audit_engine import run_sku_audit
 from engine.data_pipeline.vector_store import VectorStore
-from engine.processor import process_request
-from engine.resource_loader import (
+from engine.pipeline.processor import process_request
+from engine.core.resource_loader import (
     _get_shared_models,
     _model_statuses,
     get_classifier,
@@ -26,8 +26,8 @@ from engine.resource_loader import (
     reset_statuses,
 )
 from engine.rules_engine import refresh_rules_cache, clear_flavor_cache
-from engine.template_suggest import suggest_tags_from_template
-from engine.worker_runner import cancel_job, enqueue_batch_job
+from engine.templates.template_suggest import suggest_tags_from_template
+from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 

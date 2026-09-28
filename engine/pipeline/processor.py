@@ -9,10 +9,10 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 import pandas as pd
 
-from engine import config
+from engine.core import config
 from engine.classification.tagger import tag_all_skus
 from engine.rules_engine import run_rules_engine
-from engine.resource_loader import (
+from engine.core.resource_loader import (
     _get_shared_models,
     _get_vector_store,
     get_pipeline,
@@ -20,7 +20,7 @@ from engine.resource_loader import (
     get_ner_engine,
     check_models_loaded,
 )
-from engine.template_suggest import suggest_tags_from_template
+from engine.templates.template_suggest import suggest_tags_from_template
 
 logger = logging.getLogger("matchops.engine.processor")
 
@@ -75,8 +75,9 @@ def _apply_template_tag_enrichment(skus: List[Dict[str, Any]], results: List[dic
         for i, sku in enumerate(skus):
             if i >= len(results):
                 break
-            status_val = results[i].get("status") or results[i].get("bt_status")
-            if status_val in ["Exact Text Match", "High Confidence", "HIGH"]:
+            status_val = results[i].get("status", "")
+            bt_status_val = results[i].get("bt_status", "")
+            if status_val in ["Exact Text Match", "High Confidence", "HIGH", "AUTO"] or bt_status_val in ["Exact Text Match", "High Confidence", "HIGH", "AUTO"]:
                 continue
             sku_name = sku.get("name", "")
             sug_res = suggest_tags_from_template(sku_name, domain=domain, current_bt=results[i].get("suggested_bt"))
@@ -93,7 +94,11 @@ def _apply_template_tag_enrichment(skus: List[Dict[str, Any]], results: List[dic
                         results[i]["bt_status"] = "High Confidence"
                         results[i]["bt_confidence"] = max(results[i].get("bt_confidence") or 0.0, 0.95)
                 if s_gk:
-                    results[i]["suggested_gk"] = s_gk
+                    existing_gk_str = results[i].get("suggested_gk", "")
+                    existing_gks = [x.strip() for x in str(existing_gk_str).split(",") if x.strip()]
+                    template_gks = s_gk_list if isinstance(s_gk_list, list) else [x.strip() for x in s_gk.split(",") if x.strip()]
+                    merged_gks = list(dict.fromkeys(existing_gks + template_gks))
+                    results[i]["suggested_gk"] = ", ".join(merged_gks)
                     if mode == "classifier":
                         results[i]["gk_status"] = "AUTO"
                         results[i]["gk_confidence"] = max(results[i].get("gk_confidence", 0.0), 0.95)

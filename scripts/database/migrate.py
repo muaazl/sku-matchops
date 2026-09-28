@@ -8,8 +8,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from engine import config
-from engine.db import ensure_db_initialized
+from engine.core import config
+from engine.core.db import ensure_db_initialized
 
 DB_PATH = config.DB_PATH
 

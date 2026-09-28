@@ -1,6 +1,6 @@
 import logging
 from meilisearch.errors import MeilisearchApiError
-from engine import config
+from engine.core import config
 from engine.data_pipeline.meilisearch_sync import (
     get_meili_client,
     is_meili_healthy,

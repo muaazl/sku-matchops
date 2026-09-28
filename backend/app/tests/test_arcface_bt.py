@@ -11,7 +11,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import torch
 
-from engine import config
+from engine.core import config
 from engine.classification.classifier import ZeroShotClassifier
 from engine.classification.models.arcface_bt import ArcFaceHead, BTArcFaceNet, FocalLoss
 
@@ -315,10 +315,10 @@ class TestArcFaceBT(unittest.TestCase):
         self.assertEqual(item["bt_model"], "arcface")
         self.assertIn("Classifier (arcface):", item["reasoning"])
 
-    @patch("engine.scripts.train_bt_head.extract_embeddings")
+    @patch("scripts.ml.train_bt_head.extract_embeddings")
     def test_train_bt_head_synthetic_pipeline(self, mock_extract):
         """Test train_bt_arcface end-to-end with mock catalog and embeddings."""
-        from engine.scripts.train_bt_head import train_bt_arcface
+        from scripts.ml.train_bt_head import train_bt_arcface
 
         # Mock embeddings to avoid loading heavy 2.2GB BGE-M3 model in tests
         mock_extract.return_value = np.random.randn(20, 1024).astype(np.float32)

@@ -55,6 +55,58 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 
 ---
 
+## Repository Directory Structure
+
+```
+sku-matchops/
+├── backend/                    # FastAPI Gateway & Rules Engine Service
+│   ├── app/
+│   │   ├── api/                # REST endpoints, routes, dependencies & schemas
+│   │   ├── core/               # App configuration, logging & SQLite canonical db
+│   │   ├── rules_engine/       # AST Condition Evaluator & Action Executor
+│   │   ├── services/           # Background batch worker & external integrations
+│   │   └── tests/              # Test suite (80+ unit and integration tests)
+│   ├── requirements.txt        # Backend Python dependencies
+│   └── main.py                 # Backend FastAPI entrypoint
+├── engine/                     # Decoupled High-Throughput ML Inference Engine
+│   ├── core/                   # Configuration, db initialization & resource loader
+│   ├── pipeline/               # Pipeline processor, audit tracer & async worker
+│   ├── templates/              # Keyword template suggestion engine
+│   ├── classification/         # Domain ArcFace classifiers & zero-shot tagger
+│   ├── matching/               # Multi-stage SKU matcher & logic gates
+│   ├── nlp/                    # BGE-M3 bi-encoder, re-ranker & GLiNER NER
+│   ├── data_pipeline/          # Ingestion, Qdrant vector store & Feather caching
+│   ├── requirements.txt        # ML Engine Python dependencies
+│   ├── server.py               # Engine FastAPI server
+│   └── main.py                 # Engine CLI & entrypoint
+├── models/                     # Centralized Model Artifacts & Weight Registry
+│   ├── arcface/                # Food & Market ArcFace ONNX models, INT8 & labels
+│   ├── bge_m3/                 # BGE-M3 dense/sparse ONNX model & tokenizer
+│   ├── reranker/               # BGE-Reranker-v2-M3 cross-encoder ONNX model
+│   └── gliner/                 # GLiNER zero-shot entity recognition model
+├── data/                       # Stateful Runtime Data (isolated from code)
+│   ├── app.db                  # Canonical SQLite database (WAL mode)
+│   ├── cache/                  # Fast zero-copy Feather mmap caches
+│   ├── qdrant/                 # Qdrant vector store database files
+│   ├── meilisearch/            # Meilisearch index database files
+│   ├── logs/                   # System runtime log files
+│   └── sample/                 # Pre-packaged SampleData.xlsx offline dataset
+├── scripts/                    # Operational, ML, Catalog & Database Tooling
+│   ├── database/               # migrate.py, query.py, clear_table.py
+│   ├── ml/                     # export_onnx.py, quantize.py, train_bt_head.py
+│   ├── catalog/                # sync.py, generate_keywords.py
+│   └── ops/                    # run_tunnel.py (Cloudflare quick tunnel)
+├── frontend/                   # React 18 + Vite Web Application
+│   ├── src/                    # Components, pages, hooks, state & services
+│   ├── package.json            # Managed with pnpm
+│   └── vite.config.ts          # Vite build configuration
+├── docker-compose.yml          # Production multi-container orchestration
+├── Dockerfile.backend          # Hardened backend Docker image definition
+└── Dockerfile.engine           # Hardened ML engine Docker image definition
+```
+
+---
+
 ## Quickstart with Docker Compose
 
 The entire 5-service stack boots automatically with 1 command, including automatic model downloading, ONNX export, and INT8 dynamic quantization.
@@ -93,7 +145,7 @@ docker compose up -d
 ### 3. Ingest Demo Sample Data (Instant Offline Mode)
 To seed the catalog, train classifiers, and vectorize embeddings immediately from the pre-packaged sample dataset:
 ```bash
-docker compose exec engine python -m engine.scripts.sync_catalog --sample
+docker compose exec engine python scripts/catalog/sync.py --sample
 ```
 *(Optional: Run `docker compose restart backend` to immediately refresh backend memory caches with the seeded catalog).*
 
@@ -113,7 +165,7 @@ SKU MatchOps supports two flexible modes of catalog ingestion:
 The repository includes a ready-to-run demo dataset at [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) containing 500 Food dishes, 500 Market retail products, and taxonomy dictionaries.
 To reset and load this sample data into the system:
 ```bash
-docker compose exec engine python -m engine.scripts.sync_catalog --sample
+docker compose exec engine python scripts/catalog/sync.py --sample
 ```
 
 ### Option B: Live Google Sheets Integration
@@ -131,9 +183,9 @@ You can connect your own Google Sheet catalog by following these steps:
 4. **Trigger Sync**:
    - Run the catalog sync command to fetch from Google Sheets, index into Meilisearch, vectorize embeddings into Qdrant, and train classifiers:
      ```bash
-     docker compose exec engine python -m engine.scripts.sync_catalog
+     docker compose exec engine python scripts/catalog/sync.py
      ```
-     *(Or locally outside Docker: `python -m engine.scripts.sync_catalog`)*
+     *(Or locally outside Docker: `python scripts/catalog/sync.py`)*
 
 ### Google Sheet Tab Schema
 
@@ -158,6 +210,7 @@ If you prefer running the Python and Node services directly on your host machine
 
 ### 1. Prerequisites
 - Python 3.10+ (Python 3.11 recommended)
+- `uv` (recommended for ultra-fast pip installs) or `pip`
 - Node.js 18+ and `pnpm` (install via `npm install -g pnpm`)
 - Running instances of **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these two database containers using Docker:
   ```bash
@@ -171,14 +224,14 @@ py -3.11 -m venv venv        # On Linux: python3.11 -m venv venv
 .\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
 
 # Install CPU PyTorch first (fast & lightweight)
-pip install torch --index-url https://download.pytorch.org/whl/cpu
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# Install dependencies
-pip install -r backend/requirements.txt
-pip install -r engine/requirements.txt
+# Install service dependencies
+uv pip install -r backend/requirements.txt
+uv pip install -r engine/requirements.txt
 
 # Ingest sample catalog data & prepare ONNX models
-python -m engine.scripts.sync_catalog --sample
+python scripts/catalog/sync.py --sample
 ```
 
 ### 3. Run Microservices

@@ -14,8 +14,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from engine.processor import process_request
-from engine.db import log_outbound_request
+from engine.pipeline.processor import process_request
+from engine.core.db import log_outbound_request
 
 logger = logging.getLogger("matchops.engine.worker")
 

@@ -6,7 +6,7 @@ import shutil
 import pandas as pd
 import sqlite3
 
-from engine import config
+from engine.core import config
 from engine.data_pipeline.ingestion import DataIngestion
 from backend.app.services.catalog_service import (
     get_catalog_and_brands,
@@ -14,7 +14,7 @@ from backend.app.services.catalog_service import (
     get_bt_gk_cache,
 )
 from engine.rules_engine.evaluator import _load_flavor_data, clear_flavor_cache
-from engine.db import ensure_db_initialized
+from engine.core.db import ensure_db_initialized
 
 
 class TestCacheFallbackIsolation(unittest.TestCase):

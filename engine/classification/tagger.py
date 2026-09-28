@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from engine.config import (
+from engine.core.config import (
     AUTO_THRESHOLD,
     REVIEW_THRESHOLD,
     RERANKER_THRESHOLD,

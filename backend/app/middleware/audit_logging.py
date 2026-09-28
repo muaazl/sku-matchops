@@ -5,8 +5,7 @@ import time
 import uuid
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-
-from engine.rules_engine.db.seed_rules import DB_PATH
+from backend.app.core.db import DB_PATH
 
 logger = logging.getLogger("matchops.middleware")
 

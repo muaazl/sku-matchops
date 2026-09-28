@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from engine import config as engine_config
+from engine.core import config as engine_config
 from backend.app.core.db import get_db_connection
 from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
 from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
