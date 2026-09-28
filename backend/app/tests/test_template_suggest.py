@@ -3,9 +3,9 @@ from unittest.mock import patch, MagicMock
 import pandas as pd
 
 # Import the functions to test
-from engine.template_suggest import title_case_with_exceptions, suggest_tags_from_template
+from engine.templates.template_suggest import title_case_with_exceptions, suggest_tags_from_template
 from engine.nlp.ner_engine import NEREngine
-from engine import config
+from engine.core import config
 
 class TestTemplateSuggest(unittest.TestCase):
 
@@ -26,10 +26,10 @@ class TestTemplateSuggest(unittest.TestCase):
         for inp, expected in cases:
             self.assertEqual(title_case_with_exceptions(inp), expected)
 
-    @patch('engine.resource_loader.get_pipeline')
-    @patch('engine.template_suggest.get_catalog_and_brands')
-    @patch('engine.template_suggest.get_classifier')
-    @patch('engine.template_suggest.get_classifier_dicts')
+    @patch('engine.core.resource_loader.get_pipeline')
+    @patch('engine.templates.template_suggest.get_catalog_and_brands')
+    @patch('engine.templates.template_suggest.get_classifier')
+    @patch('engine.templates.template_suggest.get_classifier_dicts')
     def test_suggest_tags_from_template_food(self, mock_get_dicts, mock_get_classifier, mock_get_catalog, mock_get_pipeline):
         mock_get_pipeline.side_effect = Exception("Mock pipeline disabled")
         # 1. Mock Catalog DataFrame
@@ -147,10 +147,10 @@ class TestTemplateSuggest(unittest.TestCase):
         res_sandwich = suggest_tags_from_template("SEENISAMBOL & CHEESE SANDWICH", "food", current_bt="Sandwiches")
         self.assertFalse(res_sandwich["matched"])
 
-    @patch('engine.resource_loader.get_pipeline')
-    @patch('engine.template_suggest.get_catalog_and_brands')
-    @patch('engine.template_suggest.get_classifier')
-    @patch('engine.template_suggest.get_classifier_dicts')
+    @patch('engine.core.resource_loader.get_pipeline')
+    @patch('engine.templates.template_suggest.get_catalog_and_brands')
+    @patch('engine.templates.template_suggest.get_classifier')
+    @patch('engine.templates.template_suggest.get_classifier_dicts')
     def test_suggest_tags_from_template_market(self, mock_get_dicts, mock_get_classifier, mock_get_catalog, mock_get_pipeline):
         mock_get_pipeline.side_effect = Exception("Mock pipeline disabled")
         # 1. Mock Catalog DataFrame for market

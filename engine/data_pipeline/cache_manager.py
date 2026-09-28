@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import joblib
 import pandas as pd
 
-from engine import config
+from engine.core import config
 
 logger = logging.getLogger("matchops.cache")
 
@@ -153,7 +153,7 @@ class CacheManager:
             if not check_for_updates and not force_sync:
                 raise RuntimeError(
                     f"[CATALOG SYNC ERROR] Catalog metadata cache for domain '{domain.upper()}' was not found at '{processed_df_path}'. "
-                    f"Please run 'python -m engine.scripts.sync_catalog --cache sync' to rebuild disk caches (or 'python -m engine.scripts.sync_catalog' for a full sync), then start the server."
+                    f"Please run 'python -m scripts.catalog.sync --cache sync' to rebuild disk caches (or 'python -m scripts.catalog.sync' for a full sync), then start the server."
                 )
         else:
             try:

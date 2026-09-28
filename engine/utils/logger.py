@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 
-from engine import config
+from engine.core import config
 
 # Configure logging with a stream handler and file handler
 DB_DIR = config.DB_DIR

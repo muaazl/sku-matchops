@@ -11,7 +11,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from engine import config
+from engine.core import config
 from engine.nlp.embedding_engine import EmbeddingEngine
 
 logger = logging.getLogger("matchops.cold_start_router")

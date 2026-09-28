@@ -23,7 +23,7 @@ from backend.app.schemas.models import (
 )
 from backend.app.services.engine_client import get_engine_health
 from backend.app.services.worker import enqueue_job
-from engine.rules_engine.db.seed_rules import DB_PATH
+from backend.app.core.db import DB_PATH
 
 api_router = APIRouter()
 
@@ -105,7 +105,9 @@ def get_logs(lines: int = Query(500, ge=1, le=20000)):
     """
     Returns the last N lines of the application logs.
     """
-    log_file = os.path.join(os.path.dirname(DB_PATH), "app.log")
+    log_file = os.path.join(os.path.dirname(DB_PATH), "logs", "app.log")
+    if not os.path.exists(log_file):
+        log_file = os.path.join(os.path.dirname(DB_PATH), "app.log")
     
     if not os.path.exists(log_file):
         return {"logs": "Log file not found."}

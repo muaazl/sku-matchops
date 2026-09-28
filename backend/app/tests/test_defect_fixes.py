@@ -4,13 +4,13 @@ import numpy as np
 import pandas as pd
 from unittest.mock import MagicMock, patch
 
-from engine import config
-from engine.db import ensure_db_initialized
+from engine.core import config
+from engine.core.db import ensure_db_initialized
 from engine.matching.matcher import SKUMatcher
-from engine.resource_loader import get_pipeline
+from engine.core.resource_loader import get_pipeline
 from engine.classification.tagger import tag_all_skus
-from engine.processor import process_request
-from engine.audit_engine import run_sku_audit
+from engine.pipeline.processor import process_request
+from engine.pipeline.audit_engine import run_sku_audit
 from engine.nlp.embedding_engine import EmbeddingEngine
 
 
@@ -110,7 +110,7 @@ class TestDefectFixes:
     def test_classifier_reasoning_generation_and_escalation_chaining(self):
         """Verify classifier produces reasoning and pipeline escalation chains matcher note + classifier reasoning."""
         # 1. tag_all_skus produces 'reasoning'
-        from engine.resource_loader import get_classifier, get_pipeline, get_ner_engine, _get_shared_models, _get_vector_store
+        from engine.core.resource_loader import get_classifier, get_pipeline, get_ner_engine, _get_shared_models, _get_vector_store
         classifier = get_classifier("food")
         pipeline = get_pipeline("food")
         embed_engine, ner_engine = _get_shared_models()

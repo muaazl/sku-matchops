@@ -56,19 +56,22 @@ venv.bak/
 *.log*
 app.log
 data/*.log
+data/logs/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/meilisearch/
 data/meilisearch_data/
+data/qdrant/
+data/cache/
 
-# Engine Caching, ONNX Weights & Vector Stores
+# Models, Engine Caching, Vector Stores & Exports
+models/*
+!models/**/.gitkeep
+data/exports/
 engine/qdrant_data/
 engine/cache/
 engine/onnx_models/
-engine/data/*.db
-engine/data/*.db-wal
-engine/data/*.db-shm
-engine/data/*.log
 cache/
 input_skus/
 output_results/

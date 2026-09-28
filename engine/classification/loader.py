@@ -153,7 +153,7 @@ def build_bt_third_tag_map_from_catalog(cat_df: pd.DataFrame, domain: str) -> Di
     if not bt_col:
         return {}
         
-    from engine.config import get_third_tag_col
+    from engine.core.config import get_third_tag_col
     target_name = get_third_tag_col(domain)
     target_col = _find_column(cat_df, [target_name, "region", "Region", "category", "Categories", "Categories / generic keywords"])
     

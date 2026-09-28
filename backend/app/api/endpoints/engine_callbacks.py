@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from engine.rules_engine.db.seed_rules import DB_PATH
+from backend.app.core.db import DB_PATH
 
 logger = logging.getLogger("matchops.engine_callbacks")
 router = APIRouter(prefix="/api/internal/jobs", tags=["engine_internal"])

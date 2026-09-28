@@ -6,10 +6,10 @@ embeddings and prices, exports the evaluation graph to ONNX, quantizes to INT8,
 and serializes label mappings and price scalers.
 
 Usage:
-  python -m engine.scripts.train_bt_head --domain food
-  python -m engine.scripts.train_bt_head --domain market
-  python -m engine.scripts.train_bt_head --domain all
-  python -m engine.scripts.train_bt_head --domain market --from-sample
+  python -m scripts.ml.train_bt_head --domain food
+  python -m scripts.ml.train_bt_head --domain market
+  python -m scripts.ml.train_bt_head --domain all
+  python -m scripts.ml.train_bt_head --domain market --from-sample
 """
 
 import argparse
@@ -34,7 +34,7 @@ PROJECT_ROOT = os.path.dirname(ENGINE_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from engine import config
+from engine.core import config
 from engine.classification.models.arcface_bt import BTArcFaceNet, FocalLoss
 
 logging.basicConfig(
@@ -202,7 +202,7 @@ def extract_embeddings(
     if missing_indices:
         logger.info(f"[{domain.upper()}] Embedding {len(missing_indices)} SKUs ({len(keys) - len(missing_indices)} from cache)...")
         try:
-            from engine.resource_loader import _get_shared_models
+            from engine.core.resource_loader import _get_shared_models
             embed_engine, _ = _get_shared_models()
             missing_names = [names[i] for i in missing_indices]
             missing_descs = [descs[i] for i in missing_indices]
@@ -248,7 +248,8 @@ def train_bt_arcface(
     Trains BTArcFaceNet, exports to ONNX, quantizes to INT8, and saves label mapping.
     """
     t_start = time.time()
-    os.makedirs(config.ONNX_DIR, exist_ok=True)
+    arcface_dir = config.get_arcface_dir() if hasattr(config, "get_arcface_dir") else getattr(config, "ARCFACE_DIR", config.ONNX_DIR)
+    os.makedirs(arcface_dir, exist_ok=True)
 
     # 1. Load data
     df = load_catalog_data(domain, from_sample=from_sample, sample_file=sample_file)
@@ -319,7 +320,7 @@ def train_bt_arcface(
     model.eval()
     model.to("cpu")
 
-    fp32_onnx_path = os.path.join(config.ONNX_DIR, f"{domain}_bt_arcface.onnx")
+    fp32_onnx_path = os.path.join(arcface_dir, f"{domain}_bt_arcface.onnx")
     dummy_input = torch.randn(1, 1025, dtype=torch.float32)
 
     logger.info(f"[{domain.upper()}] Exporting evaluation graph to ONNX: {fp32_onnx_path}...")
@@ -341,7 +342,7 @@ def train_bt_arcface(
     logger.info(f"[{domain.upper()}] FP32 ONNX export complete ({fp32_size_mb:.2f} MB).")
 
     # 8. Dynamic INT8 Quantization
-    int8_onnx_path = os.path.join(config.ONNX_DIR, f"{domain}_bt_arcface_int8.onnx")
+    int8_onnx_path = os.path.join(arcface_dir, f"{domain}_bt_arcface_int8.onnx")
     if not no_quantize:
         logger.info(f"[{domain.upper()}] Quantizing model to INT8 via onnxruntime...")
         from onnxruntime.quantization import QuantType, quantize_dynamic
@@ -355,7 +356,7 @@ def train_bt_arcface(
         logger.info(f"[{domain.upper()}] INT8 ONNX quantized successfully ({int8_size_mb:.2f} MB).")
 
     # 9. Serialize Label Mapping and Scaler Parameters
-    labels_json_path = os.path.join(config.ONNX_DIR, f"{domain}_bt_arcface_labels.json")
+    labels_json_path = os.path.join(arcface_dir, f"{domain}_bt_arcface_labels.json")
     labels_meta = {
         "domain": domain,
         "num_classes": num_classes,
@@ -373,7 +374,7 @@ def train_bt_arcface(
     with open(labels_json_path, "w", encoding="utf-8") as f:
         json.dump(labels_meta, f, indent=2, ensure_ascii=False)
 
-    meta_joblib_path = os.path.join(config.ONNX_DIR, f"{domain}_bt_arcface_meta.joblib")
+    meta_joblib_path = os.path.join(arcface_dir, f"{domain}_bt_arcface_meta.joblib")
     joblib.dump(
         {
             "label_encoder": label_encoder,
@@ -387,7 +388,7 @@ def train_bt_arcface(
 
     elapsed = time.time() - t_start
     logger.info(
-        f"[{domain.upper()}] ✓ ArcFace BT pipeline completed in {elapsed:.2f}s! Artifacts:\n"
+        f"[{domain.upper()}] [OK] ArcFace BT pipeline completed in {elapsed:.2f}s! Artifacts:\n"
         f"  - FP32 ONNX: {fp32_onnx_path}\n"
         f"  - INT8 ONNX: {int8_onnx_path}\n"
         f"  - Labels JSON: {labels_json_path}\n"

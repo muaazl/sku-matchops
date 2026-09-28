@@ -1,8 +1,8 @@
 import functools
 import logging
 
-from engine import config
-from engine.db import ensure_db_initialized
+from engine.core import config
+from engine.core.db import ensure_db_initialized
 
 logger = logging.getLogger("matchops.rules_loader")
 

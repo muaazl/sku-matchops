@@ -25,17 +25,19 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_DB_PATH = SCRIPT_DIR / "sku-matchops.db"
-ABSOLUTE_DB_PATH = Path(r"c:\Users\Muaazl\Downloads\sku-matchops\data\sku-matchops.db")
-EXPORTS_DIR = SCRIPT_DIR / "exports"
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
+DATA_DIR = Path(os.getenv("DATA_DIR", str(PROJECT_ROOT / "data")))
+DEFAULT_DB_PATH = DATA_DIR / "sku-matchops.db"
+EXPORTS_DIR = DATA_DIR / "exports"
 
 
 def get_db_path() -> Path:
-    if ABSOLUTE_DB_PATH.exists():
-        return ABSOLUTE_DB_PATH
+    env_db = os.getenv("DB_PATH")
+    if env_db and Path(env_db).exists():
+        return Path(env_db)
     if DEFAULT_DB_PATH.exists():
         return DEFAULT_DB_PATH
-    raise FileNotFoundError(f"Database not found at {ABSOLUTE_DB_PATH} or {DEFAULT_DB_PATH}")
+    raise FileNotFoundError(f"Database not found at {DEFAULT_DB_PATH}")
 
 
 def get_connection(readonly: bool = True) -> sqlite3.Connection:

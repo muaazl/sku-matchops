@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz
 
-from engine import config
+from engine.core import config
 from engine.nlp.text_cleaner import TextPipeline
 from engine.rules_engine import run_rules_engine
 from engine.classification.tagger import tag_all_skus
@@ -66,7 +66,7 @@ def run_sku_audit(
     
     if pipeline is None and task != "classifier":
         try:
-            from engine.resource_loader import get_pipeline
+            from engine.core.resource_loader import get_pipeline
             pipeline = get_pipeline(domain)
         except Exception:
             pipeline = None
@@ -78,11 +78,11 @@ def run_sku_audit(
         ner_engine = classifier.ner_engine
     if ner_engine is None:
         try:
-            from engine.resource_loader import get_ner_engine
+            from engine.core.resource_loader import get_ner_engine
             ner_engine = get_ner_engine(domain)
         except Exception:
             try:
-                from engine.resource_loader import _get_shared_models
+                from engine.core.resource_loader import _get_shared_models
                 _, ner_engine = _get_shared_models()
             except Exception:
                 ner_engine = None
@@ -138,30 +138,6 @@ def run_sku_audit(
     # -------------------------------------------------------------
     # Stage 1.5: Exact Catalog Lookup & AI Bypass Check
     # -------------------------------------------------------------
-    exact_bypass_row = None
-    exact_bypass_reason = ""
-    
-    if hasattr(pipeline, "exact_match_map") and pipeline.exact_match_map:
-        cat_idx = pipeline.exact_match_map.get(clean_input)
-        if cat_idx is not None:
-            exact_bypass_row = pipeline.raw_catalog.iloc[cat_idx]
-            exact_bypass_reason = "Exact Text Match"
-            
-    if exact_bypass_row is None and hasattr(pipeline, "token_sorted_map") and pipeline.token_sorted_map:
-        sorted_input_tokens = " ".join(sorted(str(input_no_weights).split()))
-        cand_indices = pipeline.token_sorted_map.get(sorted_input_tokens)
-        if cand_indices:
-            if isinstance(cand_indices, int):
-                cand_indices = [cand_indices]
-
-            selected_idx, weight_reason = resolve_weight_bypass_candidate(
-                pipeline.raw_catalog, cand_indices, input_w_data
-            )
-
-            exact_bypass_row = pipeline.raw_catalog.iloc[selected_idx]
-            exact_bypass_reason = f"Fuzzy Match (100%){weight_reason}"
-
-    # -------------------------------------------------------------
     # Stage 2: Basic Type Prediction & Candidate Search
     # -------------------------------------------------------------
     encoded = pipeline.embedder.embed_weighted_sku(
@@ -175,7 +151,9 @@ def run_sku_audit(
     bt_prediction = {}
     if pipeline.classifier:
         try:
-            bt_tag, confidence, source, _ = pipeline.classifier.predict_bt(input_vec_dense, price=price)
+            bt_tag, confidence, source, _ = pipeline.classifier.predict_bt(
+                input_vec_dense, price=price, sku_name=sku_name, sku_description=description
+            )
             threshold = config.get_bt_confidence_threshold(source)
             applied = (confidence >= threshold)
             if applied:
@@ -190,6 +168,60 @@ def run_sku_audit(
             }
         except Exception as e:
             bt_prediction = {"error": str(e)}
+
+    # -------------------------------------------------------------
+    # Exact & Early Fuzzy Match Check (with BasicType consistency)
+    # -------------------------------------------------------------
+    exact_bypass_row = None
+    exact_bypass_reason = ""
+    
+    if hasattr(pipeline, "exact_match_map") and pipeline.exact_match_map:
+        cat_indices = pipeline.exact_match_map.get(clean_input)
+        if cat_indices is not None:
+            if isinstance(cat_indices, int):
+                cat_indices = [cat_indices]
+
+            selected_idx = None
+            if bt_filter:
+                conf_bt_norm = bt_filter.strip().lower()
+                bt_matched = [
+                    idx for idx in cat_indices
+                    if str(pipeline.raw_catalog.iloc[idx].get("basictype", pipeline.raw_catalog.iloc[idx].get("BasicType", "")) or "").strip().lower() == conf_bt_norm
+                ]
+                if bt_matched:
+                    selected_idx = bt_matched[0]
+            else:
+                selected_idx = cat_indices[0]
+
+            if selected_idx is not None:
+                exact_bypass_row = pipeline.raw_catalog.iloc[selected_idx]
+                exact_bypass_reason = "Exact Text Match"
+            
+    if exact_bypass_row is None and hasattr(pipeline, "token_sorted_map") and pipeline.token_sorted_map:
+        sorted_input_tokens = " ".join(sorted(str(input_no_weights).split()))
+        cand_indices = pipeline.token_sorted_map.get(sorted_input_tokens)
+        if cand_indices:
+            if isinstance(cand_indices, int):
+                cand_indices = [cand_indices]
+
+            valid_cands = cand_indices
+            if bt_filter:
+                conf_bt_norm = bt_filter.strip().lower()
+                bt_matched = [
+                    idx for idx in cand_indices
+                    if str(pipeline.raw_catalog.iloc[idx].get("basictype", pipeline.raw_catalog.iloc[idx].get("BasicType", "")) or "").strip().lower() == conf_bt_norm
+                ]
+                if bt_matched:
+                    valid_cands = bt_matched
+                else:
+                    valid_cands = []
+
+            if valid_cands:
+                selected_idx, weight_reason = resolve_weight_bypass_candidate(
+                    pipeline.raw_catalog, valid_cands, input_w_data
+                )
+                exact_bypass_row = pipeline.raw_catalog.iloc[selected_idx]
+                exact_bypass_reason = f"Fuzzy Match (100%){weight_reason}"
 
     filtered_cands = pd.DataFrame()
     unfiltered_cands = pd.DataFrame()
@@ -638,11 +670,13 @@ def run_sku_audit(
                     curr_gk = gk_str
                     curr_region = tt_val
 
+                clf_bt_status = str(clf.get("bt_status", ""))
                 audit_data["stage6_escalation"] = {
                     "escalated": True,
                     "escalation_reason": f"Matcher status '{win_status}' is in PIPELINE_ESCALATE_STATUSES",
                     "classifier_bt": bt_tag,
                     "classifier_bt_confidence": float(bt_conf),
+                    "classifier_bt_status": clf_bt_status,
                     "classifier_gk": gk_str,
                     "classifier_gk_confidence": float(gk_conf),
                     "classifier_region": tt_val,
@@ -667,10 +701,12 @@ def run_sku_audit(
     template_details = {}
     if getattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", True):
         try:
-            if win_status not in ["Exact Text Match", "High Confidence"]:
+            esc_clf_status = str(audit_data.get("stage6_escalation", {}).get("classifier_bt_status", "")) if (escalated and pipeline_source == "Classifier") else ""
+            status_to_check = esc_clf_status or win_status
+            if status_to_check not in ["Exact Text Match", "High Confidence", "HIGH", "AUTO"]:
                 if suggest_fn is None:
                     try:
-                        from engine.template_suggest import suggest_tags_from_template
+                        from engine.templates.template_suggest import suggest_tags_from_template
                         suggest_fn = suggest_tags_from_template
                     except Exception:
                         suggest_fn = None
@@ -689,7 +725,10 @@ def run_sku_audit(
                     if s_bt:
                         curr_bt = s_bt
                     if s_gk:
-                        curr_gk = s_gk
+                        existing_gks = [x.strip() for x in str(curr_gk).split(",") if x.strip()]
+                        template_gks = s_gk_list if isinstance(s_gk_list, list) else [x.strip() for x in s_gk.split(",") if x.strip()]
+                        merged_gks = list(dict.fromkeys(existing_gks + template_gks))
+                        curr_gk = ", ".join(merged_gks)
                         
                     template_details = {
                         "matched_template": True,
@@ -706,7 +745,7 @@ def run_sku_audit(
             else:
                 template_details = {
                     "matched_template": False,
-                    "note": "Skipped template enrichment because matcher status was High Confidence / Exact Text Match"
+                    "note": f"Skipped template enrichment because status was {status_to_check}"
                 }
         except Exception as e:
             template_details = {"matched_template": False, "error": str(e)}
@@ -775,14 +814,14 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
     """Executes a deep multi-stage diagnostic audit for classifier-only task."""
     if classifier is None:
         try:
-            from engine.resource_loader import get_classifier
+            from engine.core.resource_loader import get_classifier
             classifier = get_classifier(domain)
         except Exception:
             classifier = None
             
     if embed_engine is None:
         try:
-            from engine.resource_loader import _get_shared_models
+            from engine.core.resource_loader import _get_shared_models
             e_mod, _ = _get_shared_models()
             embed_engine = e_mod
         except Exception:
@@ -793,14 +832,14 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
             ner_engine = classifier.ner_engine
         else:
             try:
-                from engine.resource_loader import get_ner_engine
+                from engine.core.resource_loader import get_ner_engine
                 ner_engine = get_ner_engine(domain)
             except Exception:
                 pass
             
     if vector_store is None:
         try:
-            from engine.resource_loader import _get_vector_store
+            from engine.core.resource_loader import _get_vector_store
             vector_store = _get_vector_store()
         except Exception:
             pass
@@ -832,8 +871,30 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
     bt_conf = 0.0
     bt_source = "zero-shot"
     p_val = float(price) if price is not None else 0.0
-    
-    if classifier._trained and getattr(classifier, "_bt_clf", None) is not None:
+
+    # 1. Deep Metric Learning ArcFace Model Path
+    if getattr(classifier, "bt_model", "") == "arcface" and getattr(classifier, "_arcface_session", None) is not None:
+        scaled_p = classifier._preprocess_arcface_prices([p_val])
+        vec_with_price = np.hstack([vec_2d, scaled_p]).astype(np.float32)
+        logits = classifier._arcface_session.run(None, {classifier._arcface_input_name: vec_with_price})[0]
+        exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+        proba = (exp_logits / np.sum(exp_logits, axis=-1, keepdims=True))[0]
+        top_indices = np.argsort(proba)[::-1][:10]
+        for idx in top_indices:
+            bt_candidates.append({
+                "bt": str(classifier._arcface_classes[idx]),
+                "score": float(proba[idx]),
+                "source": "trained"
+            })
+        best_idx = int(np.argmax(proba))
+        best_prob = float(proba[best_idx])
+        if best_prob >= 0.40:
+            predicted_bt = str(classifier._arcface_classes[best_idx])
+            bt_conf = best_prob
+            bt_source = "trained"
+
+    # 2. Logistic Regression Model Path
+    elif getattr(classifier, "bt_model", "") == "logreg" and classifier._trained and getattr(classifier, "_bt_clf", None) is not None:
         scaled_p = classifier._preprocess_prices([p_val], is_training=False)
         vec_with_price = np.hstack([vec_2d, scaled_p])
         proba = classifier._bt_clf.predict_proba(vec_with_price)[0]
@@ -851,7 +912,19 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
             bt_conf = best_prob
             bt_source = "trained"
 
-    if not predicted_bt and classifier.bt_labels:
+    # 3. Cold-Start Multi-Tier Fallback
+    cold_router = getattr(classifier, "cold_start_router", None)
+    if not predicted_bt and cold_router is not None:
+        r_tag, r_conf, r_src, r_gks = cold_router.route_single(
+            vec_2d[0], sku_name=sku_name, sku_description=description, price=price
+        )
+        if r_tag and r_conf >= config.BT_ZERO_SHOT_CONFIDENCE_THRESHOLD:
+            predicted_bt = r_tag
+            bt_conf = r_conf
+            bt_source = r_src
+
+    # 4. Zero-shot static fallback
+    if not predicted_bt and getattr(classifier, "bt_labels", None):
         scores_pure = (vec_2d @ classifier.bt_embs_pure.T)[0]
         scores_desc = (vec_2d @ classifier.bt_embs_desc.T)[0]
         scores = np.maximum(scores_pure, scores_desc)
@@ -1235,8 +1308,8 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
 
     if getattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", True):
         try:
-            if bt_status not in ["High Confidence", "HIGH", "Exact Text Match"]:
-                from engine.template_suggest import suggest_tags_from_template
+            if bt_status not in ["High Confidence", "HIGH", "Exact Text Match", "AUTO"]:
+                from engine.templates.template_suggest import suggest_tags_from_template
                 sug_res = suggest_tags_from_template(sku_name, domain=domain, current_bt=curr_bt)
                 if sug_res.get("matched"):
                     template_applied = True
@@ -1250,7 +1323,8 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
                         bt_status = "AUTO"
                         bt_source = "template"
                     if s_gk:
-                        curr_gk_list = s_gk_list if isinstance(s_gk_list, list) else [x.strip() for x in s_gk.split(",") if x.strip()]
+                        template_gks = s_gk_list if isinstance(s_gk_list, list) else [x.strip() for x in s_gk.split(",") if x.strip()]
+                        curr_gk_list = list(dict.fromkeys(curr_gk_list + template_gks))
                         gk_conf = max(gk_conf, 0.95)
                         gk_status = "AUTO"
 

@@ -1,6 +1,6 @@
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
-from engine import config
+from engine.core import config
 
 
 class SKUItem(BaseModel):

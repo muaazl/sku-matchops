@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from rapidfuzz import fuzz
 
-from engine import config
+from engine.core import config
 from engine.nlp.text_cleaner import TextPipeline
 from engine.utils.flavor_utils import build_food_flavors_info
 
@@ -166,7 +166,7 @@ class LogicGates:
 
     def apply_food_logic_gates(
         self, input_clean: str, input_entities: Dict[str, Set[str]], match_row: Dict, raw_ai_score: float, input_price: float,
-        input_description: str = ""
+        input_description: str = "", predicted_bt: str = ""
     ) -> Tuple[float, str, str]:
         """Logic gates specific to the food domain."""
         score = float(raw_ai_score)
@@ -211,6 +211,17 @@ class LogicGates:
             score -= 2.0
             reasons.append(f"Flavor Mismatch: input has {sorted(input_flavors_resolved)}, catalog unspecified")
 
+        # 3. BasicType Alignment & Mismatch Handling
+        if predicted_bt:
+            cand_bt = str(match_row.get("basictype", match_row.get("BasicType", "")) or "").strip().lower()
+            if cand_bt:
+                if cand_bt == predicted_bt.strip().lower():
+                    score += 2.0
+                    reasons.append(f"BasicType Match ({predicted_bt})")
+                else:
+                    is_fuzzy_bypass = False
+                    score -= 3.0
+                    reasons.append(f"BasicType Mismatch: catalog has '{cand_bt}' vs predicted '{predicted_bt}'")
 
         # Determine status
         status = "High Confidence" if score >= config.CONFIDENCE_THRESHOLD_HIGH else ("Medium Confidence" if score > 0 else "Low / Rejected")
@@ -246,7 +257,10 @@ class LogicGates:
     ) -> Tuple[float, str, str]:
         """Main entry point to apply logic gates based on domain."""
         if domain == config.DOMAIN_FOOD:
-            return self.apply_food_logic_gates(input_clean, input_entities, match_row, raw_ai_score, input_price, input_description)
+            return self.apply_food_logic_gates(
+                input_clean, input_entities, match_row, raw_ai_score, input_price,
+                input_description, predicted_bt=predicted_bt
+            )
 
         # --- Market Logic ---
         score = float(raw_ai_score)

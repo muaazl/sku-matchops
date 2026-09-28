@@ -10,13 +10,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("export_onnx")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ENGINE_DIR = os.path.dirname(SCRIPT_DIR)
-PROJECT_ROOT = os.path.dirname(ENGINE_DIR)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-ONNX_DIR = os.path.join(ENGINE_DIR, "onnx_models")
-TMP_DIR = os.path.join(ENGINE_DIR, "onnx_tmp")
+from engine.core import config
+ONNX_DIR = config.ONNX_DIR
+TMP_DIR = os.path.join(PROJECT_ROOT, "data", "cache", "onnx_tmp")
 
 def ensure_dirs():
     os.makedirs(ONNX_DIR, exist_ok=True)

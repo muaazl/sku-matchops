@@ -1,6 +1,6 @@
-# SKU MatchOps — Intelligent Domain-Aware SKU Matching & Classification Platform
+# SKU MatchOps
 
-SKU MatchOps is a high-throughput, domain-aware catalog reconciliation and entity extraction platform. It pairs hybrid multi-stage retrieval (dense/sparse vector search + typo-tolerant lexical search) with cross-encoder re-ranking, zero-shot entity recognition (NER), and a deterministic business rules engine into a microservice-oriented architecture.
+SKU MatchOps is an Automated Tagging Solution for PickMe Food and Market Products. Built on a microservice architecture combining hybrid vector search, cross-encoder re-ranking, zero-shot NER, and a deterministic rules engine.
 
 ---
 
@@ -34,7 +34,7 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 │  • GLiNER Zero-Shot Named Entity Rec │
 │  • INT8 Dynamic Quantization Runtime │
 └──────────────────┬───────────────────┘
-                   │ (HTTP:6333 / gRPC:6334)
+                   │ (HTTP:6333)
                    ▼
 ┌──────────────────────────────────────┐
 │        Qdrant Vector Database        │
@@ -55,14 +55,12 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 
 ---
 
+---
+
 ## Quickstart with Docker Compose
 
 The entire 5-service stack boots automatically with 1 command, including automatic model downloading, ONNX export, and INT8 dynamic quantization.
 
-> [!IMPORTANT]
-> **First-Run Startup Notice (Model Downloads)**:
-> On the very first run, the system automatically downloads and sets up the pre-trained NLP transformer models (**BGE-M3**, **BGE-Reranker-v2-M3**, and **GLiNER Medium**, ~2.5 GB total) and applies INT8 dynamic quantization for CPU acceleration.
-> Depending on your internet bandwidth and CPU, **this initial startup and vector sync will take a few minutes**. Subsequent runs use the cached INT8 ONNX models and initialize almost instantly.
 
 ### 1. Clone and Configure
 ```bash
@@ -79,23 +77,23 @@ docker compose up -d
 ```
 
 > [!NOTE]
-> **Development vs. hardened networking.** `docker compose up` also loads
-> `docker-compose.override.yml`, which publishes the internal service ports
-> (Qdrant `6333/6334`, Meilisearch `7700`, engine `8001`) to the host for local
-> debugging. For an exposure-hardened deployment, skip the override so that only
-> the backend (`8000`) and frontend (`5173`) are reachable from the host:
+> **Development vs. hardened networking.** `docker compose up` also loads `docker-compose.override.yml`, which publishes internal service ports (Qdrant `6333/6334`, Meilisearch `7700`, engine `8001`) to the host for local debugging. For a hardened deployment, skip the override so only the backend (`8000`) and frontend (`5173`) are exposed:
+>
 > ```bash
 > docker compose -f docker-compose.yml up -d
 > ```
-> The services still reach each other over the private compose network; use
-> `docker compose exec <service> …` to inspect the internal ones.
+>
+> Services still communicate over the private compose network; use `docker compose exec <service> …` to inspect internal ones.
 
 ### 3. Ingest Demo Sample Data (Instant Offline Mode)
-To seed the catalog, train classifiers, and vectorize embeddings immediately from the pre-packaged sample dataset:
+To seed the catalog, train classifiers, and vectorize embeddings from the pre-packaged sample dataset:
 ```bash
-docker compose exec engine python -m engine.scripts.sync_catalog --sample
+docker compose exec engine python scripts/catalog/sync.py --sample
 ```
-*(Optional: Run `docker compose restart backend` to immediately refresh backend memory caches with the seeded catalog).*
+*(Optional: Run `docker compose restart backend` to refresh backend memory caches with the seeded catalog.)*
+
+> [!IMPORTANT]
+> **First-Run Model Downloads**: On the very first run, the system automatically downloads **BGE-M3**, **BGE-Reranker-v2-M3**, and **GLiNER Medium** (~2.5 GB total) and applies INT8 dynamic quantization. This initial startup will take a few minutes depending on bandwidth and CPU. Subsequent runs use cached models and initialize almost instantly.
 
 ### 4. Access Services
 - **Web Dashboard**: [http://localhost:5173](http://localhost:5173)
@@ -113,14 +111,14 @@ SKU MatchOps supports two flexible modes of catalog ingestion:
 The repository includes a ready-to-run demo dataset at [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) containing 500 Food dishes, 500 Market retail products, and taxonomy dictionaries.
 To reset and load this sample data into the system:
 ```bash
-docker compose exec engine python -m engine.scripts.sync_catalog --sample
+docker compose exec engine python scripts/catalog/sync.py --sample
 ```
 
 ### Option B: Live Google Sheets Integration
 You can connect your own Google Sheet catalog by following these steps:
 
 1. **Create the Google Sheet**:
-   - Upload [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) to Google Drive and open it as a Google Sheet (or format your sheet tabs using the schema below).
+   - Upload [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) to Google Drive and open it as a Google Sheet.
 2. **Set Sharing**:
    - Set Sheet sharing permissions to **"Anyone with the link can view"**.
 3. **Configure Environment**:
@@ -131,9 +129,9 @@ You can connect your own Google Sheet catalog by following these steps:
 4. **Trigger Sync**:
    - Run the catalog sync command to fetch from Google Sheets, index into Meilisearch, vectorize embeddings into Qdrant, and train classifiers:
      ```bash
-     docker compose exec engine python -m engine.scripts.sync_catalog
+     docker compose exec engine python scripts/catalog/sync.py
      ```
-     *(Or locally outside Docker: `python -m engine.scripts.sync_catalog`)*
+     *(Or locally outside Docker: `python scripts/catalog/sync.py`)*
 
 ### Google Sheet Tab Schema
 
@@ -158,6 +156,7 @@ If you prefer running the Python and Node services directly on your host machine
 
 ### 1. Prerequisites
 - Python 3.10+ (Python 3.11 recommended)
+- `uv` (recommended for ultra-fast pip installs) or `pip`
 - Node.js 18+ and `pnpm` (install via `npm install -g pnpm`)
 - Running instances of **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these two database containers using Docker:
   ```bash
@@ -167,28 +166,28 @@ If you prefer running the Python and Node services directly on your host machine
 ### 2. Python Environment Setup
 ```bash
 # Create and activate virtual environment (using Python 3.11)
-py -3.11 -m venv venv        # On Linux: python3.11 -m venv venv
-.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
+py -3.11 -m venv venv
+.\venv\Scripts\Activate.ps1
 
 # Install CPU PyTorch first (fast & lightweight)
-pip install torch --index-url https://download.pytorch.org/whl/cpu
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# Install dependencies
-pip install -r backend/requirements.txt
-pip install -r engine/requirements.txt
+# Install service dependencies
+uv pip install -r backend/requirements.txt
+uv pip install -r engine/requirements.txt
 
 # Ingest sample catalog data & prepare ONNX models
-python -m engine.scripts.sync_catalog --sample
+python scripts/catalog/sync.py --sample
 ```
 
 ### 3. Run Microservices
 ```bash
 # Terminal 1 — Start ML Inference Engine
-.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
+.\venv\Scripts\Activate.ps1
 uvicorn engine.server:app --host 0.0.0.0 --port 8001
 
 # Terminal 2 — Start Backend API Gateway
-.\venv\Scripts\Activate.ps1  # On Linux: source venv/bin/activate
+.\venv\Scripts\Activate.ps1
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 # Terminal 3 — Start Frontend Development Server
@@ -202,15 +201,20 @@ pnpm start
 
 ## Environment Variables
 
-| Variable | Default | Description |
+| Variable | Required | Description |
 | :--- | :--- | :--- |
-| `ENGINE_URL` | `http://localhost:8001` | URL of the ML inference engine microservice. |
-| `BACKEND_INTERNAL_URL` | `http://localhost:8000` | Internal backend gateway URL. |
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant vector database URL. |
-| `MEILI_URL` | `http://localhost:7700` | Meilisearch server URL. |
-| `MEILI_MASTER_KEY` | `meilimasterkey` | Meilisearch API master key. |
-| `USE_INT8_MODELS` | `true` | Enables INT8 dynamic quantization for CPU speedup. |
-| `GOOGLE_SHEET_ID` | — | Google Sheet ID containing catalog and taxonomy tabs. |
+| `GOOGLE_SHEET_ID` | Yes (live mode) | Google Sheet ID containing catalog and taxonomy tabs. |
+| `ENGINE_URL` | Yes | URL of the ML inference engine microservice. |
+| `BACKEND_INTERNAL_URL` | Yes | Internal backend gateway URL. |
+| `QDRANT_URL` | Yes | Qdrant vector database URL. |
+| `QDRANT_API_KEY` | No | Qdrant API key (for secured/cloud deployments). |
+| `MEILI_URL` | Yes | Meilisearch server URL. |
+| `MEILI_MASTER_KEY` | Yes | Meilisearch API master key. |
+| `USE_INT8_MODELS` | No | Enables INT8 dynamic quantization for CPU speedup. Defaults to `true`. |
+| `FOOD_BT_MODEL` | No | BasicType classifier for Food (`arcface` or `logreg`). Defaults to `arcface`. |
+| `MARKET_BT_MODEL` | No | BasicType classifier for Market (`arcface` or `logreg`). Defaults to `arcface`. |
+| `APPS_SCRIPT_URL` | No | Google Apps Script webhook URL for push-based catalog sync. |
+| `ENABLE_TUNNEL` | No | Set to `true` to auto-launch a Cloudflare quick tunnel on startup. |
 
 ---
 

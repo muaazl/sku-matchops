@@ -29,7 +29,7 @@ from qdrant_client.http.models import (
     VectorParams,
 )
 
-from engine import config
+from engine.core import config
 
 logger = logging.getLogger("matchops.vector_store")
 

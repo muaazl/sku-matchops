@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import joblib
 
-from engine import config
+from engine.core import config
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.classification.classifier import ZeroShotClassifier
 
@@ -134,10 +134,10 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         self.assertTrue(len(hashes["market_training_state"]) > 0)
         self.assertTrue(clf._trained)
 
-    @patch("engine.scripts.sync_catalog.DataIngestion.load_catalog")
-    @patch("engine.scripts.sync_catalog.DataIngestion.load_classifier_dictionaries")
+    @patch("scripts.catalog.sync.DataIngestion.load_catalog")
+    @patch("scripts.catalog.sync.DataIngestion.load_classifier_dictionaries")
     def test_rebuild_disk_caches_safe_token_count(self, mock_load_dicts, mock_load_cat):
-        from engine.scripts.sync_catalog import sync_cache
+        from scripts.catalog.sync import sync_cache
 
         # Test catalog with None/float/missing clean_text
         sample_df = pd.DataFrame({

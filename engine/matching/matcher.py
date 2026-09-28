@@ -8,7 +8,7 @@ import pandas as pd
 from rapidfuzz import fuzz
 from tqdm import tqdm
 
-from engine import config
+from engine.core import config
 from engine.nlp.text_cleaner import TextPipeline
 from engine.utils.flavor_utils import build_food_flavors_info, triage_input_flavors
 from engine.utils.weight_utils import resolve_weight_bypass_candidate
@@ -97,8 +97,10 @@ class SKUMatcher:
                 clean_txt = TextPipeline.normalize_final(TextPipeline.standardize_units(str(row.get("Name", ""))))
             no_weights = str(row.get("clean_no_weights") or TextPipeline.strip_weights(clean_txt)).strip()
 
-            if clean_txt and clean_txt != "None" and clean_txt not in self.exact_match_map:
-                self.exact_match_map[clean_txt] = i
+            if clean_txt and clean_txt != "None":
+                if clean_txt not in self.exact_match_map:
+                    self.exact_match_map[clean_txt] = []
+                self.exact_match_map[clean_txt].append(i)
 
             sorted_tokens = " ".join(sorted(no_weights.split())).strip()
             if sorted_tokens and sorted_tokens != "None":
@@ -152,9 +154,14 @@ class SKUMatcher:
         logger.info(f"[MATCH] Pre-processing {len(input_df)} input SKUs...")
 
         raw_names, clean_inputs, prices, input_no_weights_list, input_w_data_list = [], [], [], [], []
+        descriptions, categories = [], []
         for _, row in input_df.iterrows():
             name = str(row.get("Name", row.iloc[0]))
             raw_names.append(name)
+            desc = str(row.get("Description", row.get("description", "")))
+            cat = str(row.get("Category", row.get("category", "")))
+            descriptions.append(desc)
+            categories.append(cat)
 
             clean_input = TextPipeline.normalize_final(TextPipeline.standardize_units(name))
             clean_inputs.append(clean_input)
@@ -168,7 +175,29 @@ class SKUMatcher:
             except (ValueError, TypeError):
                 prices.append(0.0)
 
-        # Step 1: Exact & Fuzzy Matching (AI Bypass)
+        # Batch encode input SKUs for retrieval & ArcFace BT prediction
+        encoded = self.embedder.embed_weighted_sku(
+            clean_inputs, descriptions, categories,
+            weights=config.MATCHER_WEIGHTS
+        )
+        input_dense_embs = encoded["dense"]
+        input_sparse_embs = encoded["sparse"]
+
+        # Batch predict BT upfront using ArcFace
+        bt_filters = [None] * len(raw_names)
+        if self.classifier:
+            bt_preds = self.classifier.batch_predict_bt(
+                np.array(input_dense_embs), prices,
+                sku_names=raw_names, sku_descriptions=descriptions
+            )
+            for idx, p_res in enumerate(bt_preds):
+                if p_res:
+                    bt_tag, conf, src, _ = p_res
+                    threshold = config.get_bt_confidence_threshold(src)
+                    if conf >= threshold:
+                        bt_filters[idx] = bt_tag
+
+        # Step 1: Exact & Fuzzy Matching (AI Bypass with BasicType consistency check)
         ai_indices = []
         bypass_results: List[Optional[Tuple]] = [None] * len(raw_names)
         logger.info("[MATCH] [Step 1] Running AI bypass matching...")
@@ -181,11 +210,34 @@ class SKUMatcher:
                 ai_indices.append(i)
                 continue
 
+            conf_bt = bt_filters[i]
+
             # Exact text match lookup
-            cat_idx = self.exact_match_map.get(clean_input)
-            if cat_idx is not None:
-                bypass_results[i] = (self.raw_catalog.iloc[cat_idx], 1.0, "High Confidence", "Exact Text Match")
-                continue
+            cat_indices = self.exact_match_map.get(clean_input)
+            if cat_indices is not None:
+                if isinstance(cat_indices, int):
+                    cat_indices = [cat_indices]
+
+                selected_idx = None
+                if conf_bt:
+                    conf_bt_norm = conf_bt.strip().lower()
+                    bt_matched = [
+                        idx for idx in cat_indices
+                        if str(self.raw_catalog.iloc[idx].get("basictype", self.raw_catalog.iloc[idx].get("BasicType", "")) or "").strip().lower() == conf_bt_norm
+                    ]
+                    if bt_matched:
+                        selected_idx = bt_matched[0]
+                    else:
+                        selected_idx = None
+                else:
+                    selected_idx = cat_indices[0]
+
+                if selected_idx is not None:
+                    bypass_results[i] = (self.raw_catalog.iloc[selected_idx], 1.0, "High Confidence", "Exact Text Match")
+                    continue
+                else:
+                    ai_indices.append(i)
+                    continue
 
             # Early fuzzy search on weight-stripped text (O(1) Hash Map Optimization)
             sorted_input_tokens = " ".join(sorted(str(input_no_weights).split()))
@@ -195,42 +247,38 @@ class SKUMatcher:
                 if isinstance(cand_indices, int):
                     cand_indices = [cand_indices]
 
-                combined_score = 1.0
-                selected_idx, weight_reason = resolve_weight_bypass_candidate(
-                    self.raw_catalog, cand_indices, input_w_data
-                )
+                valid_cands = cand_indices
+                if conf_bt:
+                    conf_bt_norm = conf_bt.strip().lower()
+                    bt_matched = [
+                        idx for idx in cand_indices
+                        if str(self.raw_catalog.iloc[idx].get("basictype", self.raw_catalog.iloc[idx].get("BasicType", "")) or "").strip().lower() == conf_bt_norm
+                    ]
+                    if bt_matched:
+                        valid_cands = bt_matched
+                    else:
+                        valid_cands = []
 
-                best_reason = f"Fuzzy Match (100%){weight_reason}"
-                bypass_results[i] = (self.raw_catalog.iloc[selected_idx], combined_score, "High Confidence", best_reason)
+                if valid_cands:
+                    combined_score = 1.0
+                    selected_idx, weight_reason = resolve_weight_bypass_candidate(
+                        self.raw_catalog, valid_cands, input_w_data
+                    )
+                    best_reason = f"Fuzzy Match (100%){weight_reason}"
+                    bypass_results[i] = (self.raw_catalog.iloc[selected_idx], combined_score, "High Confidence", best_reason)
+                else:
+                    ai_indices.append(i)
             else:
                 ai_indices.append(i)
 
         if progress_callback:
             progress_callback(10.0)
 
-        # Step 2: Batch AI Operations (Retrieval + NER)
-        ai_entities, input_dense_embs, input_sparse_embs = {}, [None] * len(raw_names), [None] * len(raw_names)
-        if ai_indices:
-            logger.info(f"[MATCH] [Step 2] Batch-encoding {len(ai_indices)} SKUs for retrieval...")
-            ai_clean_inputs = [clean_inputs[i] for i in ai_indices]
-            ai_descriptions = [str(input_df.iloc[i].get("Description", input_df.iloc[i].get("description", ""))) for i in ai_indices]
-            ai_categories = [str(input_df.iloc[i].get("Category", input_df.iloc[i].get("category", ""))) for i in ai_indices]
-            encoded = self.embedder.embed_weighted_sku(
-                ai_clean_inputs, ai_descriptions, ai_categories,
-                weights=config.MATCHER_WEIGHTS
-            )
-            for list_idx, original_idx in enumerate(ai_indices):
-                input_dense_embs[original_idx] = encoded["dense"][list_idx]
-                input_sparse_embs[original_idx] = encoded["sparse"][list_idx]
-
-            logger.info(f"[MATCH] [Step 3] Running batch NER for {len(ai_indices)} SKUs...")
-
-        # Batch NER for all input SKUs (including bypass matches and taking description/category into account)
+        # Step 2: Batch NER
+        ai_entities = {}
         all_ner_texts = []
         for i in range(len(raw_names)):
-            i_desc = str(input_df.iloc[i].get("Description", input_df.iloc[i].get("description", "")))
-            i_cat = str(input_df.iloc[i].get("Category", input_df.iloc[i].get("category", "")))
-            full_txt = TextPipeline.build_ner_input(raw_names[i], i_desc, i_cat)
+            full_txt = TextPipeline.build_ner_input(raw_names[i], descriptions[i], categories[i])
             all_ner_texts.append(TextPipeline.prep_for_ner(full_txt))
 
         if self.ner and all_ner_texts:
@@ -246,19 +294,6 @@ class SKUMatcher:
 
         # Step 3: Final Matching Loop (Unrolled for Batching)
         logger.info(f"[MATCH] [Step 4] Finalizing matches for {len(raw_names)} items...")
-        
-        # 3A. Batch Predict BT for missing items
-        bt_filters = [None] * len(raw_names)
-        if self.classifier and ai_indices:
-            ai_dense_vecs = np.array([input_dense_embs[i] for i in ai_indices])
-            ai_prices = [prices[i] for i in ai_indices]
-            bt_preds = self.classifier.batch_predict_bt(ai_dense_vecs, ai_prices)
-            for list_idx, ai_idx in enumerate(ai_indices):
-                if bt_preds[list_idx]:
-                    bt_tag, confidence, source, _ = bt_preds[list_idx]
-                    threshold = config.get_bt_confidence_threshold(source)
-                    if confidence >= threshold:
-                        bt_filters[ai_idx] = bt_tag
 
         # 3B. Batch Qdrant Queries
         search_dense = []

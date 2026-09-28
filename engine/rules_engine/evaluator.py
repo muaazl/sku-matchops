@@ -4,7 +4,7 @@ import os
 import re
 from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
-from engine import config
+from engine.core import config
 from engine.utils.flavor_utils import build_food_flavors_info
 
 logger = logging.getLogger("matchops.rules_evaluator")
@@ -124,7 +124,7 @@ def _load_flavor_data():
             
     if brands_df.empty:
         try:
-            from engine.db import ensure_db_initialized
+            from engine.core.db import ensure_db_initialized
             conn = ensure_db_initialized()
             brands_df = pd.read_sql_query(
                 "SELECT name AS 'Flavor Name', aliases AS Aliases, is_weak AS Is_Weak, "
