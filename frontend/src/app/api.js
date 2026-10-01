@@ -82,7 +82,10 @@ api.interceptors.response.use(
 );
 
 // Jobs
-export const getJobs = async (params) => (await api.get('/jobs', { params })).data;
+export const getJobs = async (params) => {
+  const resp = await api.get('/jobs', { params });
+  return { data: resp.data, total: parseInt(resp.headers['x-total-count'] || resp.data.length, 10) };
+};
 export const getJob = async (id) => (await api.get(`/jobs/${id}`)).data;
 export const getDashboardStats = async (params) => (await api.get('/jobs/dashboard-stats', { params })).data;
 export const getTagStats = async (params) => (await api.get('/jobs/tag-stats', { params })).data;
@@ -129,7 +132,10 @@ export const buildCatalogCache = async () => (await api.post('/catalog/build-cac
 export const checkCatalogSync = async (params) => (await api.get('/catalog/check-sync', { params })).data;
 
 // History / Processed SKUs
-export const getProcessedSkus = async (params) => (await api.get('/processed-skus', { params })).data;
+export const getProcessedSkus = async (params) => {
+  const resp = await api.get('/processed-skus', { params });
+  return { data: resp.data, total: parseInt(resp.headers['x-total-count'] || resp.data.length, 10) };
+};
 
 // API Requests
 export const getApiRequests = async (params) => (await api.get('/api-requests', { params })).data;

@@ -221,8 +221,12 @@ class MarketStrategy(DomainStrategy):
 
     @staticmethod
     def apply_post_search_filters(top_candidates: list, allowed_gks_lower: set) -> list:
+        import engine.core.config as config
         if allowed_gks_lower:
-            return [c for c in top_candidates if c["tag"].lower().strip() in allowed_gks_lower or c.get("source") == "synthetic"]
+            if getattr(config, "ALLOW_UNREGISTERED_TEMPLATE_KEYWORDS", True):
+                return [c for c in top_candidates if c["tag"].lower().strip() in allowed_gks_lower or c.get("source") == "synthetic"]
+            else:
+                return [c for c in top_candidates if c["tag"].lower().strip() in allowed_gks_lower]
         return top_candidates
 
     @staticmethod
@@ -486,10 +490,7 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
     third_tag_results = [("", 0.0, "")] * n
     for i in range(n):
         tag, conf, source = raw_third_tag_preds[i]
-        if source != "override" and conf < REVIEW_THRESHOLD:
-            third_tag_results[i] = ("", conf, source)
-        else:
-            third_tag_results[i] = (tag, conf, source)
+        third_tag_results[i] = (tag, conf, source)
 
     # 4. Batch predict GK
     trained_gk_preds = classifier.batch_predict_gk(dense_vecs, sku_prices)

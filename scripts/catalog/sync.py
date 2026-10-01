@@ -103,6 +103,17 @@ def wipe_local_cache_files():
                 except Exception as e:
                     logger.warning(f"Could not remove cache file {item_path}: {e}")
 
+def wipe_domain_cache_files(domain: str):
+    """Purges all local disk cache files for a specific domain."""
+    logger.info(f"[{domain.upper()}] Purging local disk cache files...")
+    if os.path.exists(config.CACHE_DIR):
+        for item in os.listdir(config.CACHE_DIR):
+            if item.startswith(f"{domain}_") and os.path.isfile(os.path.join(config.CACHE_DIR, item)):
+                try:
+                    os.remove(os.path.join(config.CACHE_DIR, item))
+                except Exception as e:
+                    logger.warning(f"Could not remove cache file {item}: {e}")
+
 
 # --- Target 1: --db -----------------------------------------------------------------
 
@@ -319,6 +330,9 @@ def run(
 
             if cache_mode:
                 logger.info(f"[{domain.upper()}] --cache ({cache_mode})...")
+                if cache_mode == "rebuild":
+                    wipe_domain_cache_files(domain)
+                    DataIngestion.clear_mem_cache(domain)
                 try:
                     sync_cache(domain, sheet_id, cache_mode)
                 except Exception as e:
@@ -365,6 +379,8 @@ def main():
     parser.add_argument("--qdrant", choices=["sync", "rebuild"], default=None,
                          help="Qdrant vectors + classifier training. sync=incremental (reconciled against "
                               "Qdrant's actual contents), rebuild=wipe collections + retrain from scratch.")
+    parser.add_argument("--rebuild", action="store_true",
+                         help="Shortcut to run --db rebuild --cache rebuild --qdrant rebuild all at once.")
     parser.add_argument("--domain", type=str, default="all", choices=["all", "market", "food"],
                          help="Target domain to process. Default: 'all'.")
     parser.add_argument("--sample", dest="from_sample", action="store_true",
@@ -377,7 +393,7 @@ def main():
                          help="Don't delete temporary staged CSV files after sync finishes.")
     args = parser.parse_args()
 
-    if args.from_sample:
+    if args.from_sample or args.rebuild:
         db_mode = cache_mode = qdrant_mode = "rebuild"
     else:
         # No target flags at all -> sync everything (safe default).
