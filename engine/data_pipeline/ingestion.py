@@ -330,7 +330,8 @@ class DataIngestion:
                 cat_count = 0
                 brand_count = 0
                 
-            if not force_fetch and cat_count > 0 and brand_count > 0:
+            has_synced = os.path.exists(os.path.join(config.CACHE_DIR, f"{domain}_source_hashes.json"))
+            if not force_fetch and (cat_count > 0 or brand_count > 0 or has_synced):
                 try:
                     # Query catalog items
                     cat_df = pd.read_sql_query("SELECT * FROM catalog_items WHERE domain = ?", conn, params=[domain])
@@ -835,6 +836,13 @@ class DataIngestion:
             raise e
         finally:
             conn.close()
+
+        # Delete old Feather caches so we read fresh from SQLite
+        cat_feather = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
+        brands_feather = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
+        for fpath in [cat_feather, brands_feather]:
+            if os.path.exists(fpath):
+                os.remove(fpath)
 
         # Re-query DB to get clean standardized DataFrames (populates in-memory cache)
         cat_df, brands_df = DataIngestion.load_catalog(sheet_id, domain, force_fetch=False)

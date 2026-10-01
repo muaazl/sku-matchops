@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from engine.core import config as engine_config
 from backend.app.core.db import get_db_connection
 from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
+from fastapi import Response
 from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
 from backend.app.services.engine_client import cancel_engine_job
 from backend.app.services.worker import enqueue_job
@@ -62,9 +63,12 @@ def _enrich_job_dict(job_dict: dict) -> dict:
 
 @router.get("/jobs", response_model=List[JobResponse])
 def get_jobs(
+    response: Response,
     status: Optional[str] = None,
     type: Optional[str] = None,
     created_by: Optional[str] = None,
+    domain: Optional[str] = None,
+    sheet_name: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     page: int = 1,
@@ -76,24 +80,41 @@ def get_jobs(
     db: sqlite3.Connection = Depends(get_db_connection)
 ):
     query = "SELECT * FROM jobs WHERE 1=1"
+    count_query = "SELECT COUNT(*) FROM jobs WHERE 1=1"
     params = []
     
     if status:
         query += " AND status = ?"
+        count_query += " AND status = ?"
         params.append(status)
     if type:
         query += " AND type = ?"
+        count_query += " AND type = ?"
         params.append(type)
     if created_by:
         query += " AND created_by = ?"
+        count_query += " AND created_by = ?"
         params.append(created_by)
     if date_from:
         query += " AND started_at >= ?"
+        count_query += " AND started_at >= ?"
         params.append(date_from)
     if date_to:
         query += " AND started_at <= ?"
+        count_query += " AND started_at <= ?"
         params.append(date_to)
+    if domain:
+        query += " AND domain = ?"
+        count_query += " AND domain = ?"
+        params.append(domain)
+    if sheet_name:
+        query += " AND (sheet_name LIKE ? OR target_sheet LIKE ?)"
+        count_query += " AND (sheet_name LIKE ? OR target_sheet LIKE ?)"
+        params.extend([f"%{sheet_name}%", f"%{sheet_name}%"])
         
+    total_count = db.execute(count_query, params).fetchone()[0]
+    response.headers["X-Total-Count"] = str(total_count)
+
     query += " ORDER BY started_at DESC"
     if limit is not None and limit > 0:
         query += " LIMIT ? OFFSET ?"

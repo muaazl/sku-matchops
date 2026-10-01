@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -87,10 +87,20 @@ export default function SkuResults() {
   }, [selectedJob]);
 
   // Fetch Jobs
-  const { data: serverJobs = [], isLoading: isLoadingJobs } = useQuery({
-    queryKey: ['jobs_processed'],
-    queryFn: () => getJobs({}),
+  const { data: jobsResponse = { data: [], total: 0 }, isLoading: isLoadingJobs } = useQuery({
+    queryKey: ['jobs_processed', page, rowsPerPage, domainFilter, sheetFilter, taskFilter],
+    queryFn: () => getJobs({
+      page: page + 1,
+      limit: rowsPerPage,
+      status: 'completed',
+      ...(domainFilter !== 'all' ? { domain: domainFilter } : {}),
+      ...(taskFilter !== 'all' ? { type: taskFilter } : {}),
+      ...(sheetFilter.trim() ? { sheet_name: sheetFilter.trim() } : {}),
+    }),
   });
+
+  const serverJobs = jobsResponse.data;
+  const totalJobs = jobsResponse.total;
 
   useEffect(() => {
     if (navigatedJobId && serverJobs && serverJobs.length > 0) {
@@ -107,101 +117,42 @@ export default function SkuResults() {
     }
   }, [navigatedJobId, serverJobs, navigate, location.pathname]);
 
-  const jobsList = useMemo(() => {
-    let sorted = [...serverJobs].sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
-    // Only show completed jobs in the results section
-    sorted = sorted.filter((j) => j.status === 'completed');
-    if (domainFilter !== 'all') {
-      sorted = sorted.filter((j) => j.domain === domainFilter);
-    }
-    if (sheetFilter.trim()) {
-      sorted = sorted.filter((j) => {
-        const name = j.target_sheet || j.sheet_name || '';
-        return name.toLowerCase().includes(sheetFilter.toLowerCase());
-      });
-    }
-    if (taskFilter !== 'all') {
-      sorted = sorted.filter((j) => j.task?.toLowerCase() === taskFilter.toLowerCase());
-    }
-    return sorted;
-  }, [serverJobs, domainFilter, sheetFilter, taskFilter]);
-
-  const paginatedJobs = useMemo(() => {
-    return jobsList.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
-  }, [jobsList, page, rowsPerPage]);
-
   // Fetch SKUs for selected Job
-  const { data: serverSkus = [], isLoading: isLoadingSkus } = useQuery({
-    queryKey: ['processed_skus', selectedJob?.id],
-    queryFn: () => getProcessedSkus({ batch_id: selectedJob?.batch_id || selectedJob?.id, limit: 0 }),
+  const { data: skusResponse = { data: [], total: 0 }, isLoading: isLoadingSkus } = useQuery({
+    queryKey: ['processed_skus', selectedJob?.id, skuPage, skuRowsPerPage, debouncedSkuSearch, debouncedSkuBtFilter, debouncedSkuGkFilter, skuSourceFilter],
+    queryFn: () => getProcessedSkus({ 
+      batch_id: selectedJob?.batch_id || selectedJob?.id, 
+      page: skuPage + 1,
+      limit: skuRowsPerPage,
+      ...(debouncedSkuSearch.trim() ? { sku_name: debouncedSkuSearch.trim() } : {}),
+      ...(debouncedSkuBtFilter.trim() ? { bt: debouncedSkuBtFilter.trim() } : {}),
+      ...(debouncedSkuGkFilter.trim() ? { gk: debouncedSkuGkFilter.trim() } : {}),
+      ...(skuSourceFilter !== 'all' ? { match_source: skuSourceFilter } : {}),
+    }),
     enabled: !!selectedJob,
   });
 
-  // Pre-process and normalize fields once per data fetch to avoid JSON.parse and string transforms inside filter/render loops
-  const processedSkus = useMemo(() => {
-    return serverSkus.map((row) => {
-      const formattedGk = formatGk(row.generic_keywords || row.gk_json || row.gk);
-      const cleanGk = formatGkText(row.generic_keywords || row.gk_json || row.gk);
-      const btVal = row.basic_type || row.bt || '';
-      const skuName = row.sku_name || '';
-      return {
-        ...row,
-        _formattedGk: formattedGk,
-        _cleanGk: cleanGk,
-        _normName: skuName.toLowerCase(),
-        _normBt: btVal.toLowerCase(),
-        _normGk: formattedGk.toLowerCase(),
-        _normSource: (row.match_source || '').toLowerCase(),
-      };
-    });
-  }, [serverSkus]);
+  const serverSkus = skusResponse.data;
+  const totalSkus = skusResponse.total;
 
-  const skusList = useMemo(() => {
-    let filtered = processedSkus;
-
-    // Filter by SKU Name (case-insensitive)
-    if (debouncedSkuSearch.trim()) {
-      const term = debouncedSkuSearch.toLowerCase().trim();
-      filtered = filtered.filter((row) => row._normName.includes(term));
-    }
-
-    // Filter by Basic Type (BT, case-insensitive)
-    if (debouncedSkuBtFilter.trim()) {
-      const term = debouncedSkuBtFilter.toLowerCase().trim();
-      filtered = filtered.filter((row) => row._normBt.includes(term));
-    }
-
-    // Filter by Generic Keywords (GK, case-insensitive)
-    if (debouncedSkuGkFilter.trim()) {
-      const term = debouncedSkuGkFilter.toLowerCase().trim();
-      filtered = filtered.filter((row) => row._normGk.includes(term));
-    }
-
-    // Filter by Source (matcher / classifier)
-    if (skuSourceFilter !== 'all') {
-      filtered = filtered.filter((row) => {
-        if (skuSourceFilter === 'classifier') {
-          return row._normSource.includes('classifier');
-        } else if (skuSourceFilter === 'matcher') {
-          return row._normSource.includes('matcher') || row._normSource.includes('catalogue');
-        }
-        return true;
-      });
-    }
-
-    return filtered;
-  }, [processedSkus, debouncedSkuSearch, debouncedSkuBtFilter, debouncedSkuGkFilter, skuSourceFilter]);
-
-  const paginatedSkus = useMemo(() => {
-    return skusList.slice(skuPage * skuRowsPerPage, skuPage * skuRowsPerPage + skuRowsPerPage);
-  }, [skusList, skuPage, skuRowsPerPage]);
-
-  const exportRows = (type = 'clean') => {
+  const exportRows = async (type = 'clean') => {
     if (!selectedJob) return;
-    if (!skusList.length) {
-      enqueueSnackbar('No SKU data available to export', { variant: 'warning' });
-      return;
-    }
+
+    try {
+      const allSkusRes = await getProcessedSkus({
+        batch_id: selectedJob?.batch_id || selectedJob?.id,
+        limit: 0, // Get all
+        ...(debouncedSkuSearch.trim() ? { sku_name: debouncedSkuSearch.trim() } : {}),
+        ...(debouncedSkuBtFilter.trim() ? { bt: debouncedSkuBtFilter.trim() } : {}),
+        ...(debouncedSkuGkFilter.trim() ? { gk: debouncedSkuGkFilter.trim() } : {}),
+        ...(skuSourceFilter !== 'all' ? { match_source: skuSourceFilter } : {}),
+      });
+
+      const skusList = allSkusRes.data || [];
+      if (!skusList.length) {
+        enqueueSnackbar('No SKU data available to export', { variant: 'warning' });
+        return;
+      }
 
     const rawSheetName = selectedJob.target_sheet || selectedJob.sheet_name || 'Sheet';
     const baseSheetName = rawSheetName.replace(/\.[^/.]+$/, '');
@@ -266,6 +217,9 @@ export default function SkuResults() {
       const filename = `Job_${selectedJob.id}_${safeSheetName}_audit.csv`;
       download(filename, toCsv(auditRows));
       enqueueSnackbar(`Exported ${auditRows.length} rows to ${filename} (Audit Version)`, { variant: 'success' });
+    }
+    } catch (err) {
+      enqueueSnackbar('Failed to fetch data for export', { variant: 'error' });
     }
   };
 
@@ -349,7 +303,7 @@ export default function SkuResults() {
             <StyledTableBody>
               {isLoadingJobs ? (
                 <TableSkeleton columns={7} rows={5} />
-              ) : paginatedJobs.length === 0 ? (
+              ) : serverJobs.length === 0 ? (
                 <StyledTableRow>
                   <TableCell colSpan={7} align="center">
                     <Typography variant="body2" color="text.secondary">
@@ -358,7 +312,7 @@ export default function SkuResults() {
                   </TableCell>
                 </StyledTableRow>
               ) : (
-                paginatedJobs.map((row) => (
+                serverJobs.map((row) => (
                   <StyledTableRow key={row.id} hover onClick={() => setSelectedJob(row)} sx={{ cursor: 'pointer' }}>
                     <TableCell>{row.id}</TableCell>
                     <TableCell>{row.target_sheet || row.sheet_name || 'N/A'}</TableCell>
@@ -387,7 +341,7 @@ export default function SkuResults() {
           <TablePagination
             rowsPerPageOptions={[10, 25, 50]}
             component="div"
-            count={jobsList.length}
+            count={totalJobs}
             rowsPerPage={rowsPerPage}
             page={page}
             onPageChange={(e, newPage) => setPage(newPage)}
@@ -558,7 +512,7 @@ export default function SkuResults() {
           <StyledTableBody>
             {isLoadingSkus ? (
               <TableSkeleton columns={colSpan} rows={5} />
-            ) : skusList.length === 0 ? (
+            ) : serverSkus.length === 0 ? (
               <StyledTableRow>
                 <TableCell colSpan={colSpan} align="center">
                   <Typography variant="body2" color="text.secondary">
@@ -567,7 +521,7 @@ export default function SkuResults() {
                 </TableCell>
               </StyledTableRow>
             ) : (
-              paginatedSkus.map((row) => {
+              serverSkus.map((row) => {
                 return (
                   <StyledTableRow
                     key={row.id}
@@ -579,7 +533,7 @@ export default function SkuResults() {
                   >
                     <TableCell>{row.sku_name}</TableCell>
                     {selectedJob.domain === 'market' && <TableCell>{row.categories || row.region}</TableCell>}
-                    <TableCell>{row._formattedGk || formatGk(row.generic_keywords || row.gk_json)}</TableCell>
+                    <TableCell>{formatGk(row.generic_keywords || row.gk_json || row.gk)}</TableCell>
                     <TableCell>{row.basic_type || row.bt}</TableCell>
                     {selectedJob.domain === 'food' && <TableCell>{row.region}</TableCell>}
                   </StyledTableRow>
@@ -592,7 +546,7 @@ export default function SkuResults() {
         <TablePagination
           rowsPerPageOptions={[100, 250, 500, 800]}
           component="div"
-          count={skusList.length}
+          count={totalSkus}
           rowsPerPage={skuRowsPerPage}
           page={skuPage}
           onPageChange={(e, newPage) => setSkuPage(newPage)}

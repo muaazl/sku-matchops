@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Box,
@@ -57,24 +57,31 @@ export default function Jobs() {
   }, [filter]);
 
   const {
-    data: serverJobs,
+    data: jobsResponse = { data: [], total: 0 },
     isLoading,
     isFetching,
     isError,
     error,
     refetch,
   } = useQuery({
-    queryKey: ['jobs'],
-    queryFn: () => getJobs({}),
+    queryKey: ['jobs', page, rowsPerPage, filter],
+    queryFn: () => getJobs({ 
+      page: page + 1, 
+      limit: rowsPerPage, 
+      ...(filter !== 'all' ? { status: filter } : {}) 
+    }),
     refetchInterval: (query) => {
       // Poll if any jobs are running or queued
-      const d = query.state.data;
+      const d = query.state.data?.data;
       if (d && d.some((j) => j.status === 'running' || j.status === 'queued')) {
         return 3000;
       }
       return false;
     },
   });
+
+  const serverJobs = jobsResponse.data;
+  const totalJobs = jobsResponse.total;
 
   const cancelMutation = useMutation({
     mutationFn: cancelJob,
@@ -94,22 +101,6 @@ export default function Jobs() {
     onError: (e) => enqueueSnackbar(`Retry failed: ${e.message}`, { variant: 'error' }),
   });
 
-  const rows = useMemo(() => {
-    if (!serverJobs) return [];
-    const sorted = [...serverJobs].sort((a, b) => {
-      const aActive = ['running', 'queued'].includes(a.status);
-      const bActive = ['running', 'queued'].includes(b.status);
-      if (aActive && !bActive) return -1;
-      if (!aActive && bActive) return 1;
-      // newest first by numerical ID
-      const aId = parseInt(a.id) || 0;
-      const bId = parseInt(b.id) || 0;
-      if (aId !== bId) return bId - aId;
-      return new Date(b.started_at) - new Date(a.started_at);
-    });
-    return filter === 'all' ? sorted : sorted.filter((j) => j.status === filter);
-  }, [filter, serverJobs]);
-
   const handleChangePage = (event, newPage) => {
     setPage(newPage);
   };
@@ -118,10 +109,6 @@ export default function Jobs() {
     setRowsPerPage(parseInt(event.target.value, 10));
     setPage(0);
   };
-
-  const paginatedRows = useMemo(() => {
-    return rows.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
-  }, [rows, page, rowsPerPage]);
 
   return (
     <PageContainer>
@@ -177,7 +164,7 @@ export default function Jobs() {
             <StyledTableBody>
               {isLoading ? (
                 <TableSkeleton columns={9} rows={5} />
-              ) : paginatedRows.length === 0 ? (
+              ) : serverJobs.length === 0 ? (
                 <StyledTableRow>
                   <TableCell colSpan={9} align="center">
                     <Typography variant="body2" color="text.secondary">
@@ -186,7 +173,7 @@ export default function Jobs() {
                   </TableCell>
                 </StyledTableRow>
               ) : (
-                paginatedRows.map((row) => {
+                serverJobs.map((row) => {
                   const canCancel = ['running', 'queued'].includes(row.status);
                   const rowId = row.id;
                   return (
@@ -270,7 +257,7 @@ export default function Jobs() {
           <TablePagination
             rowsPerPageOptions={[10, 25, 50, 100]}
             component="div"
-            count={rows.length}
+            count={totalJobs}
             rowsPerPage={rowsPerPage}
             page={page}
             onPageChange={handleChangePage}

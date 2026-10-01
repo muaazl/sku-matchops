@@ -55,6 +55,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "If-None-Match", "X-API-Key"],
+    expose_headers=["X-Total-Count"],
 )
 app.add_middleware(AuditLoggingMiddleware)
 app.add_middleware(ETagMiddleware)
