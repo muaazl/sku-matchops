@@ -14,6 +14,7 @@ from backend.app.api.endpoints.models import router as models_router
 from backend.app.api.endpoints.qdrant_proxy import router as qdrant_proxy_router
 from backend.app.api.endpoints.requests_log import router as requests_log_router
 from backend.app.api.endpoints.rules_api import router as rules_router
+from backend.app.api.endpoints.upload import router as upload_router
 from backend.app.core import config
 from backend.app.schemas.models import (
     ClassifyRequest,
@@ -36,6 +37,7 @@ api_router.include_router(qdrant_proxy_router, tags=["qdrant_proxy"])
 api_router.include_router(rules_router, tags=["rules_engine"])
 api_router.include_router(catalog_router, tags=["catalog"])
 api_router.include_router(models_router, tags=["models"])
+api_router.include_router(upload_router, tags=["upload"])
 api_router.include_router(engine_callbacks_router)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)

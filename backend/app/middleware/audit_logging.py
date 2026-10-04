@@ -34,7 +34,7 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
         method = request.method
         
         # Only log matcher, classify, and pipeline calls, exclude GETs (polling)
-        log_paths = ('/match', '/classify', '/pipeline')
+        log_paths = ('/match', '/classify', '/pipeline', '/upload')
         should_log = path.startswith(log_paths) and method != "GET"
         
         if not should_log:

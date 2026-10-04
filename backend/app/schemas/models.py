@@ -27,6 +27,11 @@ class ClassifyRequest(BaseRequest):
 class PipelineRequest(BaseRequest):
     pass
 
+class UploadRequest(BaseModel):
+    outlet_id_or_name: str
+    skus: list[dict]
+    domain: str = config.DOMAIN_MARKET
+
 
 class MatchResult(BaseModel):
     matched_catalog_name: str

@@ -15,30 +15,66 @@ class TestAuditAlignment:
     def test_culinary_protein_prioritization(self):
         ner_food = get_ner_engine("food")
         
+        def compute_suffixes(flavor_set):
+            seafood_set = getattr(ner_food, "seafood_flavors", set())
+            meat_set = getattr(ner_food, "meat_flavors", set())
+            veg_set = getattr(ner_food, "vegetable_flavors", set())
+            has_seafood = any(f in seafood_set for f in flavor_set)
+            land_meats = [
+                f for f in flavor_set
+                if f in meat_set and f not in seafood_set and f not in ("egg", "mixed")
+            ]
+            meat_count = len(land_meats)
+            has_other_protein = meat_count > 0 or has_seafood
+            has_egg = ("egg" in flavor_set) and ("egg" in meat_set)
+            has_veg = any(f in veg_set for f in flavor_set)
+
+            if has_egg and not has_other_protein:
+                meat_count = 1
+                has_meat = True
+            else:
+                has_meat = meat_count > 0
+
+            suffixes = []
+            if (has_meat and has_seafood) or meat_count >= 2:
+                suffixes.append("mixed")
+            elif not has_seafood and not has_meat and has_veg:
+                suffixes.append("veg")
+            return suffixes
+
         # 1. Devilled Fish Set Menu has seafood
         sku_texts = ["Devilled Fish Set Menu"]
         ner_res = ner_food.batch_extract_entities(sku_texts)
         flavor_set = ner_res[0].get("flavor", set())
-        has_seafood = any(f in getattr(ner_food, "seafood_flavors", set()) for f in flavor_set)
-        land_meats = [
-            f for f in flavor_set
-            if f in getattr(ner_food, "meat_flavors", set())
-            and f not in getattr(ner_food, "seafood_flavors", set())
-            and f != "egg"
-        ]
-        meat_count = len(land_meats)
-        has_meat = meat_count > 0
-        has_veg = any(f in getattr(ner_food, "vegetable_flavors", set()) for f in flavor_set)
-        
-        suffixes = []
-        if (has_meat and has_seafood) or meat_count >= 2:
-            suffixes.append("mixed")
-        elif not has_seafood and not has_meat and has_veg:
-            suffixes.append("veg")
-            
-        assert suffixes == [], "Should NOT add seafood suffix (handled by rules engine) and NEVER add veg"
-        assert "veg" not in suffixes
-        assert "seafood" not in suffixes
+        assert compute_suffixes(flavor_set) == [], "Should NOT add seafood suffix (handled by rules engine) and NEVER add veg"
+
+        # 2. Chicken with 'Mix' in description (should NOT trigger 'mixed' suffix)
+        flavor_set_mix = {"chicken", "mixed", "carrot", "tomato"}
+        assert compute_suffixes(flavor_set_mix) == [], "Chicken with 'mixed' meta-flavor must NOT get 'mixed' suffix"
+
+        # 3. Egg + Real Meat (egg should be deprioritized, real meat prioritized, no mixed)
+        flavor_set_egg_meat = {"chicken", "egg", "carrot"}
+        assert compute_suffixes(flavor_set_egg_meat) == [], "Egg + Meat must prioritize meat and NOT add 'mixed'"
+
+        # 4. Egg + Veg (no other meat/seafood: egg must be kept, NOT tagged as veg)
+        flavor_set_egg_veg = {"egg", "carrot", "leek"}
+        assert compute_suffixes(flavor_set_egg_veg) == [], "Egg + Veg must keep egg and NEVER add 'veg'"
+
+        # 5. Egg alone (keep egg, no suffix)
+        flavor_set_egg_alone = {"egg"}
+        assert compute_suffixes(flavor_set_egg_alone) == []
+
+        # 6. Real meat + Real meat (2 land meats -> 'mixed')
+        flavor_set_multi_meat = {"chicken", "beef"}
+        assert compute_suffixes(flavor_set_multi_meat) == ["mixed"]
+
+        # 7. Meat + Seafood -> 'mixed'
+        flavor_set_meat_seafood = {"chicken", "prawn"}
+        assert compute_suffixes(flavor_set_meat_seafood) == ["mixed"]
+
+        # 8. Veg alone -> 'veg'
+        flavor_set_veg_alone = {"carrot", "cabbage"}
+        assert compute_suffixes(flavor_set_veg_alone) == ["veg"]
 
     def test_cross_dish_contamination_filter(self):
         # Chop Suey Rice must be marked as conflicting dish under Fried Rice
@@ -164,5 +200,32 @@ class TestAuditAlignment:
         assert proc_res["status"] == "High Confidence"
         assert audit_res["status"] == "High Confidence"
         assert proc_res["score"] == audit_res["score"]
+
+    def test_chicken_noodles_mix_description_resolution(self):
+        sku = {
+            "name": "Chicken Noodles (Normal)",
+            "description": "Carrot, Leaks, Eggs, Boiled Chicken Mix With Noodles. Served With Chili Paste Chicken Gravy & Tomato Sauce",
+            "category": "NOODLES",
+            "price": 1280.0,
+        }
+        proc_res = process_request(skus=[sku], task="pipeline", domain="food")["results"][0]
+        audit_full = run_sku_audit(
+            sku_name=sku["name"],
+            domain="food",
+            task="pipeline",
+            price=sku["price"],
+            description=sku["description"],
+            category=sku["category"],
+        )
+        audit_res = audit_full["final_output"]
+
+        # Ensure neither processor nor audit appended 'mixed' or matched to Mixed Noodles
+        assert "mixed" not in proc_res.get("sku_name", "").lower()
+        assert proc_res["matched_catalog_name"] == audit_res["matched_catalog_name"]
+        assert proc_res["matched_catalog_name"] == "Chicken Noodles - Regular"
+        assert proc_res["suggested_bt"] == "Fried Noodles"
+        assert "Chicken Fried Noodles" in proc_res["suggested_gk"]
+        assert proc_res["status"] == "High Confidence"
+
 
 

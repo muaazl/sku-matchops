@@ -152,6 +152,48 @@ def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> Dict[str
         raise RuntimeError(error_msg)
 
 
+def dispatch_upload_job(job_id: str, request: Any, task: str) -> Dict[str, Any]:
+    """
+    Dispatches an upload job to the ML Engine microservice for async execution.
+    Filters the SKU dict to only include specific columns.
+    """
+    allowed_columns = [
+        "Name", "RefID", "Description", "Price", "Category", 
+        "Individually Sellable", "Brands", "Categories", "Generic keywords", 
+        "Promotions", "Special Properties and Ingredients", "Uncategrized", 
+        "basictype", "dietarypreference", "foodstate", "mealtime", "other", "region"
+    ]
+    
+    filtered_skus = []
+    for sku in request.skus:
+        filtered_sku = {col: sku.get(col, "") for col in allowed_columns}
+        filtered_skus.append(filtered_sku)
+
+    payload = {
+        "job_id": str(job_id),
+        "task": task,
+        "domain": request.domain or "market",
+        "skus": filtered_skus,
+        "backend_url": BACKEND_INTERNAL_URL,
+        "sheet_name": request.outlet_id_or_name,
+        "callback_url": None,
+        "spreadsheet_id": None
+    }
+
+    try:
+        logger.info(f"Dispatching upload job {job_id} ({len(request.skus)} SKUs) to Engine at {ENGINE_URL}/engine/process-batch")
+        resp = _session.post(f"{ENGINE_URL}/engine/process-batch", json=payload, timeout=10.0)
+        if resp.status_code in (200, 202):
+            return resp.json()
+        error_msg = f"ML Engine rejected upload job {job_id} with status {resp.status_code}: {resp.text}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    except requests.RequestException as re:
+        error_msg = f"Failed to connect to ML Engine at {ENGINE_URL}: {re}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
 def run_single(
     sku_name: str,
     domain: str = "market",

@@ -154,10 +154,24 @@ def process_request(
                 meat_set = getattr(ner_engine, 'meat_flavors', set())
                 veg_set = getattr(ner_engine, 'vegetable_flavors', set())
                 has_seafood = any(f in seafood_set for f in flavor_set)
-                land_meats = [f for f in flavor_set if f in meat_set and f not in seafood_set and f != "egg"]
+                # Exclude meta-categories ('mixed') and special protein ('egg') from land meats
+                land_meats = [
+                    f for f in flavor_set
+                    if f in meat_set and f not in seafood_set and f not in ("egg", "mixed")
+                ]
                 meat_count = len(land_meats)
-                has_meat = meat_count > 0
+                has_other_protein = meat_count > 0 or has_seafood
+                has_egg = ("egg" in flavor_set) and ("egg" in meat_set)
                 has_veg = any(f in veg_set for f in flavor_set)
+
+                # Egg priority logic:
+                # 1. If egg is added with another meat/seafood, prioritize that meat (egg does not count towards mixed).
+                # 2. If egg is alone or with veg (no other meat/seafood), keep egg as the primary protein (prevents tagging as veg).
+                if has_egg and not has_other_protein:
+                    meat_count = 1
+                    has_meat = True
+                else:
+                    has_meat = meat_count > 0
 
                 if (has_meat and has_seafood) or meat_count >= 2:
                     name += " mixed"

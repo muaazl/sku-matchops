@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS processed_skus (
     input_price REAL,
     input_description TEXT,
     input_category TEXT,
+    upload_job_id TEXT,
+    upload_status TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -291,7 +293,9 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
             "region_confidence": "REAL",
             "input_price": "REAL",
             "input_description": "TEXT",
-            "input_category": "TEXT"
+            "input_category": "TEXT",
+            "upload_job_id": "TEXT",
+            "upload_status": "TEXT"
         }
         for col_name, col_type in new_cols_skus.items():
             if col_name not in sku_cols:

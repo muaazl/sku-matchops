@@ -77,7 +77,7 @@ class BatchProcessRequest(BaseModel):
     job_id: str
     task: str = "pipeline"
     domain: str = "market"
-    skus: List[SKUItemPayload]
+    skus: List[Dict[str, Any]]
     backend_url: str = "http://backend:8000"
     callback_url: Optional[str] = None
     sheet_name: Optional[str] = None
@@ -218,7 +218,7 @@ def process_batch(request: BatchProcessRequest):
         "job_id": request.job_id,
         "task": request.task,
         "domain": request.domain,
-        "skus": [s.model_dump() for s in request.skus],
+        "skus": request.skus,
         "backend_url": request.backend_url,
         "callback_url": request.callback_url,
         "sheet_name": request.sheet_name,

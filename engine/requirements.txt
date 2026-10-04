@@ -24,3 +24,6 @@ meilisearch>=0.30.0
 # ONNX Export
 onnxscript>=0.7
 optimum[onnxruntime]>=1.18
+
+# Automation
+playwright>=1.40.0

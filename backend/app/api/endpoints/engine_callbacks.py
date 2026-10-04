@@ -105,10 +105,11 @@ def complete_job(job_id: str, payload: JobCompletePayload):
 
         for i, res in enumerate(res_list):
             input_sku = input_skus[i] if i < len(input_skus) else {}
-            sku_name = input_sku.get("name", "")
-            input_price = input_sku.get("price")
-            input_description = input_sku.get("description") or ""
-            input_category = input_sku.get("category") or ""
+            
+            sku_name = input_sku.get("name", input_sku.get("Name", input_sku.get("sku_name", res.get("sku_name", ""))))
+            input_price = input_sku.get("price", input_sku.get("Price", res.get("price")))
+            input_description = input_sku.get("description", input_sku.get("Description", res.get("input_description", ""))) or ""
+            input_category = input_sku.get("category", input_sku.get("Category", res.get("input_category", ""))) or ""
             logic_notes = res.get("logic_notes", "")
             matched_catalog_name = res.get("matched_catalog_name", "")
             match_score = res.get("score", 0.0)

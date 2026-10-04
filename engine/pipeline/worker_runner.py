@@ -15,6 +15,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from engine.pipeline.processor import process_request
+from engine.pipeline.uploader import process_upload
 from engine.core.db import log_outbound_request
 
 logger = logging.getLogger("matchops.engine.worker")
@@ -123,14 +124,24 @@ def _worker_loop():
 
         try:
             # Execute processing
-            result_payload = process_request(
-                skus=skus,
-                task=task,
-                domain=domain,
-                job_id=job_id,
-                progress_callback=send_progress_update,
-                is_cancelled=lambda: is_job_cancelled(job_id)
-            )
+            if task.lower() == "upload":
+                result_payload = process_upload(
+                    skus=skus,
+                    outlet_id=sheet_name,  # outlet ID is passed in sheet_name
+                    job_id=job_id,
+                    progress_callback=send_progress_update,
+                    is_cancelled=lambda: is_job_cancelled(job_id),
+                    has_more_jobs=not _batch_queue.empty()
+                )
+            else:
+                result_payload = process_request(
+                    skus=skus,
+                    task=task,
+                    domain=domain,
+                    job_id=job_id,
+                    progress_callback=send_progress_update,
+                    is_cancelled=lambda: is_job_cancelled(job_id)
+                )
 
             if is_job_cancelled(job_id):
                 logger.info(f"[ENGINE WORKER] Job {job_id} aborted mid-execution due to cancellation.")
