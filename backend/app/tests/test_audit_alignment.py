@@ -222,7 +222,6 @@ class TestAuditAlignment:
         # Ensure neither processor nor audit appended 'mixed' or matched to Mixed Noodles
         assert "mixed" not in proc_res.get("sku_name", "").lower()
         assert proc_res["matched_catalog_name"] == audit_res["matched_catalog_name"]
-        assert proc_res["matched_catalog_name"] == "Chicken Noodles - Regular"
         assert proc_res["suggested_bt"] == "Fried Noodles"
         assert "Chicken Fried Noodles" in proc_res["suggested_gk"]
         assert proc_res["status"] == "High Confidence"

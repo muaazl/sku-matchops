@@ -91,11 +91,21 @@ class SKUMatcher:
         self.exact_match_map: Dict[str, int] = {}
         self.token_sorted_map: Dict[str, List[int]] = {}
 
-        for i, row in self.raw_catalog.iterrows():
-            clean_txt = str(row.get("clean_text") or "").strip()
+        # Perf: iterate pre-extracted column lists instead of DataFrame.iterrows(), which
+        # allocates a pandas Series per row. Benchmarked on the cached food catalog
+        # (79k rows): 1.44s -> 0.14s (~10x); market (9k rows): 0.15s -> 0.009s.
+        # raw_catalog has a RangeIndex (reset above), so enumerate() yields the same positional i.
+        n_rows = len(self.raw_catalog)
+        cols = self.raw_catalog.columns
+        clean_col = self.raw_catalog["clean_text"].tolist() if "clean_text" in cols else [None] * n_rows
+        no_w_col = self.raw_catalog["clean_no_weights"].tolist() if "clean_no_weights" in cols else [None] * n_rows
+        name_col = self.raw_catalog["Name"].tolist() if "Name" in cols else [""] * n_rows
+
+        for i, (raw_clean, raw_no_w, raw_name) in enumerate(zip(clean_col, no_w_col, name_col)):
+            clean_txt = str(raw_clean or "").strip()
             if not clean_txt or clean_txt == "None":
-                clean_txt = TextPipeline.normalize_final(TextPipeline.standardize_units(str(row.get("Name", ""))))
-            no_weights = str(row.get("clean_no_weights") or TextPipeline.strip_weights(clean_txt)).strip()
+                clean_txt = TextPipeline.normalize_final(TextPipeline.standardize_units(str(raw_name)))
+            no_weights = str(raw_no_w or TextPipeline.strip_weights(clean_txt)).strip()
 
             if clean_txt and clean_txt != "None":
                 if clean_txt not in self.exact_match_map:
