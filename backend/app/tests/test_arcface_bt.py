@@ -22,15 +22,19 @@ class TestArcFaceBT(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         self.orig_onnx_dir = config.ONNX_DIR
         self.orig_cache_dir = config.CACHE_DIR
+        self.orig_arcface_dir = getattr(config, "ARCFACE_DIR", None)
         self.orig_food_model = config.FOOD_BT_MODEL
         self.orig_market_model = config.MARKET_BT_MODEL
 
         config.ONNX_DIR = self.test_dir
         config.CACHE_DIR = self.test_dir
+        config.ARCFACE_DIR = self.test_dir
 
     def tearDown(self):
         config.ONNX_DIR = self.orig_onnx_dir
         config.CACHE_DIR = self.orig_cache_dir
+        if self.orig_arcface_dir is not None:
+            config.ARCFACE_DIR = self.orig_arcface_dir
         config.FOOD_BT_MODEL = self.orig_food_model
         config.MARKET_BT_MODEL = self.orig_market_model
         if os.path.exists(self.test_dir):
@@ -344,6 +348,7 @@ class TestArcFaceBT(unittest.TestCase):
             from_sample=True,
             sample_file=sample_path,
             no_quantize=False,
+            output_dir=self.test_dir,
         )
 
         self.assertTrue(os.path.exists(artifacts["fp32_onnx"]))

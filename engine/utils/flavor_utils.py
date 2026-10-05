@@ -56,16 +56,22 @@ def build_food_flavors_info(
     seafood_flavors = set()
     flavor_categories = {}
     
-    for _, row in brands_df.iterrows():
-        flavor_name = str(row.get(name_col, "")).strip()
+    names = brands_df[name_col].tolist()
+    is_meats = brands_df["Is_Meat"].tolist() if "Is_Meat" in cols else [False] * len(brands_df)
+    is_vegs = brands_df["Is_Vegetable"].tolist() if "Is_Vegetable" in cols else [False] * len(brands_df)
+    is_seafoods = brands_df["Is_Seafood"].tolist() if "Is_Seafood" in cols else [False] * len(brands_df)
+    aliases_list = brands_df["Aliases"].tolist() if "Aliases" in cols else [""] * len(brands_df)
+
+    for raw_name, raw_meat, raw_veg, raw_seafood, raw_alias in zip(names, is_meats, is_vegs, is_seafoods, aliases_list):
+        flavor_name = str(raw_name or "").strip()
         if not flavor_name or flavor_name.lower() == "nan":
             continue
             
         canonical = flavor_name.lower()
         
-        is_meat = str(row.get("Is_Meat", "")).strip().lower() in ("true", "1", "yes", "y") or bool(row.get("Is_Meat", False))
-        is_veg = str(row.get("Is_Vegetable", "")).strip().lower() in ("true", "1", "yes", "y") or bool(row.get("Is_Vegetable", False))
-        is_seafood = str(row.get("Is_Seafood", "")).strip().lower() in ("true", "1", "yes", "y") or bool(row.get("Is_Seafood", False))
+        is_meat = str(raw_meat or "").strip().lower() in ("true", "1", "yes", "y") or bool(raw_meat)
+        is_veg = str(raw_veg or "").strip().lower() in ("true", "1", "yes", "y") or bool(raw_veg)
+        is_seafood = str(raw_seafood or "").strip().lower() in ("true", "1", "yes", "y") or bool(raw_seafood)
         
         flags = (is_meat, is_veg, is_seafood)
         
@@ -79,7 +85,7 @@ def build_food_flavors_info(
         flavors_dict[canonical] = canonical
         flavor_categories[canonical] = flags
         
-        aliases_str = str(row.get("Aliases", ""))
+        aliases_str = str(raw_alias or "")
         if aliases_str and aliases_str.lower() not in ("none", "nan"):
             aliases = [x.strip().lower() for x in aliases_str.split(",") if x.strip()]
             for alias in aliases:

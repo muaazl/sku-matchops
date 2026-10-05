@@ -162,11 +162,23 @@ class SKUMatcher:
 
         raw_names, clean_inputs, prices, input_no_weights_list, input_w_data_list = [], [], [], [], []
         descriptions, categories = [], []
-        for _, row in input_df.iterrows():
-            name = str(row.get("Name", row.iloc[0]))
+        cols = input_df.columns
+        name_col = "Name" if "Name" in cols else (cols[0] if len(cols) > 0 else None)
+        desc_col = "Description" if "Description" in cols else ("description" if "description" in cols else None)
+        cat_col = "Category" if "Category" in cols else ("category" if "category" in cols else None)
+        price_col = "Price" if "Price" in cols else ("price" if "price" in cols else None)
+
+        n_inputs = len(input_df)
+        names = input_df[name_col].tolist() if name_col else [""] * n_inputs
+        descs = input_df[desc_col].tolist() if desc_col else [""] * n_inputs
+        cats = input_df[cat_col].tolist() if cat_col else [""] * n_inputs
+        raw_prices = input_df[price_col].tolist() if price_col else [0] * n_inputs
+
+        for raw_name, raw_desc, raw_cat, raw_price in zip(names, descs, cats, raw_prices):
+            name = str(raw_name if (raw_name is not None and not pd.isna(raw_name)) else "")
             raw_names.append(name)
-            desc = str(row.get("Description", row.get("description", "")))
-            cat = str(row.get("Category", row.get("category", "")))
+            desc = str(raw_desc if (raw_desc is not None and not pd.isna(raw_desc)) else "")
+            cat = str(raw_cat if (raw_cat is not None and not pd.isna(raw_cat)) else "")
             descriptions.append(desc)
             categories.append(cat)
 
@@ -177,8 +189,7 @@ class SKUMatcher:
 
             # Extract price for logic gate validation
             try:
-                raw_price = row.get("Price", 0)
-                prices.append(float(re.sub(r"[^\d\.]", "", str(raw_price))) if raw_price else 0.0)
+                prices.append(float(re.sub(r"[^\d\.]", "", str(raw_price))) if raw_price and not pd.isna(raw_price) else 0.0)
             except (ValueError, TypeError):
                 prices.append(0.0)
 
@@ -395,7 +406,7 @@ class SKUMatcher:
             for q_type in ['filtered', 'unfiltered', 'stripped']:
                 df_cands = sku_candidates[i][q_type]
                 if not df_cands.empty:
-                    for cand_idx, cand_row in df_cands.iterrows():
+                    for cand_idx, cand_row in enumerate(df_cands.to_dict(orient="records")):
                         all_cands_list.append((q_type, cand_idx, cand_row))
             
             all_cands_list.sort(key=lambda x: (-x[2].get("_qdrant_score_", 0.0), x[2].get("clean_text", "")))

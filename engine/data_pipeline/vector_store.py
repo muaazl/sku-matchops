@@ -185,13 +185,14 @@ class VectorStore:
         self._ensure_collection(collection_name)
 
         points = []
-        for list_idx, (orig_idx, row) in enumerate(df.iterrows()):
+        records = df.to_dict(orient="records")
+        indices = df.index.tolist()
+        for list_idx, (orig_idx, payload) in enumerate(zip(indices, records)):
             # Deterministic UUID for idempotency (prefer stable db_uid if available)
-            db_uid = row.get("db_uid")
-            unique_str = db_uid if db_uid else f"{orig_idx}_{row.get('Name', '')}"
+            db_uid = payload.get("db_uid")
+            unique_str = db_uid if db_uid else f"{orig_idx}_{payload.get('Name', '')}"
             point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, unique_str))
 
-            payload = row.to_dict()
             # Clean up sets in payload for JSON serialization
             if "entities" in payload and isinstance(payload["entities"], dict):
                 payload["entities"] = {k: list(v) if isinstance(v, set) else v for k, v in payload["entities"].items()}

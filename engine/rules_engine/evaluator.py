@@ -228,7 +228,8 @@ def _evaluate_single_condition(cond: dict, record: dict) -> bool:
         extracted = _extract_flavors_from_sku(sku_name, fdata["flavors_dict"])
         category = val.lower().strip()
         if category == "meat":
-            result = any(f in fdata["meat_flavors"] for f in extracted)
+            seafood_set = fdata.get("seafood_flavors", set())
+            result = any(f in fdata["meat_flavors"] and f not in seafood_set and f not in ("egg", "mixed") for f in extracted)
         elif category in ("vegetable", "veg"):
             result = any(f in fdata["vegetable_flavors"] for f in extracted)
         elif category == "seafood":

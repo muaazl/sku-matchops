@@ -243,12 +243,16 @@ def train_bt_arcface(
     sample_file: str = "data/sample/SampleData.xlsx",
     force_embed: bool = False,
     no_quantize: bool = False,
+    output_dir: Optional[str] = None,
 ) -> Dict[str, str]:
     """
     Trains BTArcFaceNet, exports to ONNX, quantizes to INT8, and saves label mapping.
     """
     t_start = time.time()
-    arcface_dir = config.get_arcface_dir() if hasattr(config, "get_arcface_dir") else getattr(config, "ARCFACE_DIR", config.ONNX_DIR)
+    if output_dir:
+        arcface_dir = output_dir
+    else:
+        arcface_dir = config.get_arcface_dir() if hasattr(config, "get_arcface_dir") else getattr(config, "ARCFACE_DIR", config.ONNX_DIR)
     os.makedirs(arcface_dir, exist_ok=True)
 
     # 1. Load data
@@ -432,6 +436,7 @@ def main():
     )
     parser.add_argument("--force-embed", action="store_true", help="Re-compute text embeddings instead of reading cache.")
     parser.add_argument("--no-quantize", action="store_true", help="Skip INT8 dynamic quantization.")
+    parser.add_argument("--output-dir", type=str, default=None, help="Directory to save exported ONNX and labels (defaults to config.ARCFACE_DIR).")
 
     args = parser.parse_args()
 
@@ -456,6 +461,7 @@ def main():
             sample_file=args.sample_file,
             force_embed=args.force_embed,
             no_quantize=args.no_quantize,
+            output_dir=args.output_dir,
         )
 
 

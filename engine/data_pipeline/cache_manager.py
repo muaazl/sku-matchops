@@ -128,9 +128,6 @@ class CacheManager:
         
         name_counts = {}
         db_uids = []
-        # Perf: only the Name column is needed, so iterate it directly instead of
-        # DataFrame.iterrows() (one Series allocation per row). Benchmarked on the cached
-        # food catalog (79k rows): 1.21s -> 0.03s (~36x); output is identical.
         names = raw_catalog["Name"].tolist() if "Name" in raw_catalog.columns else [""] * len(raw_catalog)
         for name in names:
             raw_name = str(name).strip().lower()
@@ -253,8 +250,9 @@ class CacheManager:
             if target_col in changed_df.columns:
                 # Fast path: read flavors/brands directly from the pre-filled sheet column.
                 # Rows missing the value fall through to the NER engine (Layer 1 dict + Layer 2 NER).
-                for _, row in changed_df.iterrows():
-                    val = str(row.get(target_col, "")).strip()
+                target_vals = changed_df[target_col].tolist()
+                for raw_val in target_vals:
+                    val = str(raw_val or "").strip()
                     if val and val.lower() != "nan":
                         val_set = {v.strip().lower() for v in val.split(",") if v.strip()}
                         entities_list.append({target_label: val_set})
@@ -262,7 +260,7 @@ class CacheManager:
                         entities_list.append(None)
 
                 if None in entities_list:
-                    texts_for_ner = [TextPipeline.prep_for_ner(str(row["Name"])) for _, row in changed_df.iterrows()]
+                    texts_for_ner = [TextPipeline.prep_for_ner(str(t)) for t in changed_df["Name"].tolist()]
                     ner_results = self.ner.batch_extract_entities(texts_for_ner, batch_size=config.EMBED_BATCH_SIZE)
                     for i in range(len(entities_list)):
                         if entities_list[i] is None:
@@ -312,7 +310,9 @@ class CacheManager:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=60000;")
         try:
-            for list_idx, (orig_idx, row) in enumerate(changed_df.iterrows()):
+            update_rows = []
+            records = changed_df.to_dict(orient="records")
+            for row in records:
                 entities_val = row.get("entities")
                 ent_json = None
                 if entities_val:
@@ -323,7 +323,21 @@ class CacheManager:
                 # Since weight_val is a tuple (value, unit, type), serialize it as JSON for SQLite storage
                 w_json = json.dumps(w_val) if isinstance(w_val, (tuple, list)) else w_val
 
-                conn.execute("""
+                token_cnt = row.get("token_count")
+                token_cnt_val = int(token_cnt) if (token_cnt is not None and not pd.isna(token_cnt)) else None
+
+                update_rows.append((
+                    row.get("clean_text"),
+                    w_json,
+                    ent_json,
+                    token_cnt_val,
+                    row.get("clean_no_weights"),
+                    domain,
+                    row.get("row_hash")
+                ))
+
+            if update_rows:
+                conn.executemany("""
                     UPDATE catalog_items
                     SET clean_text = ?,
                         weight_val = ?,
@@ -331,15 +345,7 @@ class CacheManager:
                         token_count = ?,
                         clean_no_weights = ?
                     WHERE domain = ? AND row_hash = ?
-                """, (
-                    row.get("clean_text"),
-                    w_json,
-                    ent_json,
-                    int(row.get("token_count")) if not pd.isna(row.get("token_count")) else None,
-                    row.get("clean_no_weights"),
-                    domain,
-                    row.get("row_hash")
-                ))
+                """, update_rows)
             conn.commit()
             logger.info(f"[CACHE] [{domain.upper()}] Saved computed metadata for {len(changed_df)} rows directly to SQLite.")
         except Exception as db_err:

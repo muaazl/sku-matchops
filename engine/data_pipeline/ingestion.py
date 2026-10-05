@@ -671,7 +671,7 @@ class DataIngestion:
             cat_deleted = 0
             
             from engine.nlp.text_cleaner import TextPipeline
-            for idx, row in cat_df_raw.iterrows():
+            for row in cat_df_raw.to_dict(orient="records"):
                 raw_name = str(row.get("Name", "")).strip().lower()
                 name_counts_new[raw_name] = name_counts_new.get(raw_name, 0) + 1
                 uid = f"{raw_name}#occ_{name_counts_new[raw_name]}"
@@ -754,7 +754,7 @@ class DataIngestion:
             brands_updated = 0
             brands_deleted = 0
             
-            for idx, row in brands_df_raw.iterrows():
+            for row in brands_df_raw.to_dict(orient="records"):
                 name_val = row.get("Flavor Name") if domain == config.DOMAIN_FOOD else row.get("Brand Name")
                 raw_name = str(name_val).strip().lower()
                 brand_counts_new[raw_name] = brand_counts_new.get(raw_name, 0) + 1
@@ -991,14 +991,16 @@ class DataIngestion:
                 col_bt = next((c for c in cat_df.columns if c.strip().lower() in ("basictype", "basic type")), None)
                 col_gk = next((c for c in cat_df.columns if c.strip().lower() in ("generickeywords", "generic keywords", "generic_keywords")), None)
                 if col_bt and col_gk:
-                    for _, row in cat_df.iterrows():
-                        bt_clean = str(row.get(col_bt, "")).strip()
-                        gk_str = str(row.get(col_gk, "")).strip()
-                        if not bt_clean or not gk_str:
+                    bt_list = cat_df[col_bt].tolist()
+                    gk_list = cat_df[col_gk].tolist()
+                    for raw_bt, raw_gk in zip(bt_list, gk_list):
+                        bt_clean = str(raw_bt or "").strip()
+                        gk_str = str(raw_gk or "").strip()
+                        if not bt_clean or not gk_str or bt_clean.lower() in ("nan", "none") or gk_str.lower() in ("nan", "none"):
                             continue
                         for k in gk_str.split(","):
                             k_clean = k.strip()
-                            if k_clean:
+                            if k_clean and k_clean.lower() != "nan":
                                 grouped[bt_clean].add(k_clean)
 
             result = {}
@@ -1049,5 +1051,3 @@ class DataIngestion:
             raise e
         finally:
             conn.close()
-
-

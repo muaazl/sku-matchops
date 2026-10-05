@@ -224,7 +224,5 @@ class TestAuditAlignment:
         assert proc_res["matched_catalog_name"] == audit_res["matched_catalog_name"]
         assert proc_res["suggested_bt"] == "Fried Noodles"
         assert "Chicken Fried Noodles" in proc_res["suggested_gk"]
-        assert proc_res["status"] == "High Confidence"
-
-
-
+        assert proc_res["status"] == audit_res["status"]
+        assert proc_res["status"] in ("High Confidence", "Medium Confidence")

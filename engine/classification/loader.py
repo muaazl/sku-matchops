@@ -301,10 +301,14 @@ def mine_umbrella_words_from_training(cat_df: pd.DataFrame, min_bts: int = 10, m
         word_total = defaultdict(int)
         word_sku_match = defaultdict(int)
 
-        for _, row in df.iterrows():
-            name_words = {w.strip().translate(str.maketrans("", "", "-&'")).lower() for w in str(row["Name"]).split()}
-            gks = [t.strip().lower() for t in str(row["Generic keywords"]).split(",") if t.strip()]
-            bt = str(row["basictype"]).strip()
+        names = df["Name"].tolist()
+        generic_keywords = df["Generic keywords"].tolist()
+        basic_types = df["basictype"].tolist()
+
+        for name_val, gk_val, bt_val in zip(names, generic_keywords, basic_types):
+            name_words = {w.strip().translate(str.maketrans("", "", "-&'")).lower() for w in str(name_val).split()}
+            gks = [t.strip().lower() for t in str(gk_val).split(",") if t.strip()]
+            bt = str(bt_val).strip()
 
             for gk in gks:
                 gk_words = {w.strip().translate(str.maketrans("", "", "-&'")).lower() for w in gk.split()}

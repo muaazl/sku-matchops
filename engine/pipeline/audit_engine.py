@@ -191,6 +191,9 @@ def run_sku_audit(
     
     if hasattr(pipeline, "exact_match_map") and pipeline.exact_match_map:
         cat_indices = pipeline.exact_match_map.get(clean_input)
+        if cat_indices is None and clean_input.endswith(" mixed"):
+            cat_indices = pipeline.exact_match_map.get(clean_input[:-6])
+
         if cat_indices is not None:
             if isinstance(cat_indices, int):
                 cat_indices = [cat_indices]
@@ -204,6 +207,8 @@ def run_sku_audit(
                 ]
                 if bt_matched:
                     selected_idx = bt_matched[0]
+                else:
+                    selected_idx = cat_indices[0]
             else:
                 selected_idx = cat_indices[0]
 
@@ -305,9 +310,11 @@ def run_sku_audit(
     # -------------------------------------------------------------
     # Stage 3: Cross-Encoder Scoring & Rankings
     # -------------------------------------------------------------
+    c_no_w = candidates["clean_no_weights"].tolist() if "clean_no_weights" in candidates.columns else [None] * len(candidates)
+    c_clean = candidates["clean_text"].tolist() if "clean_text" in candidates.columns else [""] * len(candidates)
     pairs = [
-        [input_no_weights, str(c_row.get("clean_no_weights") or TextPipeline.strip_weights(c_row.get("clean_text", ""))).strip()]
-        for _, c_row in candidates.iterrows()
+        [input_no_weights, str(raw_no_w or TextPipeline.strip_weights(str(raw_clean or ""))).strip()]
+        for raw_no_w, raw_clean in zip(c_no_w, c_clean)
     ]
     cross_scores = pipeline.embedder.score_cross_encoder(pairs)
 
@@ -1071,98 +1078,112 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
     
     dense_hits, sparse_hits = [], []
     fused_candidates = []
-    if early_return is None and vector_store is not None:
-        dense_hits, sparse_hits = vector_store.search_hybrid_tags(
-            dense_query=vec_dense,
-            sparse_query=vec_sparse,
-            limit=TAG_SEARCH_LIMIT,
-            filter_dict_type="gk",
-            domain=classifier.domain,
-            allowed_tags=search_allowed_tags
-        )
-        if FUSION_METHOD == "rrf":
-            fused_candidates = _rrf_fusion(dense_hits, sparse_hits)
-        else:
-            fused_candidates = _weighted_fusion(dense_hits, sparse_hits)
-
-    top_candidates = fused_candidates[:TOP_K_FUSED]
-    raw_vector_cands_count = len(top_candidates)
-
-    # Strategy: post search filters
-    top_candidates = strategy.apply_post_search_filters(top_candidates, allowed_gks_lower)
-
-    # Strategy: Inject synthetic tags
-    synth_before = len(top_candidates)
-    top_candidates = strategy.inject_synthetic_tags(top_candidates, market_brand, predicted_bt, category, extracted_flavors)
-    synth_added = len(top_candidates) - synth_before
-
-    # Strategy: GK Flavor Leak & Conflict Filters
-    ner_engine_clf = ner_engine or getattr(classifier, "ner_engine", None)
-    guaranteed_clean, trained_gk_clean, top_candidates_clean = strategy.apply_flavor_leak_filters(
-        list(guaranteed), list(trained_gk), list(top_candidates), extracted_flavors, ner_engine_clf
-    )
-
-    pruned_by_flavor = []
-    top_cands_clean_tags = {c["tag"].lower().strip() for c in top_candidates_clean}
-    for c in top_candidates:
-        if c["tag"].lower().strip() not in top_cands_clean_tags:
-            pruned_by_flavor.append(c["tag"])
-
-    # Reranking Layer
-    class RerankerWrapper:
-        def predict(self, pairs): return embed_engine.score_cross_encoder(pairs)
-    reranker = RerankerWrapper() if (hasattr(embed_engine, 'cross_session') and embed_engine.cross_session) else None
-
-    reranked_tags = []
-    final_conf = 0.0
+    top_candidates = []
+    top_candidates_clean = []
     scored_candidates = []
+    trained_gk_clean = []
+    pruned_by_flavor = []
+    raw_vector_cands_count = 0
+    synth_added = 0
+    guaranteed_clean = list(guaranteed)
+    trained_gk_final = []
 
-    if top_candidates_clean and USE_RERANKER and reranker is not None:
-        query_text = (sku_name + " " + description).strip()
-        pairs = [[query_text, c["tag"]] for c in top_candidates_clean]
-        raw_scores = reranker.predict(pairs)
-        if isinstance(raw_scores, float) or (hasattr(raw_scores, 'item') and raw_scores.ndim == 0):
-            scores = [float(raw_scores)]
-        else:
-            scores = [float(s) for s in raw_scores]
-        for c, score in zip(top_candidates_clean, scores):
-            tag_lower = c["tag"].lower().strip()
-            passed = strategy.get_reranker_threshold(score, tag_lower, allowed_gks_lower)
-            scored_candidates.append({
-                "tag": c["tag"],
-                "score": score,
-                "threshold_passed": bool(passed),
-                "source": c.get("source", "hybrid_search")
-            })
-        scored_candidates.sort(key=lambda x: x["score"], reverse=True)
-        if scored_candidates:
-            top_score = scored_candidates[0]["score"]
-            margin_cutoff = max(RERANKER_THRESHOLD, top_score - RERANKER_MARGIN)
-            for item in scored_candidates:
-                if item["threshold_passed"] and item["score"] < margin_cutoff:
-                    item["threshold_passed"] = False
-                    item["prune_reason_override"] = f"Reranker score ({item['score']:.3f}) < margin cutoff ({margin_cutoff:.3f})"
-
-        reranked_tags = [item["tag"] for item in scored_candidates if item["threshold_passed"]]
-        if scored_candidates:
-            final_conf = scored_candidates[0]["score"]
+    if early_return is not None:
+        merged_gk = list(early_return[0])
+        gk_conf = float(early_return[1])
+        gk_status = get_status(gk_conf, bool(merged_gk))
+        reranked_tags = []
     else:
-        reranked_tags = [c["tag"] for c in top_candidates_clean]
-        if top_candidates_clean:
-            final_conf = min(1.0, top_candidates_clean[0]["score"])
+        if vector_store is not None:
+            dense_hits, sparse_hits = vector_store.search_hybrid_tags(
+                dense_query=vec_dense,
+                sparse_query=vec_sparse,
+                limit=TAG_SEARCH_LIMIT,
+                filter_dict_type="gk",
+                domain=classifier.domain,
+                allowed_tags=search_allowed_tags
+            )
+            if FUSION_METHOD == "rrf":
+                fused_candidates = _rrf_fusion(dense_hits, sparse_hits)
+            else:
+                fused_candidates = _weighted_fusion(dense_hits, sparse_hits)
 
-    # Merge final tags
-    trained_gk_final = strategy.filter_final_trained_gk(trained_gk_clean, allowed_gks_lower)
-    merged_gk = []
-    seen = set()
-    for tag in guaranteed_clean + trained_gk_final + reranked_tags:
-        key = tag.lower().strip()
-        if key not in seen:
-            seen.add(key)
-            merged_gk.append(tag)
+        top_candidates = fused_candidates[:TOP_K_FUSED]
+        raw_vector_cands_count = len(top_candidates)
 
-    gk_conf = trained_conf if (trained_gk_final and trained_conf >= 0.8) else final_conf
-    gk_status = get_status(gk_conf, bool(merged_gk))
+        # Strategy: post search filters
+        top_candidates = strategy.apply_post_search_filters(top_candidates, allowed_gks_lower)
+
+        # Strategy: Inject synthetic tags
+        synth_before = len(top_candidates)
+        top_candidates = strategy.inject_synthetic_tags(top_candidates, market_brand, predicted_bt, category, extracted_flavors)
+        synth_added = len(top_candidates) - synth_before
+
+        # Strategy: GK Flavor Leak & Conflict Filters
+        ner_engine_clf = ner_engine or getattr(classifier, "ner_engine", None)
+        guaranteed_clean, trained_gk_clean, top_candidates_clean = strategy.apply_flavor_leak_filters(
+            list(guaranteed), list(trained_gk), list(top_candidates), extracted_flavors, ner_engine_clf
+        )
+
+        top_cands_clean_tags = {c["tag"].lower().strip() for c in top_candidates_clean}
+        for c in top_candidates:
+            if c["tag"].lower().strip() not in top_cands_clean_tags:
+                pruned_by_flavor.append(c["tag"])
+
+        # Reranking Layer
+        class RerankerWrapper:
+            def predict(self, pairs): return embed_engine.score_cross_encoder(pairs)
+        reranker = RerankerWrapper() if (hasattr(embed_engine, 'cross_session') and embed_engine.cross_session) else None
+
+        reranked_tags = []
+        final_conf = 0.0
+
+        if top_candidates_clean and USE_RERANKER and reranker is not None:
+            query_text = (sku_name + " " + description).strip()
+            pairs = [[query_text, c["tag"]] for c in top_candidates_clean]
+            raw_scores = reranker.predict(pairs)
+            if isinstance(raw_scores, float) or (hasattr(raw_scores, 'item') and raw_scores.ndim == 0):
+                scores = [float(raw_scores)]
+            else:
+                scores = [float(s) for s in raw_scores]
+            for c, score in zip(top_candidates_clean, scores):
+                tag_lower = c["tag"].lower().strip()
+                passed = strategy.get_reranker_threshold(score, tag_lower, allowed_gks_lower)
+                scored_candidates.append({
+                    "tag": c["tag"],
+                    "score": score,
+                    "threshold_passed": bool(passed),
+                    "source": c.get("source", "hybrid_search")
+                })
+            scored_candidates.sort(key=lambda x: x["score"], reverse=True)
+            if scored_candidates:
+                top_score = scored_candidates[0]["score"]
+                margin_cutoff = max(RERANKER_THRESHOLD, top_score - RERANKER_MARGIN)
+                for item in scored_candidates:
+                    if item["threshold_passed"] and item["score"] < margin_cutoff:
+                        item["threshold_passed"] = False
+                        item["prune_reason_override"] = f"Reranker score ({item['score']:.3f}) < margin cutoff ({margin_cutoff:.3f})"
+
+            reranked_tags = [item["tag"] for item in scored_candidates if item["threshold_passed"]]
+            if scored_candidates:
+                final_conf = scored_candidates[0]["score"]
+        else:
+            reranked_tags = [c["tag"] for c in top_candidates_clean]
+            if top_candidates_clean:
+                final_conf = min(1.0, top_candidates_clean[0]["score"])
+
+        # Merge final tags
+        trained_gk_final = strategy.filter_final_trained_gk(trained_gk_clean, allowed_gks_lower)
+        merged_gk = []
+        seen = set()
+        for tag in guaranteed_clean + trained_gk_final + reranked_tags:
+            key = tag.lower().strip()
+            if key not in seen:
+                seen.add(key)
+                merged_gk.append(tag)
+
+        gk_conf = trained_conf if (trained_gk_final and trained_conf >= 0.8) else final_conf
+        gk_status = get_status(gk_conf, bool(merged_gk))
 
     # Consolidated keywords considered table
     all_considered_map = {}

@@ -112,26 +112,35 @@ class NEREngine:
         """Indexes flavor/brand aliases from the Google Sheet for fast dict scanning."""
         if df is None or df.empty:
             return
-        for _, row in df.iterrows():
-            canonical = str(row.get("Brand Name", row.get("Flavor Name", ""))).strip().lower()
+        cols = list(df.columns)
+        name_col = "Brand Name" if "Brand Name" in cols else ("Flavor Name" if "Flavor Name" in cols else None)
+        names = df[name_col].tolist() if name_col else [""] * len(df)
+        aliases_list = df["Aliases"].tolist() if "Aliases" in cols else [""] * len(df)
+        is_weaks = df["Is_Weak"].tolist() if "Is_Weak" in cols else [""] * len(df)
+        is_meats = df["Is_Meat"].tolist() if "Is_Meat" in cols else [""] * len(df)
+        is_vegs = df["Is_Vegetable"].tolist() if "Is_Vegetable" in cols else [""] * len(df)
+        is_seafoods = df["Is_Seafood"].tolist() if "Is_Seafood" in cols else [""] * len(df)
+
+        for raw_name, raw_alias, raw_weak, raw_meat, raw_veg, raw_seafood in zip(names, aliases_list, is_weaks, is_meats, is_vegs, is_seafoods):
+            canonical = str(raw_name or "").strip().lower()
             if not canonical or canonical == "nan":
                 continue
-            aliases_str = str(row.get("Aliases", ""))
+            aliases_str = str(raw_alias or "")
             aliases = (
                 [x.strip().lower() for x in aliases_str.split(",")
                  if x.strip() and x.strip().lower() != "nan"]
                 if aliases_str != "nan" else []
             )
             aliases.append(canonical)
-            is_weak = str(row.get("Is_Weak", "")).strip().lower() in ("true", "1", "yes", "y")
+            is_weak = str(raw_weak or "").strip().lower() in ("true", "1", "yes", "y")
             if is_weak:
                 self.weak_brands.add(canonical)
                 
-            if str(row.get("Is_Meat", "")).strip().lower() in ("true", "1", "yes", "y"):
+            if str(raw_meat or "").strip().lower() in ("true", "1", "yes", "y"):
                 self.meat_flavors.add(canonical)
-            if str(row.get("Is_Vegetable", "")).strip().lower() in ("true", "1", "yes", "y"):
+            if str(raw_veg or "").strip().lower() in ("true", "1", "yes", "y"):
                 self.vegetable_flavors.add(canonical)
-            if str(row.get("Is_Seafood", "")).strip().lower() in ("true", "1", "yes", "y"):
+            if str(raw_seafood or "").strip().lower() in ("true", "1", "yes", "y"):
                 self.seafood_flavors.add(canonical)
                 
             for alias in aliases:
