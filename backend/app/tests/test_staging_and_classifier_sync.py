@@ -100,7 +100,9 @@ class TestStagingAndClassifierSync(unittest.TestCase):
             "Name": [f"Item {i}" for i in range(20)],
             "basictype": [f"BT_{i % 3}" for i in range(20)],
             "category": [f"Cat_{i % 2}" for i in range(20)],
-            "Generic keywords": [f"kw_{i}, kw_common" for i in range(20)],
+            "Generic keywords": [
+                f"kw_{i}" + (", kw_common" if i % 2 == 0 else "") for i in range(20)
+            ],
             "Price": [10.0 + i for i in range(20)],
             "Description": [f"Desc {i}" for i in range(20)],
         }
