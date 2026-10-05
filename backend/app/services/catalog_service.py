@@ -4,12 +4,10 @@ import os
 import re
 import threading
 from typing import Any, Dict, List, Optional
-
 import joblib
 import pandas as pd
 import requests
-
-from engine.core import config as engine_config
+from engine import config as engine_config
 from engine.data_pipeline.cache_manager import calculate_row_hash, clean_price
 from engine.data_pipeline.ingestion import DataIngestion
 

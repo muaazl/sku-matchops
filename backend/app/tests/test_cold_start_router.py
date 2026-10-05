@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 
-from engine.core import config
+from engine import config
 from engine.classification.cold_start_router import (
     ClassLifecycleTier,
     ColdStartRouter,

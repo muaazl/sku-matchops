@@ -2,13 +2,10 @@ import gc
 import logging
 import re
 from typing import Callable, Dict, List, Optional, Tuple
-
 import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz
-from tqdm import tqdm
-
-from engine.core import config
+from engine import config
 from engine.nlp.text_cleaner import TextPipeline
 from engine.utils.flavor_utils import build_food_flavors_info, triage_input_flavors
 from engine.utils.weight_utils import resolve_weight_bypass_candidate
@@ -63,7 +60,7 @@ class SKUMatcher:
         def _compile_terms(terms_set):
             if not terms_set:
                 return None
-            sorted_t = sorted([t.lower().strip() for t in terms_set if t.strip()], key=len, reverse=True)
+            sorted_t = sorted([t.lower().strip() for t in terms_set if t.strip()], key=lambda x: (len(x), x), reverse=True)
             if not sorted_t:
                 return None
             return re.compile(r"\b(" + "|".join(re.escape(t) for t in sorted_t) + r")\b", re.IGNORECASE)
@@ -161,7 +158,7 @@ class SKUMatcher:
     def _process_single_chunk(self, input_df: pd.DataFrame, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
         """Matches a single chunk of input SKUs against the catalog."""
         results = []
-        logger.info(f"[MATCH] Pre-processing {len(input_df)} input SKUs...")
+        logger.debug(f"[MATCH] Pre-processing {len(input_df)} input SKUs...")
 
         raw_names, clean_inputs, prices, input_no_weights_list, input_w_data_list = [], [], [], [], []
         descriptions, categories = [], []
@@ -210,7 +207,7 @@ class SKUMatcher:
         # Step 1: Exact & Fuzzy Matching (AI Bypass with BasicType consistency check)
         ai_indices = []
         bypass_results: List[Optional[Tuple]] = [None] * len(raw_names)
-        logger.info("[MATCH] [Step 1] Running AI bypass matching...")
+        logger.info("[MATCH] Executing exact-match and deterministic rules fast-path...")
 
         for i, clean_input in enumerate(clean_inputs):
             input_no_weights = input_no_weights_list[i]
@@ -224,6 +221,10 @@ class SKUMatcher:
 
             # Exact text match lookup
             cat_indices = self.exact_match_map.get(clean_input)
+            
+            if cat_indices is None and clean_input.endswith(" mixed"):
+                cat_indices = self.exact_match_map.get(clean_input[:-6])
+                
             if cat_indices is not None:
                 if isinstance(cat_indices, int):
                     cat_indices = [cat_indices]
@@ -238,7 +239,7 @@ class SKUMatcher:
                     if bt_matched:
                         selected_idx = bt_matched[0]
                     else:
-                        selected_idx = None
+                        selected_idx = cat_indices[0]
                 else:
                     selected_idx = cat_indices[0]
 
@@ -266,8 +267,6 @@ class SKUMatcher:
                     ]
                     if bt_matched:
                         valid_cands = bt_matched
-                    else:
-                        valid_cands = []
 
                 if valid_cands:
                     combined_score = 1.0
@@ -303,7 +302,7 @@ class SKUMatcher:
             progress_callback(30.0)
 
         # Step 3: Final Matching Loop (Unrolled for Batching)
-        logger.info(f"[MATCH] [Step 4] Finalizing matches for {len(raw_names)} items...")
+        logger.info(f"[MATCH] Finalizing semantic retrieval matches for {len(raw_names)} items...")
 
         # 3B. Batch Qdrant Queries
         search_dense = []
@@ -399,12 +398,10 @@ class SKUMatcher:
                     for cand_idx, cand_row in df_cands.iterrows():
                         all_cands_list.append((q_type, cand_idx, cand_row))
             
-            all_cands_list.sort(key=lambda x: x[2].get("_qdrant_score_", 0.0), reverse=True)
+            all_cands_list.sort(key=lambda x: (-x[2].get("_qdrant_score_", 0.0), x[2].get("clean_text", "")))
             
             seen_texts = set()
             for q_type, cand_idx, cand_row in all_cands_list:
-                if len(seen_texts) >= 15:
-                    break
                 txt = cand_row.get("clean_text", "")
                 if txt not in seen_texts:
                     seen_texts.add(txt)
@@ -435,10 +432,12 @@ class SKUMatcher:
             cat_toks = df_cands["token_count"].values if "token_count" in df_cands else np.zeros(len(df_cands))
             df_cands = df_cands.copy()
             df_cands['cross_score'] = c_scores
-            return df_cands.sort_values(by='cross_score', ascending=False)
+            df_cands['cross_score_rounded'] = np.round(c_scores, 3)
+            return df_cands.sort_values(by=['cross_score_rounded', 'clean_text'], ascending=[False, True])
             
         # 3D. Final Evaluation Loop
-        for i in tqdm(range(len(raw_names)), unit="sku"):
+        logger.info(f"[MATCH] Executing final business rules evaluation for {len(raw_names)} SKUs...")
+        for i in range(len(raw_names)):
             if progress_callback:
                 progress_callback(75.0 + (((i + 1) / len(raw_names)) * 25.0), f"Matching {i + 1} of {len(raw_names)}...")
 
@@ -476,7 +475,7 @@ class SKUMatcher:
                         status_f = "Rejected"
                         reasons_f = ""
                         best_cand_score_f = -100.0
-                        for idx, cand_row in candidates_filtered.head(5).iterrows():
+                        for idx, cand_row in candidates_filtered.head(config.MATCHER_LOGIC_GATE_CANDIDATES).iterrows():
                             cand_score = cand_row['cross_score']
                             cand_row_copy = cand_row.drop('cross_score').copy()
 
@@ -492,8 +491,14 @@ class SKUMatcher:
                                 is_better = True
                             elif f_score > final_score_f + 1e-4:
                                 is_better = True
-                            elif abs(f_score - final_score_f) <= 1e-4 and cand_score > best_cand_score_f:
-                                is_better = True
+                            elif abs(f_score - final_score_f) <= 1e-4:
+                                if cand_score > best_cand_score_f + 1e-3:
+                                    is_better = True
+                                elif abs(cand_score - best_cand_score_f) <= 1e-3:
+                                    curr_text = str(cand_row_copy.get("clean_text", cand_row_copy.get("Name", "")))
+                                    best_text = str(best_match_row_f.get("clean_text", best_match_row_f.get("Name", "")))
+                                    if curr_text < best_text:
+                                        is_better = True
 
                             if is_better:
                                 best_match_row_f = cand_row_copy
@@ -548,7 +553,7 @@ class SKUMatcher:
                         reasons_uf = ""
                         best_cand_score_uf = -100.0
 
-                        for idx, cand_row in candidates_unfiltered.head(5).iterrows():
+                        for idx, cand_row in candidates_unfiltered.head(config.MATCHER_LOGIC_GATE_CANDIDATES).iterrows():
                             cand_score = cand_row['cross_score']
                             cand_row_copy = cand_row.drop('cross_score').copy()
 
@@ -564,8 +569,14 @@ class SKUMatcher:
                                 is_better = True
                             elif uf_score > final_score_uf + 1e-4:
                                 is_better = True
-                            elif abs(uf_score - final_score_uf) <= 1e-4 and cand_score > best_cand_score_uf:
-                                is_better = True
+                            elif abs(uf_score - final_score_uf) <= 1e-4:
+                                if cand_score > best_cand_score_uf + 1e-3:
+                                    is_better = True
+                                elif abs(cand_score - best_cand_score_uf) <= 1e-3:
+                                    curr_text = str(cand_row_copy.get("clean_text", cand_row_copy.get("Name", "")))
+                                    best_text = str(best_match_row_uf.get("clean_text", best_match_row_uf.get("Name", "")))
+                                    if curr_text < best_text:
+                                        is_better = True
 
                             if is_better:
                                 best_match_row_uf = cand_row_copy

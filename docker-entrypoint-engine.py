@@ -42,7 +42,7 @@ def main():
     # Check and prepare ONNX & INT8 models (Idempotent)
     sys.path.insert(0, "/app")
     try:
-        from engine.core import config
+        from engine import config
         
         bge_int8 = os.path.join(config.ONNX_DIR, "bge_m3", "model_int8.onnx")
         bge_fp32 = os.path.join(config.ONNX_DIR, "bge_m3", "model.onnx")

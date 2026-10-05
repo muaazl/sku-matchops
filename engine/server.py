@@ -14,7 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from engine.core import config
+from engine import config
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.data_pipeline.vector_store import VectorStore
 from engine.pipeline.processor import process_request

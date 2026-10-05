@@ -56,7 +56,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("matchops.sync_catalog")
 
-from engine.core import config
+from engine import config
 from engine.core.db import init_db, ensure_db_initialized, clear_db_cache
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.nlp.text_cleaner import TextPipeline

@@ -1,10 +1,8 @@
 import logging
 import re
 from typing import Dict, Optional
-
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
-
 from backend.app.services.catalog_service import (
     clean_record_nans,
     check_changes_for_domain,
@@ -16,7 +14,7 @@ from backend.app.services.catalog_service import (
     trigger_build_cache,
 )
 from backend.app.services.meilisearch_service import get_meili_client, is_meili_healthy
-from engine.core import config as engine_config
+from engine import config as engine_config
 from engine.core.db import ensure_db_initialized
 
 logger = logging.getLogger("matchops.catalog_api")

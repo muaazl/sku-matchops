@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import joblib
 
-from engine.core import config
+from engine import config
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.classification.classifier import ZeroShotClassifier
 

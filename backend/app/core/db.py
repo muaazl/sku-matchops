@@ -1,5 +1,5 @@
 import sqlite3
-from engine.core.config import DB_PATH
+from engine.config import DB_PATH
 from engine.core.db import ensure_db_initialized
 
 def get_db_connection():

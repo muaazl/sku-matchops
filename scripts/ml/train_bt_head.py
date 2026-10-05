@@ -34,7 +34,7 @@ PROJECT_ROOT = os.path.dirname(ENGINE_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from engine.core import config
+from engine import config
 from engine.classification.models.arcface_bt import BTArcFaceNet, FocalLoss
 
 logging.basicConfig(

@@ -1,12 +1,9 @@
 import functools
 import logging
-
-from engine.core import config
+from engine.config import DB_PATH
 from engine.core.db import ensure_db_initialized
 
 logger = logging.getLogger("matchops.rules_loader")
-
-DB_PATH = config.DB_PATH
 
 # In-memory cache: { domain: { module: [ rule_dicts ] } }
 _RULES_CACHE = None

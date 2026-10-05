@@ -11,7 +11,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import torch
 
-from engine.core import config
+from engine import config
 from engine.classification.classifier import ZeroShotClassifier
 from engine.classification.models.arcface_bt import ArcFaceHead, BTArcFaceNet, FocalLoss
 

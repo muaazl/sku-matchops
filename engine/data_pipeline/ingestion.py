@@ -3,7 +3,6 @@ import os
 import sys
 import time
 from typing import Dict, List, Tuple, Optional
-
 import pandas as pd
 import polars as pl
 import requests
@@ -13,8 +12,7 @@ import io
 import shutil
 import sqlite3
 import threading
-
-from engine.core import config
+from engine import config
 from engine.core.db import ensure_db_initialized
 
 logger = logging.getLogger("matchops.ingestion")

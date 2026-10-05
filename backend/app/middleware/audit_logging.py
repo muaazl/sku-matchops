@@ -140,4 +140,5 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error(f"Failed to log API request: {e}")
             
+        logger.info(f"API {method} {path} - {status_code} - {duration_ms}ms")
         return response

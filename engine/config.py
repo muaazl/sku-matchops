@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Environment Variables ---
+# --- Environment Variables (Secrets & External Integrations) ---
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
 # Suppress sklearn InconsistentVersionWarning for pickled estimators (like TF-IDF)
@@ -34,7 +34,7 @@ warnings.filterwarnings("ignore", message=".*incorrect regex pattern.*", categor
 
 # --- Path Configuration ---
 # BASE_DIR points to the engine package directory
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(ROOT_DIR, "data"))
@@ -49,10 +49,14 @@ LOG_FILE = os.path.join(LOG_DIR, "app.log")
 
 # --- Qdrant Configuration ---
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-QDRANT_HNSW_M = int(os.getenv("QDRANT_HNSW_M", "16"))
-QDRANT_HNSW_EF_CONSTRUCT = int(os.getenv("QDRANT_HNSW_EF_CONSTRUCT", "100"))
-QDRANT_INDEXING_THRESHOLD = int(os.getenv("QDRANT_INDEXING_THRESHOLD", "10000"))
-QDRANT_MEMMAP_THRESHOLD = int(os.getenv("QDRANT_MEMMAP_THRESHOLD", "5000"))
+QDRANT_HNSW_M = 16
+QDRANT_HNSW_EF_CONSTRUCT = 100
+QDRANT_INDEXING_THRESHOLD = 10000
+QDRANT_MEMMAP_THRESHOLD = 5000
+# Network timeout (in seconds) for Qdrant client HTTP operations
+QDRANT_TIMEOUT = 60.0
+# Maximum chunk size when executing batch point queries to prevent HTTP payload overflow
+QDRANT_BATCH_CHUNK_SIZE = 100
 
 # --- Meilisearch Configuration ---
 MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
@@ -67,7 +71,6 @@ MEILI_INDEX_MARKET = "market_catalog"
 MEILI_INDEX_FOOD = "food_catalog"
 MEILI_INDEX_MARKET_DICTS = "market_dictionaries"
 MEILI_INDEX_FOOD_DICTS = "food_dictionaries"
-
 
 # Hash salt for cache validation
 CACHE_SALT = "MatchOps_v2"
@@ -151,13 +154,25 @@ FOOD_NER_LABELS = [
     "flavor",   # All food attributes (chicken, lamb, chocolate, vanilla…) live here
 ]
 NER_LABELS = MARKET_NER_LABELS + FOOD_NER_LABELS  # Combined for initialization
+# GLiNER entity extraction confidence threshold. Detections below this are ignored.
+NER_CONFIDENCE_THRESHOLD = 0.25
 
 # --- Matching Parameters ---
 TOP_K_RETRIEVAL = 30
 BGE_M3_DENSE_DIM = 1024
 EMBED_BATCH_SIZE = 32
 UPSERT_BATCH_SIZE = 256
-CONFIDENCE_THRESHOLD_HIGH = 4.0
+CONFIDENCE_THRESHOLD_HIGH = float(os.getenv("CONFIDENCE_THRESHOLD_HIGH", "4.0"))
+# Score threshold separating Medium Confidence from Low / Rejected in Matcher logic gates
+CONFIDENCE_THRESHOLD_MEDIUM = 0.0
+# Logistic scale factor (growth rate) for mapping raw rule-based match scores to calibrated probabilities: 1 / (1 + exp(-scale * score))
+LOGIC_GATE_SIGMOID_SCALE = 0.55
+# Token sort similarity ratio threshold (0-100) for triggering whole-SKU fuzzy match bypass
+FUZZY_BYPASS_RATIO = 90.0
+# Word-level character ratio threshold (0-100) for fuzzy typo alignment during fuzzy bypass checks
+FUZZY_BYPASS_TYPO_RATIO = 80.0
+# Number of top AI cross-encoder candidates evaluated against business rules and validation gates in matcher
+MATCHER_LOGIC_GATE_CANDIDATES = 5
 MATCH_CHUNK_SIZE = int(os.getenv("MATCH_CHUNK_SIZE", "250"))
 CLASSIFY_CHUNK_SIZE = int(os.getenv("CLASSIFY_CHUNK_SIZE", "250"))
 
@@ -197,8 +212,8 @@ COL_INPUT_CATEGORY = "Category"
 COL_GK = "Generic keywords"
 COL_BT = "basictype"
 
-AUTO_THRESHOLD = 0.80
-REVIEW_THRESHOLD = 0.50
+AUTO_THRESHOLD = float(os.getenv("AUTO_THRESHOLD", "0.80"))
+REVIEW_THRESHOLD = float(os.getenv("REVIEW_THRESHOLD", "0.50"))
 
 BT_ZERO_SHOT_CONFIDENCE_THRESHOLD = 0.40
 BT_DEFAULT_CONFIDENCE_THRESHOLD = 0.50
@@ -209,9 +224,62 @@ def get_bt_confidence_threshold(source: str) -> float:
 
 # Cross-encoder returns raw logits (not probabilities).
 # Any positive logit is treated as a relevant match.
-# Tune this here without touching tagger.py.
 RERANKER_THRESHOLD = 0.0
 RERANKER_MARGIN = 2.5  # Max logit drop from top candidate before subsequent candidates are pruned
+
+# Minimum confidence required to accept trained ArcFace or LogisticRegression BT model prediction
+# before falling back to zero-shot or cold-start router.
+BT_TRAINED_CONFIDENCE_THRESHOLD = 0.40
+
+# Minimum probability threshold required to accept multi-label generic keyword (GK) predictions from trained model.
+GK_TRAINED_CONFIDENCE_THRESHOLD = 0.50
+
+# --- Hybrid Fusion & Reranking (Classifier GK & Tagging) ---
+# Fusion method for combining dense vector search hits and sparse lexical search hits.
+# Options: "rrf" (Reciprocal Rank Fusion) or "weighted" (Linear weighted sum).
+FUSION_METHOD = "rrf"
+
+# Alpha parameter for weighted fusion: score = alpha * dense + (1 - alpha) * sparse.
+# Controls balance between semantic similarity (1.0 = 100% dense) and lexical keyword overlap (0.0 = 100% sparse).
+ALPHA = 0.5
+
+# Toggle for cross-encoder reranking layer.
+# When True, candidates retrieved from hybrid fusion are rescored by BGE-Reranker-v2-m3.
+USE_RERANKER = True
+
+# Smoothing constant k in Reciprocal Rank Fusion formula: 1 / (k + rank + 1).
+# Higher values smooth out the ranking discounts across candidate hits.
+RRF_K = 60
+
+# Maximum candidate tags retrieved from vector store during dense/sparse hybrid search before fusion.
+TAG_SEARCH_LIMIT = 50
+
+# --- Cold-Start Lifecycle & Router Parameters ---
+# Training sample count cutoff (N_c) separating Tier 2 (Few-Shot k-NN) from Tier 3 (Warm Centroid Prototypes).
+LIFECYCLE_FEW_SHOT_THRESHOLD = 15
+
+# Softmax temperature hyperparameter (tau) for scaling cosine similarities against warm centroid prototypes.
+COLD_START_TAU = 0.05
+
+# Number of nearest neighbor samples retrieved in Tier 2 instance-level few-shot classification.
+FEW_SHOT_TOP_K = 15
+
+# Minimum aggregated similarity threshold required to propagate generic keywords from few-shot neighbors.
+FEW_SHOT_GK_WEIGHT_THRESHOLD = 0.35
+
+# Maximum candidate classes evaluated by cross-encoder in Tier 1 zero-shot classification after bi-encoder pre-filtering.
+ZERO_SHOT_MAX_CANDIDATES = 5
+
+# --- Domain Logic & Training Mining Configuration ---
+# Primary food dish types used to detect and prevent cross-dish generic keyword collisions (e.g. 'fried rice' vs 'biriyani').
+PRIMARY_DISH_TYPES = [
+    "fried rice", "chop suey rice", "chop suey noodles", "chop suey",
+    "biriyani", "kottu", "rice and curry", "nasi goreng", "noodles",
+    "fried noodles", "pasta", "burger", "pizza", "submarine", "wrap", "taco", "soup"
+]
+
+# Minimum frequency threshold for a keyword to be treated as an umbrella tag for a Basic Type during training data mining.
+UMBRELLA_MINING_THRESHOLD = 0.80
 
 # Weighted embedding defaults: (Name, Description, Category)
 CLASSIFIER_WEIGHTS = (1.0, 0.8, 0.5)  # Classifier needs desc+cat context for disambiguation

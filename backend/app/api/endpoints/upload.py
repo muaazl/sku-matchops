@@ -1,10 +1,9 @@
 import json
 import sqlite3
 import logging
-
 from fastapi import APIRouter, Depends, HTTPException
 from backend.app.core.db import get_db_connection, get_next_job_id
-from engine.core.config import DB_PATH
+from engine.config import DB_PATH
 from backend.app.schemas.models import UploadRequest, EnqueueJobResponse
 from backend.app.services.engine_client import dispatch_upload_job
 

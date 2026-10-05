@@ -1,8 +1,8 @@
 import logging
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Set
-
 import pandas as pd
+from engine.config import PRIMARY_DISH_TYPES, UMBRELLA_MINING_THRESHOLD
 
 logger = logging.getLogger("matchops.loader")
 
@@ -153,7 +153,7 @@ def build_bt_third_tag_map_from_catalog(cat_df: pd.DataFrame, domain: str) -> Di
     if not bt_col:
         return {}
         
-    from engine.core.config import get_third_tag_col
+    from engine.config import get_third_tag_col
     target_name = get_third_tag_col(domain)
     target_col = _find_column(cat_df, [target_name, "region", "Region", "category", "Categories", "Categories / generic keywords"])
     
@@ -181,7 +181,7 @@ def build_bt_third_tag_map_from_catalog(cat_df: pd.DataFrame, domain: str) -> Di
         logger.error(f"build_bt_third_tag_map_from_catalog failed: {e}")
         return {}
 
-def build_umbrella_from_training(cat_df: pd.DataFrame, threshold: float = 0.60) -> Dict[str, List[str]]:
+def build_umbrella_from_training(cat_df: pd.DataFrame, threshold: float = UMBRELLA_MINING_THRESHOLD) -> Dict[str, List[str]]:
     """Mines the catalog to discover GK tags that reliably co-occur with specific BTs."""
     if cat_df.empty:
         return {}
@@ -220,11 +220,6 @@ def build_umbrella_from_training(cat_df: pd.DataFrame, threshold: float = 0.60) 
         logger.error(f"build_umbrella_from_training failed: {e}")
         return {}
 
-PRIMARY_DISH_TYPES = [
-    "fried rice", "chop suey rice", "chop suey noodles", "chop suey",
-    "biriyani", "kottu", "rice and curry", "nasi goreng", "noodles",
-    "fried noodles", "pasta", "burger", "pizza", "submarine", "wrap", "taco", "soup"
-]
 
 def is_conflicting_dish_tag(tag: str, bt: str) -> bool:
     """Checks if a generic keyword tag represents a conflicting primary dish type for the given BT."""

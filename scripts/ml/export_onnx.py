@@ -2,9 +2,9 @@ import logging
 import os
 import shutil
 import sys
-
 import torch
 import torch.nn as nn
+from engine.config import ONNX_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("export_onnx")
@@ -14,8 +14,6 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from engine.core import config
-ONNX_DIR = config.ONNX_DIR
 TMP_DIR = os.path.join(PROJECT_ROOT, "data", "cache", "onnx_tmp")
 
 def ensure_dirs():

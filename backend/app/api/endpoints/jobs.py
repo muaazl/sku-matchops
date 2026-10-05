@@ -3,10 +3,8 @@ import json
 import sqlite3
 from typing import List, Optional
 from zoneinfo import ZoneInfo
-
 from fastapi import APIRouter, Depends, HTTPException
-
-from engine.core import config as engine_config
+from engine import config as engine_config
 from backend.app.core.db import get_db_connection
 from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
 from fastapi import Response

@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from unittest.mock import MagicMock, patch
 
-from engine.core import config
+from engine import config
 from engine.core.db import ensure_db_initialized
 from engine.matching.matcher import SKUMatcher
 from engine.core.resource_loader import get_pipeline

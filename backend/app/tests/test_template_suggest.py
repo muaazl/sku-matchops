@@ -5,7 +5,7 @@ import pandas as pd
 # Import the functions to test
 from engine.templates.template_suggest import title_case_with_exceptions, suggest_tags_from_template
 from engine.nlp.ner_engine import NEREngine
-from engine.core import config
+from engine import config
 
 class TestTemplateSuggest(unittest.TestCase):
 

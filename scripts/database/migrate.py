@@ -1,17 +1,14 @@
 import sqlite3
 import os
 import sys
+from engine.config import DB_PATH
+from engine.core.db import ensure_db_initialized
 
 # Add project root to python path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
-
-from engine.core import config
-from engine.core.db import ensure_db_initialized
-
-DB_PATH = config.DB_PATH
 
 def migrate():
     print(f"Connecting to database at {os.path.abspath(DB_PATH)}")

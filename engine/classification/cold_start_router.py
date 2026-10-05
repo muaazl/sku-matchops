@@ -11,7 +11,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from engine.core import config
+from engine import config
 from engine.nlp.embedding_engine import EmbeddingEngine
 
 logger = logging.getLogger("matchops.cold_start_router")
@@ -34,7 +34,7 @@ class TaxonomyLifecycleRegistry:
         self,
         domain: str = config.DOMAIN_MARKET,
         cache_dir: Optional[str] = None,
-        few_shot_threshold: int = 15,
+        few_shot_threshold: int = config.LIFECYCLE_FEW_SHOT_THRESHOLD,
     ):
         self.domain = domain
         self.cache_dir = cache_dir or config.CACHE_DIR
@@ -319,8 +319,8 @@ class Tier1ZeroShotClassifier:
         self,
         embed_engine: EmbeddingEngine,
         registry: TaxonomyLifecycleRegistry,
-        confidence_threshold: float = 0.50,
-        max_candidate_cross_eval: int = 5,
+        confidence_threshold: float = config.REVIEW_THRESHOLD,
+        max_candidate_cross_eval: int = config.ZERO_SHOT_MAX_CANDIDATES,
     ):
         self.embed_engine = embed_engine
         self.registry = registry
@@ -466,9 +466,9 @@ class Tier2FewShotClassifier:
         self,
         registry: TaxonomyLifecycleRegistry,
         vector_store: Any,
-        top_k: int = 15,
-        confidence_threshold: float = 0.50,
-        gk_weight_threshold: float = 0.35,
+        top_k: int = config.FEW_SHOT_TOP_K,
+        confidence_threshold: float = config.REVIEW_THRESHOLD,
+        gk_weight_threshold: float = config.FEW_SHOT_GK_WEIGHT_THRESHOLD,
     ):
         self.registry = registry
         self.vector_store = vector_store
@@ -593,8 +593,8 @@ class Tier3CentroidClassifier:
     def __init__(
         self,
         registry: TaxonomyLifecycleRegistry,
-        tau: float = 0.05,
-        confidence_threshold: float = 0.50,
+        tau: float = config.COLD_START_TAU,
+        confidence_threshold: float = config.REVIEW_THRESHOLD,
     ):
         self.registry = registry
         self.tau = tau
@@ -657,8 +657,8 @@ class ColdStartRouter:
         descriptions: Dict[str, Any],
         cat_df: Optional[pd.DataFrame] = None,
         cache_dir: Optional[str] = None,
-        few_shot_threshold: int = 15,
-        tau: float = 0.05,
+        few_shot_threshold: int = config.LIFECYCLE_FEW_SHOT_THRESHOLD,
+        tau: float = config.COLD_START_TAU,
     ):
         self.domain = domain
         self.embed_engine = embed_engine

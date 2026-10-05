@@ -1,15 +1,17 @@
+import logging
 import os
 import numpy as np
 import onnxruntime as ort
 from sentence_transformers import CrossEncoder
 import torch
 from transformers import AutoModel, AutoTokenizer
+from engine import config
 
-from engine.core import config
+logger = logging.getLogger("matchops.engine.model_optimizer")
 
 def export_bge_m3_onnx(model_name: str, export_path: str):
     """Reference exporter for standard single-head BGE-M3."""
-    print(f"Exporting {model_name} to ONNX...")
+    logger.info(f"Exporting {model_name} to ONNX...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModel.from_pretrained(model_name)
     model.eval()
@@ -30,11 +32,11 @@ def export_bge_m3_onnx(model_name: str, export_path: str):
         },
         opset_version=14
     )
-    print(f"Done: {export_path}")
+    logger.info(f"Done: {export_path}")
 
 def export_cross_encoder_onnx(model_name: str, export_path: str):
     """Reference exporter for standard cross-encoder."""
-    print(f"Exporting Cross-Encoder {model_name} to ONNX...")
+    logger.info(f"Exporting Cross-Encoder {model_name} to ONNX...")
     model = CrossEncoder(model_name, device='cpu')
     tokenizer = model.tokenizer
     hf_model = model.model
@@ -56,7 +58,7 @@ def export_cross_encoder_onnx(model_name: str, export_path: str):
         },
         opset_version=14
     )
-    print(f"Done: {export_path}")
+    logger.info(f"Done: {export_path}")
 
 def get_onnx_session(model_path: str) -> ort.InferenceSession:
     """Helper to initialize an optimized ONNX CPU inference session."""
@@ -87,4 +89,4 @@ def warmup_onnx(session, batch_size=1, seq_len=32):
         inputs[name] = np.zeros(actual_shape, dtype=np.int64)
 
     session.run(None, inputs)
-    print(f"Warmup complete for {os.path.basename(session._model_path if hasattr(session, '_model_path') else 'model')}")
+    logger.info(f"Warmup complete for {os.path.basename(session._model_path if hasattr(session, '_model_path') else 'model')}")

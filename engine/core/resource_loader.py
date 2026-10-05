@@ -8,7 +8,7 @@ import logging
 import sys
 import threading
 import pandas as pd
-from engine.core import config
+from engine import config
 from engine.classification.classifier import ZeroShotClassifier
 from engine.classification.loader import (
     augment_bt_gk_map_with_training,
@@ -26,18 +26,12 @@ from engine.nlp.ner_engine import NEREngine
 
 logger = logging.getLogger("matchops.engine.loader")
 
-# Lazy pipeline cache
 _pipelines: dict[str, SKUMatcher] = {}
 _classifiers: dict[str, ZeroShotClassifier] = {}
 _domain_ner_engines: dict[str, NEREngine] = {}
 _vector_store = None
 _loader_lock = threading.RLock()
 
-# Per-domain build locks. The expensive pipeline/classifier build (catalog load + embedding +
-# Qdrant sync + classifier training) must NOT run while holding _loader_lock — that would
-# serialize market/food builds, which run concurrently by design (see _bg_load_models).
-# Instead each domain gets its own lock, so two concurrent callers building the SAME domain
-# serialize (fixing the duplicate-build race) while market and food can still build in parallel.
 _pipeline_build_locks = {
     config.DOMAIN_MARKET: threading.Lock(),
     config.DOMAIN_FOOD: threading.Lock(),

@@ -5,7 +5,6 @@ import socket
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
-
 import httpx
 import numpy as np
 import pandas as pd
@@ -28,8 +27,7 @@ from qdrant_client.http.models import (
     SparseVectorParams,
     VectorParams,
 )
-
-from engine.core import config
+from engine import config
 
 logger = logging.getLogger("matchops.vector_store")
 
@@ -54,7 +52,7 @@ class VectorStore:
     def get_client(cls, force_reconnect: bool = False) -> QdrantClient:
         """Returns or reinitializes the singleton QdrantClient instance."""
         if cls._client is None or force_reconnect:
-            cls._client = QdrantClient(url=config.QDRANT_URL, timeout=60.0)
+            cls._client = QdrantClient(url=config.QDRANT_URL, timeout=config.QDRANT_TIMEOUT)
         return cls._client
 
     def __init__(self):
@@ -335,7 +333,7 @@ class VectorStore:
         # Execute batch request with retry resilience
         # If the batch is very large, chunk it to avoid payload limits
         results = []
-        batch_size = 100
+        batch_size = config.QDRANT_BATCH_CHUNK_SIZE
         for i in range(0, len(requests), batch_size):
             chunk = requests[i : i + batch_size]
             batch_results = self._call_with_retry(
@@ -489,9 +487,9 @@ class VectorStore:
             )
 
         # Batch upsert tags
-        batch_size = 100
+        batch_size = 500
         for i in range(0, len(points), batch_size):
-            self._call_with_retry("upsert", self.client.upsert, collection_name=collection_name, points=points[i : i + batch_size])
+            self._call_with_retry("upsert", self.client.upsert, collection_name=collection_name, points=points[i : i + batch_size], wait=False)
         logger.info(f"[QDRANT] Upserted {len(points)} items to {collection_name} ({dict_type}).")
 
     def search_hybrid_tags(
@@ -552,7 +550,7 @@ class VectorStore:
         filter_dict_type: Optional[str] = None,
         domain: str = config.DOMAIN_MARKET,
         allowed_tags_list: Optional[List[Optional[List[str]]]] = None,
-        limit: int = 50,
+        limit: int = config.TAG_SEARCH_LIMIT,
     ) -> List[Tuple[List[ScoredPoint], List[ScoredPoint]]]:
         """Performs batch dense and sparse tag searches using query_batch_points for high throughput."""
         n = len(dense_queries)
@@ -598,8 +596,8 @@ class VectorStore:
             else:
                 has_sparse_flags.append(False)
 
-        # Batch query points in chunks of 100 requests
-        batch_size = 100
+        # Batch query points in chunks of QDRANT_BATCH_CHUNK_SIZE requests
+        batch_size = config.QDRANT_BATCH_CHUNK_SIZE
         raw_responses = []
         for i in range(0, len(requests), batch_size):
             chunk = requests[i : i + batch_size]

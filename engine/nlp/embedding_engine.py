@@ -4,14 +4,11 @@ import logging
 import os
 import sys
 from typing import Dict, List, Optional, Tuple, Union
-
 import joblib
 import numpy as np
 import onnxruntime as ort
-from tqdm import tqdm
 from transformers import AutoTokenizer
-
-from engine.core import config
+from engine import config
 
 logger = logging.getLogger("matchops.embedder")
 
@@ -87,16 +84,15 @@ class EmbeddingEngine:
             try:
                 try:
                     self.rerank_tokenizer = AutoTokenizer.from_pretrained(
-                        os.path.dirname(config.CROSS_ENCODER_ONNX), local_files_only=True
+                        os.path.dirname(config.CROSS_ENCODER_ONNX), local_files_only=True, fix_mistral_regex=True
                     )
-                except TypeError:
+                except Exception:
                     self.rerank_tokenizer = AutoTokenizer.from_pretrained(
                         os.path.dirname(config.CROSS_ENCODER_ONNX), local_files_only=True
                     )
-                except Exception:
-                    self.rerank_tokenizer = AutoTokenizer.from_pretrained(config.CROSS_ENCODER_MODEL)
             except Exception as tok_err:
                 logger.warning(f"[EMBED] Cross-Encoder tokenizer loading encountered issue: {tok_err}")
+                self.rerank_tokenizer = AutoTokenizer.from_pretrained(config.CROSS_ENCODER_MODEL)
 
             # 2. Load ONNX Session
             try:
@@ -236,9 +232,9 @@ class EmbeddingEngine:
             logger.error("[EMBED] Cross-encoder unavailable (neither ONNX nor PyTorch fallback); returning -10.0 sentinels.")
             return np.full(len(pairs), -10.0, dtype=np.float32)
 
+        logger.debug(f"[EMBED] Scoring {len(pairs)} pairs with Cross-Encoder...")
         scores = []
-        iterator = tqdm(range(0, len(pairs), batch_size), desc=f"Cross-Encoder (Total Pairs: {len(pairs)})")
-        for i in iterator:
+        for i in range(0, len(pairs), batch_size):
             batch = pairs[i : i + batch_size]
             texts1 = [p[0] for p in batch]
             texts2 = [p[1] for p in batch]
@@ -312,7 +308,7 @@ class EmbeddingEngine:
         names: List[str],
         descriptions: List[str],
         categories: List[str],
-        weights: tuple = (1.0, 0.8, 0.5),
+        weights: tuple = config.CLASSIFIER_WEIGHTS,
     ) -> Dict[str, Union[np.ndarray, List[dict]]]:
         """
         Embeds SKUs using weighted vector averaging across Name, Description, and Category.
@@ -340,7 +336,7 @@ class EmbeddingEngine:
         cats_clean = _clean(categories) if categories else [""] * n
 
         # Embed all non-empty field lists in a single merged call to self.encode
-        logger.info(f"[EMBED] Weighted SKU encoding: {n} items (weights: name={w_name}, desc={w_desc}, cat={w_cat})")
+        logger.debug(f"[EMBED] Weighted SKU encoding: {n} items (weights: name={w_name}, desc={w_desc}, cat={w_cat})")
 
         flat_texts = []
         name_offsets = []
@@ -418,7 +414,7 @@ class EmbeddingEngine:
 
             all_sparse.append(merged_sparse)
 
-        logger.info(f"[EMBED] Weighted SKU encoding complete ({n} items).")
+        logger.debug(f"[EMBED] Weighted SKU encoding complete ({n} items).")
         return {"dense": np.vstack(all_dense), "sparse": all_sparse}
 
     def embed_dictionary_incremental(self, domain: str, dict_key: str, keywords: List[str]) -> Dict[str, Union[np.ndarray, List[dict]]]:

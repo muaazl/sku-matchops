@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from rapidfuzz import fuzz
 
-from engine.core import config
+from engine import config
 from engine.nlp.text_cleaner import TextPipeline
 from engine.utils.flavor_utils import build_food_flavors_info
 
@@ -55,7 +55,7 @@ class LogicGates:
 
         if swaps_performed:
             ratio = fuzz.partial_ratio(substituted, input_clean.lower())
-            if ratio >= 90.0:
+            if ratio >= config.FUZZY_BYPASS_RATIO:
                 return True, swaps_performed, replacements, ratio
 
         return False, [], [], 0.0
@@ -119,14 +119,14 @@ class LogicGates:
                 for v1 in set1:
                     if v1 in rt2:
                         return "Match"
-                    if len(v1) >= 5 and fuzz.partial_ratio(v1, rt2) >= 80:
+                    if len(v1) >= 5 and fuzz.partial_ratio(v1, rt2) >= config.FUZZY_BYPASS_TYPO_RATIO:
                         return "Match"
 
             if set2:
                 for v2 in set2:
                     if v2 in rt1:
                         return "Match"
-                    if len(v2) >= 5 and fuzz.partial_ratio(v2, rt1) >= 80:
+                    if len(v2) >= 5 and fuzz.partial_ratio(v2, rt1) >= config.FUZZY_BYPASS_TYPO_RATIO:
                         return "Match"
 
         # Tier 2 & 3: Subset & Fuzzy
@@ -135,7 +135,7 @@ class LogicGates:
                 if v1 in v2 or v2 in v1:
                     return "Match"
                 if len(v1) >= 5 and len(v2) >= 5:
-                    if fuzz.ratio(v1, v2) >= 80:
+                    if fuzz.ratio(v1, v2) >= config.FUZZY_BYPASS_TYPO_RATIO:
                         return "Match"
 
         return "Conflict"
@@ -177,7 +177,7 @@ class LogicGates:
         input_no_weights = TextPipeline.strip_weights(input_clean)
         cat_no_weights = TextPipeline.strip_weights(cat_clean)
         token_ratio = fuzz.token_sort_ratio(input_no_weights, cat_no_weights)
-        is_fuzzy_bypass = token_ratio >= 90
+        is_fuzzy_bypass = token_ratio >= config.FUZZY_BYPASS_RATIO
 
         if is_fuzzy_bypass:
             score = max(score, 100.0)
@@ -224,7 +224,7 @@ class LogicGates:
                     reasons.append(f"BasicType Mismatch: catalog has '{cand_bt}' vs predicted '{predicted_bt}'")
 
         # Determine status
-        status = "High Confidence" if score >= config.CONFIDENCE_THRESHOLD_HIGH else ("Medium Confidence" if score > 0 else "Low / Rejected")
+        status = "High Confidence" if score >= config.CONFIDENCE_THRESHOLD_HIGH else ("Medium Confidence" if score > config.CONFIDENCE_THRESHOLD_MEDIUM else "Low / Rejected")
         
         # Map score to probability fraction (0.0 to 1.0)
         if score == -10.0:
@@ -232,7 +232,7 @@ class LogicGates:
         elif is_fuzzy_bypass or score >= 90.0:
             prob_score = min(1.0, score / 100.0)
         else:
-            p = 1 / (1 + math.exp(-0.55 * score))
+            p = 1 / (1 + math.exp(-config.LOGIC_GATE_SIGMOID_SCALE * score))
             prob_score = float(round(p, 4))
             
         return prob_score, status, "; ".join(reasons)
@@ -272,7 +272,7 @@ class LogicGates:
 
         # 1. Whole-SKU Fuzzy Bypass
         token_ratio = fuzz.token_sort_ratio(input_no_weights, cat_no_weights)
-        is_fuzzy_bypass = token_ratio >= 90
+        is_fuzzy_bypass = token_ratio >= config.FUZZY_BYPASS_RATIO
         
         if not is_fuzzy_bypass:
             in_words = input_no_weights.split()
@@ -281,13 +281,13 @@ class LogicGates:
             for iw in in_words:
                 matched_cw = iw
                 for cw in cat_words:
-                    if len(iw) >= 5 and len(cw) >= 5 and fuzz.ratio(iw, cw) >= 80:
+                    if len(iw) >= 5 and len(cw) >= 5 and fuzz.ratio(iw, cw) >= config.FUZZY_BYPASS_TYPO_RATIO:
                         matched_cw = cw
                         break
                 aligned_in.append(matched_cw)
             aligned_input_str = " ".join(aligned_in)
             typo_ratio = fuzz.token_sort_ratio(aligned_input_str, cat_no_weights)
-            if typo_ratio >= 90:
+            if typo_ratio >= config.FUZZY_BYPASS_RATIO:
                 is_fuzzy_bypass = True
                 token_ratio = typo_ratio
 
@@ -351,7 +351,7 @@ class LogicGates:
                 diff_pct = abs(in_val - cat_val) / max_val * 100
                 if diff_pct < 1.0:
                     text_ratio = fuzz.token_sort_ratio(input_no_weights, cat_no_weights)
-                    if is_fuzzy_bypass or text_ratio >= 80:
+                    if is_fuzzy_bypass or text_ratio >= config.FUZZY_BYPASS_TYPO_RATIO:
                         score += 2.0
                         reasons.append(f"Weight Match ({int(in_val)})")
                         weight_matched = True
@@ -399,7 +399,7 @@ class LogicGates:
                     reasons.append(f"Predicted BT Alignment Boost (+3.5: {predicted_bt})")
 
         # Determine status
-        status = "High Confidence" if score >= config.CONFIDENCE_THRESHOLD_HIGH else ("Medium Confidence" if score > 0 else "Low / Rejected")
+        status = "High Confidence" if score >= config.CONFIDENCE_THRESHOLD_HIGH else ("Medium Confidence" if score > config.CONFIDENCE_THRESHOLD_MEDIUM else "Low / Rejected")
         
         # Map score to probability fraction (0.0 to 1.0)
         if score == -10.0:
@@ -407,7 +407,7 @@ class LogicGates:
         elif is_fuzzy_bypass or score >= 90.0:
             prob_score = min(1.0, score / 100.0)
         else:
-            p = 1 / (1 + math.exp(-0.55 * score))
+            p = 1 / (1 + math.exp(-config.LOGIC_GATE_SIGMOID_SCALE * score))
             prob_score = float(round(p, 4))
             
         return prob_score, status, "; ".join(reasons)

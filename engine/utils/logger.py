@@ -1,20 +1,17 @@
 import logging
 import os
 import sys
-
-from engine.core import config
+from engine.config import LOG_DIR, LOG_FILE
 
 # Configure logging with a stream handler and file handler
-DB_DIR = config.DB_DIR
-os.makedirs(DB_DIR, exist_ok=True)
-LOG_FILE = os.path.join(DB_DIR, "app.log")
+os.makedirs(LOG_DIR, exist_ok=True)
 
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 for handler in root_logger.handlers[:]:
     root_logger.removeHandler(handler)
 
-formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+formatter = logging.Formatter("%(asctime)s - [%(levelname)s] - %(name)s - [%(filename)s:%(lineno)d] - %(message)s")
 
 sh = logging.StreamHandler(sys.stdout)
 sh.setFormatter(formatter)

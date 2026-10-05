@@ -145,6 +145,12 @@ def complete_job(job_id: str, payload: JobCompletePayload):
                 source = res.get("pipeline_source", "")
                 rules = res.get("rules_applied", "")
 
+            input_entities = res.get("input_entities") or {}
+            flavor_list = list(input_entities.get("flavor") or [])
+            brand_list = list(input_entities.get("brand") or [])
+            flavor_extraction = json.dumps(flavor_list) if flavor_list else None
+            brand_extraction = json.dumps(brand_list) if brand_list else None
+
             sku_id = str(uuid.uuid4())
             gk_val = gk
             if isinstance(gk, str):
@@ -156,7 +162,8 @@ def complete_job(job_id: str, payload: JobCompletePayload):
                 region, conf, source, rules, logic_notes,
                 matched_catalog_name, match_score, bt_confidence,
                 gk_confidence, region_confidence,
-                input_price, input_description, input_category
+                input_price, input_description, input_category,
+                flavor_extraction, brand_extraction
             ))
 
         if sku_rows:
@@ -167,8 +174,9 @@ def complete_job(job_id: str, payload: JobCompletePayload):
                     confidence, match_source, rules_applied_json, logic_notes,
                     matched_catalog_name, match_score, bt_confidence,
                     gk_confidence, region_confidence,
-                    input_price, input_description, input_category
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    input_price, input_description, input_category,
+                    flavor_extraction, brand_extraction
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 sku_rows
             )

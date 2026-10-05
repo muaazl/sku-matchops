@@ -3,15 +3,13 @@ import logging
 import re
 from typing import Dict, List, Set, Tuple
 import warnings
+import pandas as pd
+from rapidfuzz import fuzz, process
+from engine import config
 
 # Suppress Hugging Face FastTokenizer regex deprecation warnings
 warnings.filterwarnings("ignore", message=".*fix_mistral_regex.*")
 warnings.filterwarnings("ignore", message=".*The regex pattern.*")
-
-import pandas as pd
-from rapidfuzz import fuzz, process
-
-from engine.core import config
 
 logger = logging.getLogger("matchops.ner")
 
@@ -207,7 +205,7 @@ class NEREngine:
     def _run_ner(self, text: str) -> List[Dict]:
         try:
             if self.model:
-                return self.model.predict_entities(text, self.labels, threshold=0.25)
+                return self.model.predict_entities(text, self.labels, threshold=config.NER_CONFIDENCE_THRESHOLD)
             logger.warning(f"[NER] No model available for '{text}'.")
             return []
         except Exception as e:
@@ -275,11 +273,11 @@ class NEREngine:
             if self.model:
                 if hasattr(self.model, "inference"):
                     raw_list = self.model.inference(
-                        fallback_texts, self.labels, threshold=0.25, batch_size=batch_size
+                        fallback_texts, self.labels, threshold=config.NER_CONFIDENCE_THRESHOLD, batch_size=batch_size
                     )
                 elif hasattr(self.model, "batch_predict_entities"):
                     raw_list = self.model.batch_predict_entities(
-                        fallback_texts, self.labels, threshold=0.25, batch_size=batch_size
+                        fallback_texts, self.labels, threshold=config.NER_CONFIDENCE_THRESHOLD, batch_size=batch_size
                     )
                 else:
                     raw_list = [

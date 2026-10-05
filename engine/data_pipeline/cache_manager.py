@@ -3,11 +3,9 @@ import json
 import logging
 import os
 from typing import Any, Callable, Dict, Optional, Tuple
-
 import joblib
 import pandas as pd
-
-from engine.core import config
+from engine import config
 
 logger = logging.getLogger("matchops.cache")
 
@@ -143,14 +141,9 @@ class CacheManager:
 
         computed_cols = ["clean_text", "weight_val", "entities", "token_count", "clean_no_weights"]
 
-        # Normalize text and clean units upfront (instant vectorized operation, ~0.05s)
-        expected_clean = processed_catalog["Name"].fillna("").astype(str).apply(
-            lambda x: TextPipeline.normalize_final(TextPipeline.standardize_units(x))
-        )
-        processed_catalog["clean_text"] = expected_clean
-        processed_catalog["clean_no_weights"] = processed_catalog["clean_text"].apply(TextPipeline.strip_weights)
-        processed_catalog["weight_val"] = processed_catalog["clean_text"].apply(TextPipeline.extract_weight_feature)
-        processed_catalog["token_count"] = processed_catalog["clean_text"].fillna("").astype(str).apply(lambda s: len(s.split()))
+        # Initialize columns
+        for col in computed_cols:
+            processed_catalog[col] = None
 
         # Attempt to load pre-calculated entities and metadata from disk cache
         if not os.path.exists(processed_df_path):
@@ -166,8 +159,14 @@ class CacheManager:
                     cached_indexed = cached_df.drop_duplicates(subset=["db_uid"]).set_index("db_uid")
                     if "entities" in cached_indexed.columns:
                         processed_catalog["entities"] = processed_catalog["db_uid"].map(cached_indexed["entities"])
+                    for col in ["clean_text", "clean_no_weights", "weight_val", "token_count"]:
+                        if col in cached_indexed.columns:
+                            processed_catalog[col] = processed_catalog["db_uid"].map(cached_indexed[col])
                 elif "entities" in cached_df.columns and len(cached_df) == len(processed_catalog):
                     processed_catalog["entities"] = cached_df["entities"].values
+                    for col in ["clean_text", "clean_no_weights", "weight_val", "token_count"]:
+                        if col in cached_df.columns:
+                            processed_catalog[col] = cached_df[col].values
             except Exception as e:
                 logger.warning(f"[CACHE] [{domain.upper()}] Could not load cached entities: {e}")
 

@@ -1,22 +1,20 @@
 import functools
 import re
 from typing import Dict, List, Optional, Tuple, Union
-
 import numpy as np
-
-from engine.core.config import (
+from engine.config import (
     AUTO_THRESHOLD,
     REVIEW_THRESHOLD,
     RERANKER_THRESHOLD,
     RERANKER_MARGIN,
     TOP_K_RETRIEVAL as TOP_K_FUSED,
+    FUSION_METHOD,
+    ALPHA,
+    USE_RERANKER,
+    RRF_K,
+    TAG_SEARCH_LIMIT,
 )
 from engine.nlp.text_cleaner import TextPipeline
-
-# Configuration for hybrid fusion and reranking
-FUSION_METHOD = "rrf"
-ALPHA = 0.5
-USE_RERANKER = True
 
 def get_status(confidence: float, has_tags: bool, source: str = "") -> str:
     """Resolves classification status (AUTO, REVIEW, LOW) based on confidence and provenance."""
@@ -31,7 +29,7 @@ def get_status(confidence: float, has_tags: bool, source: str = "") -> str:
     return "LOW"
 
 
-def _rrf_fusion(dense_results, sparse_results, k=60) -> list:
+def _rrf_fusion(dense_results, sparse_results, k=RRF_K) -> list:
     """Reciprocal Rank Fusion"""
     scores = {}
     
@@ -162,7 +160,7 @@ class FoodStrategy(DomainStrategy):
     def filter_search_tags(allowed_gks_for_bt: list, trained_conf: float, source: str, guaranteed: list) -> tuple:
         if not allowed_gks_for_bt:
             # Prevent cross-contamination if no schema maps
-            return None, (guaranteed, trained_conf if (source == "trained" and trained_conf >= 0.8) else 0.0)
+            return None, (guaranteed, trained_conf if (source == "trained" and trained_conf >= AUTO_THRESHOLD) else 0.0)
         return allowed_gks_for_bt, None
 
     @staticmethod
@@ -221,7 +219,7 @@ class MarketStrategy(DomainStrategy):
 
     @staticmethod
     def apply_post_search_filters(top_candidates: list, allowed_gks_lower: set) -> list:
-        import engine.core.config as config
+        import engine.config as config
         if allowed_gks_lower:
             if getattr(config, "ALLOW_UNREGISTERED_TEMPLATE_KEYWORDS", True):
                 return [c for c in top_candidates if c["tag"].lower().strip() in allowed_gks_lower or c.get("source") == "synthetic"]
@@ -321,7 +319,7 @@ def match_gk_hybrid(sku_name, description, query_dense, query_sparse, vector_sto
     dense_hits, sparse_hits = vector_store.search_hybrid_tags(
         dense_query=query_dense, 
         sparse_query=query_sparse, 
-        limit=50, 
+        limit=TAG_SEARCH_LIMIT, 
         filter_dict_type="gk",
         domain=classifier.domain,
         allowed_tags=search_allowed_tags
@@ -392,12 +390,10 @@ def match_gk_hybrid(sku_name, description, query_dense, query_sparse, vector_sto
             seen.add(key)
             merged.append(tag)
             
-    conf = trained_conf if (source == "trained" and trained_conf >= 0.8) else final_conf
+    conf = trained_conf if (source == "trained" and trained_conf >= AUTO_THRESHOLD) else final_conf
     
     return merged, conf
 
-
-from tqdm import tqdm
 
 def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, reranker, classifier, sku_descriptions=None, sku_prices=None, embed_engine=None, ner_engine=None, is_cancelled=None, progress_callback=None):
     n = len(sku_names)
@@ -584,7 +580,7 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
             filter_dict_type="gk",
             domain=classifier.domain,
             allowed_tags_list=search_allowed,
-            limit=50
+            limit=TAG_SEARCH_LIMIT
         )
 
         if is_cancelled and is_cancelled():
@@ -673,7 +669,7 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
                     seen.add(key)
                     merged.append(tag)
 
-            conf = trained_conf if (trained_source == "trained" and trained_conf >= 0.8) else final_conf
+            conf = trained_conf if (trained_source == "trained" and trained_conf >= AUTO_THRESHOLD) else final_conf
             gk_final_results[orig_idx] = (merged, conf)
 
     # 10. Assemble Final Output Dicts

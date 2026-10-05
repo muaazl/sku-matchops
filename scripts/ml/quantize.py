@@ -2,20 +2,17 @@ import argparse
 import os
 import sys
 import time
-
 import numpy as np
 import onnxruntime as ort
 from onnxruntime.quantization import quantize_dynamic, QuantType
 from transformers import AutoTokenizer
+from engine.config import ONNX_DIR
 
 # Resolve ONNX models directory dynamically
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
-
-from engine.core import config
-ONNX_DIR = config.ONNX_DIR
 
 def quantize_model(input_path: str, output_path: str, model_name: str):
     if not os.path.exists(input_path):

@@ -9,7 +9,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 import pandas as pd
 
-from engine.core import config
+from engine import config
 from engine.classification.tagger import tag_all_skus
 from engine.rules_engine import run_rules_engine
 from engine.core.resource_loader import (
@@ -174,9 +174,11 @@ def process_request(
                     has_meat = meat_count > 0
 
                 if (has_meat and has_seafood) or meat_count >= 2:
-                    name += " mixed"
+                    if "mix" not in name.lower():
+                        name += " mixed"
                 elif not has_seafood and not has_meat and has_veg:
-                    name += " veg"
+                    pass # name += " veg"
+                # DO NOT mutate sku["name"] if it's just veg, it destroys exact matching downstream.
                 sku["name"] = name
 
     if task == "matcher":
@@ -214,6 +216,8 @@ def process_request(
                     "suggested_bt": _clean_field(row, "BasicType") or "",
                     "suggested_gk": _clean_field(row, "GenericKeywords") or "",
                     "suggested_region": region_val or "",
+                    "input_entities": row.get("Input Entities") or {},
+                    "catalog_entities": row.get("Catalog Entities") or {},
                     "rules_applied": ""
                 })
             else:
@@ -225,6 +229,8 @@ def process_request(
                     "suggested_bt": "",
                     "suggested_gk": "",
                     "suggested_region": "",
+                    "input_entities": {},
+                    "catalog_entities": {},
                     "rules_applied": ""
                 })
 

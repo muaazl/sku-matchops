@@ -5,8 +5,7 @@ from typing import Optional
 import pandas as pd
 import meilisearch
 from meilisearch.errors import MeilisearchApiError
-
-from engine.core import config
+from engine import config
 from engine.data_pipeline.cache_manager import clean_price
 
 logger = logging.getLogger("matchops.meilisearch_sync")

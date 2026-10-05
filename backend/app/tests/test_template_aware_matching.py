@@ -1,5 +1,5 @@
 import unittest
-from engine.core import config
+from engine import config
 
 class TestTemplateAwareMatching(unittest.TestCase):
     def test_flag_defaults(self):

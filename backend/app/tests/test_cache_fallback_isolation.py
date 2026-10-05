@@ -6,7 +6,7 @@ import shutil
 import pandas as pd
 import sqlite3
 
-from engine.core import config
+from engine import config
 from engine.data_pipeline.ingestion import DataIngestion
 from backend.app.services.catalog_service import (
     get_catalog_and_brands,

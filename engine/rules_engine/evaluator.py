@@ -4,7 +4,7 @@ import os
 import re
 from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
-from engine.core import config
+from engine import config
 from engine.utils.flavor_utils import build_food_flavors_info
 
 logger = logging.getLogger("matchops.rules_evaluator")

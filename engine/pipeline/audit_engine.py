@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz
 
-from engine.core import config
+from engine import config
 from engine.nlp.text_cleaner import TextPipeline
 from engine.rules_engine import run_rules_engine
 from engine.classification.tagger import tag_all_skus
@@ -991,7 +991,10 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
     # -------------------------------------------------------------
     from engine.classification.tagger import (
         get_strategy, _rrf_fusion, _weighted_fusion, _get_gk_regex,
-        FUSION_METHOD, TOP_K_FUSED, USE_RERANKER, RERANKER_THRESHOLD, RERANKER_MARGIN
+    )
+    from engine.config import (
+        FUSION_METHOD, TOP_K_RETRIEVAL as TOP_K_FUSED, USE_RERANKER, RERANKER_THRESHOLD, RERANKER_MARGIN,
+        TAG_SEARCH_LIMIT, GK_TRAINED_CONFIDENCE_THRESHOLD,
     )
     strategy = get_strategy(classifier.domain)
 
@@ -1048,7 +1051,7 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
         scaled_p = classifier._preprocess_prices([p_val], is_training=False)
         vec_with_price = np.hstack([vec_2d, scaled_p])
         gk_proba = classifier._gk_clf.predict_proba(vec_with_price)[0]
-        threshold = 0.50
+        threshold = GK_TRAINED_CONFIDENCE_THRESHOLD
         predicted_indices = np.where(gk_proba >= threshold)[0]
         if len(predicted_indices) > 0:
             trained_gk = classifier._gk_enc.classes_[predicted_indices].tolist()
@@ -1072,7 +1075,7 @@ def _audit_classifier_pipeline(audit_data: dict, domain: str, sku_name: str, des
         dense_hits, sparse_hits = vector_store.search_hybrid_tags(
             dense_query=vec_dense,
             sparse_query=vec_sparse,
-            limit=50,
+            limit=TAG_SEARCH_LIMIT,
             filter_dict_type="gk",
             domain=classifier.domain,
             allowed_tags=search_allowed_tags

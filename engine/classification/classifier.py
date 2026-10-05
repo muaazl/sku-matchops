@@ -3,12 +3,10 @@ import json
 import logging
 import os
 from typing import Dict, List, Optional, Tuple, Union
-
 import joblib
 import numpy as np
 import pandas as pd
-
-from engine.core import config
+from engine import config
 from engine.data_pipeline.cache_manager import calculate_df_hash
 from engine.utils.flavor_utils import build_food_flavors_info
 
@@ -38,7 +36,6 @@ class ZeroShotClassifier:
         self.brands_df = brands_df if brands_df is not None else pd.DataFrame()
         self.food_flavors_dict, _, _, _, _ = build_food_flavors_info(brands_df)
         
-        # _active_model: may be replaced by SetFit fine-tuned encoder for market domain.
         # Always use this for SKU query embedding so training and inference are consistent.
         self._active_model = model
 
@@ -193,7 +190,7 @@ class ZeroShotClassifier:
         Embed training SKUs incrementally, caching the computed dense vectors.
         This bypasses the heavy embedding model evaluation for unchanged SKUs.
         """
-        from engine.core.config import CLASSIFIER_WEIGHTS
+        from engine.config import CLASSIFIER_WEIGHTS
 
         if not names_list:
             return np.empty((0, 1024))
@@ -313,7 +310,7 @@ class ZeroShotClassifier:
             df = self.cat_df.fillna("")
 
             # Drop rows with no BT or Third Tag label
-            from engine.core.config import get_third_tag_col, COL_GK, COL_NAME, COL_DESCRIPTION, COL_INPUT_CATEGORY
+            from engine.config import get_third_tag_col, COL_GK, COL_NAME, COL_DESCRIPTION, COL_INPUT_CATEGORY
             
             target_col = get_third_tag_col(self.domain)
             missing = {"Name", "basictype", target_col, COL_GK} - set(df.columns)
@@ -330,7 +327,7 @@ class ZeroShotClassifier:
                 return
 
             # Build query strings exactly matching inference (weighted multi-field embedding)
-            from engine.core.config import CLASSIFIER_WEIGHTS
+            from engine.config import CLASSIFIER_WEIGHTS
             names_list = df[COL_NAME].astype(str).str.strip().tolist()
             descs_list = df[COL_DESCRIPTION].astype(str).str.strip().tolist() if COL_DESCRIPTION in df.columns else [""] * len(df)
             col_cat = COL_INPUT_CATEGORY if COL_INPUT_CATEGORY in df.columns else ("category" if "category" in df.columns else "")
@@ -566,7 +563,7 @@ class ZeroShotClassifier:
             confs = np.max(probas, axis=1)
 
             for i in range(len(vecs)):
-                if confs[i] >= 0.4:
+                if confs[i] >= config.BT_TRAINED_CONFIDENCE_THRESHOLD:
                     results[i] = (self._arcface_classes[bests[i]], float(confs[i]), "trained", [])
                 else:
                     zero_shot_indices.append(i)
@@ -580,7 +577,7 @@ class ZeroShotClassifier:
             confs = np.max(probas, axis=1)
 
             for i in range(len(vecs)):
-                if confs[i] >= 0.4:
+                if confs[i] >= config.BT_TRAINED_CONFIDENCE_THRESHOLD:
                     results[i] = (self._bt_enc.classes_[bests[i]], float(confs[i]), "trained", [])
                 else:
                     zero_shot_indices.append(i)
@@ -642,7 +639,7 @@ class ZeroShotClassifier:
         vec_with_price = np.hstack([vec_2d, scaled_p])
         
         proba = self._gk_clf.predict_proba(vec_with_price)[0]
-        threshold = 0.5
+        threshold = config.GK_TRAINED_CONFIDENCE_THRESHOLD
         predicted_indices = np.where(proba >= threshold)[0]
         
         if len(predicted_indices) == 0:
@@ -666,7 +663,7 @@ class ZeroShotClassifier:
         scaled_p = self._preprocess_prices(prices, is_training=False)
         vecs_with_price = np.hstack([vecs, scaled_p])
         probas = self._gk_clf.predict_proba(vecs_with_price)
-        threshold = 0.5
+        threshold = config.GK_TRAINED_CONFIDENCE_THRESHOLD
 
         results = []
         for i in range(len(vecs)):

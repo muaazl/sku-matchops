@@ -1,7 +1,6 @@
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
-from engine.core import config
-
+from engine import config
 
 class SKUItem(BaseModel):
     name: str
@@ -9,14 +8,12 @@ class SKUItem(BaseModel):
     description: Optional[str] = ""
     category: Optional[str] = ""
 
-
 class BaseRequest(BaseModel):
     skus: list[SKUItem]
     domain: str = config.DOMAIN_MARKET
     callback_url: str
     spreadsheet_id: Optional[str] = None
     sheet_name: Optional[str] = None
-
 
 class MatchRequest(BaseRequest):
     pass
@@ -31,7 +28,6 @@ class UploadRequest(BaseModel):
     outlet_id_or_name: str
     skus: list[dict]
     domain: str = config.DOMAIN_MARKET
-
 
 class MatchResult(BaseModel):
     matched_catalog_name: str
@@ -134,8 +130,6 @@ class MerchantFetchRequest(BaseModel):
     portal_url: str
     domain: str
     task: str = "pipeline"
-
-
 
 # -- Qdrant Proxy Models --
 class VectorSearchRequest(BaseModel):
@@ -249,5 +243,3 @@ class ApiRequestDetailResponse(ApiRequestResponse):
     query_params_json: Optional[str] = None
     payload_json_redacted: Optional[str] = None
     response_json: Optional[str] = None
-
-

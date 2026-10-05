@@ -1,6 +1,6 @@
 import re
 from typing import Optional, Tuple
-from engine.core import config
+from engine import config
 
 class UnitConfig:
     """Configuration for unit normalization and physical form mapping."""
@@ -42,6 +42,9 @@ class UnitUtils:
     def get_normalized_weight(text: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
         """Extracts and normalizes the first measurement found in a text string."""
         if not isinstance(text, str):
+            return None, None, None
+
+        if not any(c.isdigit() for c in text):
             return None, None, None
 
         # Fast-path regex for standard unit patterns (avoids heavy quantulum3 NLP parse)

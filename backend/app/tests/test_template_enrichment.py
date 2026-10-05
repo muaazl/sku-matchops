@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch, MagicMock
-from engine.core import config
+from engine import config
 from engine.templates.template_suggest import suggest_tags_from_template
 
 class TestTemplateEnrichmentToggles(unittest.TestCase):
