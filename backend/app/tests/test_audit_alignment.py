@@ -1,8 +1,7 @@
-import pytest
-from engine.core.resource_loader import get_classifier, get_pipeline, get_ner_engine
+from engine.classification.loader import is_conflicting_dish_tag
+from engine.core.resource_loader import get_classifier, get_ner_engine, get_pipeline
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
-from engine.classification.loader import PRIMARY_DISH_TYPES, is_conflicting_dish_tag
 
 
 class TestAuditAlignment:
@@ -14,14 +13,15 @@ class TestAuditAlignment:
 
     def test_culinary_protein_prioritization(self):
         ner_food = get_ner_engine("food")
-        
+
         def compute_suffixes(flavor_set):
             seafood_set = getattr(ner_food, "seafood_flavors", set())
             meat_set = getattr(ner_food, "meat_flavors", set())
             veg_set = getattr(ner_food, "vegetable_flavors", set())
             has_seafood = any(f in seafood_set for f in flavor_set)
             land_meats = [
-                f for f in flavor_set
+                f
+                for f in flavor_set
                 if f in meat_set and f not in seafood_set and f not in ("egg", "mixed")
             ]
             meat_count = len(land_meats)
@@ -46,19 +46,27 @@ class TestAuditAlignment:
         sku_texts = ["Devilled Fish Set Menu"]
         ner_res = ner_food.batch_extract_entities(sku_texts)
         flavor_set = ner_res[0].get("flavor", set())
-        assert compute_suffixes(flavor_set) == [], "Should NOT add seafood suffix (handled by rules engine) and NEVER add veg"
+        assert compute_suffixes(flavor_set) == [], (
+            "Should NOT add seafood suffix (handled by rules engine) and NEVER add veg"
+        )
 
         # 2. Chicken with 'Mix' in description (should NOT trigger 'mixed' suffix)
         flavor_set_mix = {"chicken", "mixed", "carrot", "tomato"}
-        assert compute_suffixes(flavor_set_mix) == [], "Chicken with 'mixed' meta-flavor must NOT get 'mixed' suffix"
+        assert compute_suffixes(flavor_set_mix) == [], (
+            "Chicken with 'mixed' meta-flavor must NOT get 'mixed' suffix"
+        )
 
         # 3. Egg + Real Meat (egg should be deprioritized, real meat prioritized, no mixed)
         flavor_set_egg_meat = {"chicken", "egg", "carrot"}
-        assert compute_suffixes(flavor_set_egg_meat) == [], "Egg + Meat must prioritize meat and NOT add 'mixed'"
+        assert compute_suffixes(flavor_set_egg_meat) == [], (
+            "Egg + Meat must prioritize meat and NOT add 'mixed'"
+        )
 
         # 4. Egg + Veg (no other meat/seafood: egg must be kept, NOT tagged as veg)
         flavor_set_egg_veg = {"egg", "carrot", "leek"}
-        assert compute_suffixes(flavor_set_egg_veg) == [], "Egg + Veg must keep egg and NEVER add 'veg'"
+        assert compute_suffixes(flavor_set_egg_veg) == [], (
+            "Egg + Veg must keep egg and NEVER add 'veg'"
+        )
 
         # 5. Egg alone (keep egg, no suffix)
         flavor_set_egg_alone = {"egg"}
@@ -81,7 +89,7 @@ class TestAuditAlignment:
         assert is_conflicting_dish_tag("Chop Suey Rice", "Fried Rice") is True
         assert is_conflicting_dish_tag("Vegetable Chop Suey Rice", "Fried Rice") is True
         assert is_conflicting_dish_tag("Chicken Biriyani", "Fried Rice") is True
-        
+
         # Valid sub-dishes of Fried Rice must be allowed
         assert is_conflicting_dish_tag("Devilled Fish Fried Rice", "Fried Rice") is False
         assert is_conflicting_dish_tag("Fish Fried Rice", "Fried Rice") is False
@@ -96,7 +104,7 @@ class TestAuditAlignment:
             "category": "",
             "price": 1500.0,
         }
-        
+
         proc_clf = process_request(task="classifier", domain="food", skus=[sku])["results"][0]
         audit_clf = run_sku_audit(
             sku_name=sku["name"],
@@ -106,15 +114,15 @@ class TestAuditAlignment:
             description=sku["description"],
             category=sku["category"],
         )["final_output"]
-        
+
         assert proc_clf["suggested_bt"] == audit_clf["suggested_bt"]
         assert proc_clf["suggested_gk"] == audit_clf["suggested_gk"]
         assert proc_clf["suggested_region"] == audit_clf["suggested_region"]
-        
+
         # Ensure Chop Suey is NOT in suggested GK
         assert "Chop Suey" not in proc_clf["suggested_gk"]
         assert "Chop Suey" not in audit_clf["suggested_gk"]
-        
+
         # Ensure rule 1 applied
         assert "Seafood" in proc_clf["suggested_gk"]
         assert "Seafood" in audit_clf["suggested_gk"]
@@ -126,7 +134,7 @@ class TestAuditAlignment:
             "category": "",
             "price": 1500.0,
         }
-        
+
         proc_pip = process_request(task="pipeline", domain="food", skus=[sku])["results"][0]
         audit_pip = run_sku_audit(
             sku_name=sku["name"],
@@ -136,7 +144,7 @@ class TestAuditAlignment:
             description=sku["description"],
             category=sku["category"],
         )["final_output"]
-        
+
         assert proc_pip["matched_catalog_name"] == audit_pip["matched_catalog_name"]
         assert proc_pip["score"] == audit_pip["score"]
         assert proc_pip["status"] == audit_pip["status"]

@@ -4,12 +4,14 @@ import os
 import socket
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
+
 import httpx
 import numpy as np
 import pandas as pd
 from qdrant_client import QdrantClient
-from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
+from qdrant_client.http.exceptions import ResponseHandlingException
 from qdrant_client.http.models import (
     Distance,
     FieldCondition,
@@ -27,6 +29,7 @@ from qdrant_client.http.models import (
     SparseVectorParams,
     VectorParams,
 )
+
 from engine import config
 
 logger = logging.getLogger("matchops.vector_store")
@@ -42,10 +45,11 @@ TRANSIENT_NETWORK_ERRORS = (
     OSError,
 )
 
+
 class VectorStore:
     """Manages persistent vector storage and hybrid search using Qdrant."""
 
-    _client: Optional[QdrantClient] = None
+    _client: QdrantClient | None = None
     _checked_collections: set = set()
 
     @classmethod
@@ -110,15 +114,26 @@ class VectorStore:
 
     def _get_collection_name(self, domain: str) -> str:
         """Returns the appropriate collection name for a domain."""
-        return config.QDRANT_COLLECTION_FOOD if domain == config.DOMAIN_FOOD else config.QDRANT_COLLECTION_MARKET
+        return (
+            config.QDRANT_COLLECTION_FOOD
+            if domain == config.DOMAIN_FOOD
+            else config.QDRANT_COLLECTION_MARKET
+        )
 
     def _ensure_collection(self, collection_name: str):
         """Creates the collection if it doesn't already exist with on-disk optimizations."""
         if collection_name in self._checked_collections:
             return
-        exists = self._call_with_retry("collection_exists", self.client.collection_exists, collection_name)
+        exists = self._call_with_retry(
+            "collection_exists", self.client.collection_exists, collection_name
+        )
         if not exists:
-            from qdrant_client.http.models import HnswConfigDiff, OptimizersConfigDiff, SparseIndexParams
+            from qdrant_client.http.models import (
+                HnswConfigDiff,
+                OptimizersConfigDiff,
+                SparseIndexParams,
+            )
+
             self._call_with_retry(
                 "create_collection",
                 self.client.create_collection,
@@ -127,7 +142,7 @@ class VectorStore:
                     "dense": VectorParams(
                         size=config.BGE_M3_DENSE_DIM,
                         distance=Distance.COSINE,
-                        on_disk=True  # Vectors stay on disk
+                        on_disk=True,  # Vectors stay on disk
                     )
                 },
                 sparse_vectors_config={
@@ -164,7 +179,7 @@ class VectorStore:
         except Exception as e:
             logger.debug(f"[QDRANT] Could not create payload index on 'basictype': {e}")
 
-    def _parse_sparse_dict(self, sparse_dict: Dict[str, float]) -> SparseVector:
+    def _parse_sparse_dict(self, sparse_dict: dict[str, float]) -> SparseVector:
         """Converts a dictionary of lexical weights to a Qdrant SparseVector."""
         indices, values = [], []
         if sparse_dict and isinstance(sparse_dict, dict):
@@ -176,7 +191,13 @@ class VectorStore:
                     pass
         return SparseVector(indices=indices, values=values)
 
-    def sync(self, df: pd.DataFrame, dense_embeddings: np.ndarray, sparse_weights: List[dict], domain: str = config.DOMAIN_MARKET):
+    def sync(
+        self,
+        df: pd.DataFrame,
+        dense_embeddings: np.ndarray,
+        sparse_weights: list[dict],
+        domain: str = config.DOMAIN_MARKET,
+    ):
         """Upserts a batch of rows and their embeddings to Qdrant."""
         if df.empty:
             return
@@ -195,7 +216,9 @@ class VectorStore:
 
             # Clean up sets in payload for JSON serialization
             if "entities" in payload and isinstance(payload["entities"], dict):
-                payload["entities"] = {k: list(v) if isinstance(v, set) else v for k, v in payload["entities"].items()}
+                payload["entities"] = {
+                    k: list(v) if isinstance(v, set) else v for k, v in payload["entities"].items()
+                }
 
             points.append(
                 PointStruct(
@@ -209,20 +232,28 @@ class VectorStore:
             )
 
             if len(points) >= config.UPSERT_BATCH_SIZE:
-                self._call_with_retry("upsert", self.client.upsert, collection_name=collection_name, points=points)
+                self._call_with_retry(
+                    "upsert", self.client.upsert, collection_name=collection_name, points=points
+                )
                 points = []
 
         if points:
-            self._call_with_retry("upsert", self.client.upsert, collection_name=collection_name, points=points)
+            self._call_with_retry(
+                "upsert", self.client.upsert, collection_name=collection_name, points=points
+            )
 
     def delete_collection(self, domain: str = config.DOMAIN_MARKET):
         """Deletes a domain's collection."""
         collection_name = self._get_collection_name(domain)
         self._checked_collections.discard(collection_name)
-        if self._call_with_retry("collection_exists", self.client.collection_exists, collection_name):
-            self._call_with_retry("delete_collection", self.client.delete_collection, collection_name=collection_name)
+        if self._call_with_retry(
+            "collection_exists", self.client.collection_exists, collection_name
+        ):
+            self._call_with_retry(
+                "delete_collection", self.client.delete_collection, collection_name=collection_name
+            )
 
-    def get_existing_hashes(self, domain: str = config.DOMAIN_MARKET) -> Dict[str, str]:
+    def get_existing_hashes(self, domain: str = config.DOMAIN_MARKET) -> dict[str, str]:
         """Bulk-fetches {db_uid: row_hash} for every point currently stored in the domain's
         catalog collection, straight from Qdrant's payloads.
 
@@ -232,11 +263,13 @@ class VectorStore:
         already pushed to the same Qdrant instance.
         """
         collection_name = self._get_collection_name(domain)
-        exists = self._call_with_retry("collection_exists", self.client.collection_exists, collection_name)
+        exists = self._call_with_retry(
+            "collection_exists", self.client.collection_exists, collection_name
+        )
         if not exists:
             return {}
 
-        result: Dict[str, str] = {}
+        result: dict[str, str] = {}
         next_offset = None
         while True:
             points, next_offset = self._call_with_retry(
@@ -261,11 +294,11 @@ class VectorStore:
     def search_from_vectors(
         self,
         dense_vec: np.ndarray,
-        sparse_vec_dict: Dict[str, float],
+        sparse_vec_dict: dict[str, float],
         domain: str = config.DOMAIN_MARKET,
         top_k: int = config.TOP_K_RETRIEVAL,
-        bt_filter: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        bt_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Performs hybrid RRF search using dense and sparse vectors, optionally filtered by BT."""
         collection_name = self._get_collection_name(domain)
         self._ensure_collection(collection_name)
@@ -273,7 +306,9 @@ class VectorStore:
 
         must_conditions = []
         if bt_filter:
-            must_conditions.append(FieldCondition(key="basictype", match=MatchValue(value=bt_filter)))
+            must_conditions.append(
+                FieldCondition(key="basictype", match=MatchValue(value=bt_filter))
+            )
         query_filter = Filter(must=must_conditions) if must_conditions else None
 
         results = self._call_with_retry(
@@ -298,25 +333,27 @@ class VectorStore:
 
     def search_batch_from_vectors(
         self,
-        dense_vecs: List[np.ndarray],
-        sparse_vec_dicts: List[Dict[str, float]],
-        bt_filters: List[Optional[str]],
+        dense_vecs: list[np.ndarray],
+        sparse_vec_dicts: list[dict[str, float]],
+        bt_filters: list[str | None],
         domain: str = config.DOMAIN_MARKET,
         top_k: int = config.TOP_K_RETRIEVAL,
-    ) -> List[List[Dict[str, Any]]]:
+    ) -> list[list[dict[str, Any]]]:
         """Performs batch hybrid RRF search using Qdrant's query_batch_points API."""
         if len(dense_vecs) == 0:
             return []
-            
+
         collection_name = self._get_collection_name(domain)
         self._ensure_collection(collection_name)
-        
+
         requests = []
         for i in range(len(dense_vecs)):
             sparse_vector = self._parse_sparse_dict(sparse_vec_dicts[i])
             must_conditions = []
             if bt_filters[i]:
-                must_conditions.append(FieldCondition(key="basictype", match=MatchValue(value=bt_filters[i])))
+                must_conditions.append(
+                    FieldCondition(key="basictype", match=MatchValue(value=bt_filters[i]))
+                )
             query_filter = Filter(must=must_conditions) if must_conditions else None
 
             req = QueryRequest(
@@ -341,7 +378,7 @@ class VectorStore:
                 "query_batch_points",
                 self.client.query_batch_points,
                 collection_name=collection_name,
-                requests=chunk
+                requests=chunk,
             )
             for res in batch_results:
                 chunk_hits = []
@@ -350,7 +387,7 @@ class VectorStore:
                     p["_qdrant_score_"] = hit.score
                     chunk_hits.append(p)
                 results.append(chunk_hits)
-                
+
         return results
 
     def search_catalog_neighbors(
@@ -358,7 +395,7 @@ class VectorStore:
         dense_vec: np.ndarray,
         domain: str = config.DOMAIN_MARKET,
         top_k: int = 15,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Retrieves top_k nearest catalog SKUs by dense vector cosine similarity for Tier 2 Few-Shot matching.
         """
@@ -387,10 +424,10 @@ class VectorStore:
 
     def search_batch_catalog_neighbors(
         self,
-        dense_vecs: List[np.ndarray],
+        dense_vecs: list[np.ndarray],
         domain: str = config.DOMAIN_MARKET,
         top_k: int = 15,
-    ) -> List[List[Dict[str, Any]]]:
+    ) -> list[list[dict[str, Any]]]:
         """
         Batch-retrieves top_k nearest catalog SKUs by dense vector cosine similarity for Tier 2 Few-Shot matching.
         """
@@ -404,12 +441,14 @@ class VectorStore:
         requests = []
         for i in range(n):
             d_vec = dense_vecs[i].tolist() if hasattr(dense_vecs[i], "tolist") else dense_vecs[i]
-            requests.append(QueryRequest(
-                query=d_vec,
-                using="dense",
-                limit=top_k,
-                with_payload=True,
-            ))
+            requests.append(
+                QueryRequest(
+                    query=d_vec,
+                    using="dense",
+                    limit=top_k,
+                    with_payload=True,
+                )
+            )
 
         results = []
         batch_size = 100
@@ -439,12 +478,12 @@ class VectorStore:
 
     def upsert_tags(
         self,
-        tags: List[str],
+        tags: list[str],
         dense_embs: np.ndarray,
-        sparse_embs: List[dict],
+        sparse_embs: list[dict],
         dict_type: str,
         domain: str = config.DOMAIN_MARKET,
-        metadata_list: Optional[List[dict]] = None,
+        metadata_list: list[dict] | None = None,
         force: bool = False,
     ):
         """Upserts dictionary tags for classification search."""
@@ -460,13 +499,19 @@ class VectorStore:
                     "count",
                     self.client.count,
                     collection_name=collection_name,
-                    count_filter=Filter(must=[FieldCondition(key="dict_type", match=MatchValue(value=dict_type))])
+                    count_filter=Filter(
+                        must=[FieldCondition(key="dict_type", match=MatchValue(value=dict_type))]
+                    ),
                 )
                 if count_res.count >= len(tags):
-                    logger.info(f"[QDRANT] Collection '{collection_name}' already contains {count_res.count} items for ({dict_type}). Skipping redundant upsert.")
+                    logger.info(
+                        f"[QDRANT] Collection '{collection_name}' already contains {count_res.count} items for ({dict_type}). Skipping redundant upsert."
+                    )
                     return
             except Exception as e:
-                logger.warning(f"[QDRANT] Could not check existing count for {collection_name} ({dict_type}): {e}")
+                logger.warning(
+                    f"[QDRANT] Could not check existing count for {collection_name} ({dict_type}): {e}"
+                )
 
         points = []
         for i, (tag, dense, sparse) in enumerate(zip(tags, dense_embs, sparse_embs)):
@@ -490,20 +535,26 @@ class VectorStore:
         # Batch upsert tags
         batch_size = 500
         for i in range(0, len(points), batch_size):
-            self._call_with_retry("upsert", self.client.upsert, collection_name=collection_name, points=points[i : i + batch_size], wait=False)
+            self._call_with_retry(
+                "upsert",
+                self.client.upsert,
+                collection_name=collection_name,
+                points=points[i : i + batch_size],
+                wait=False,
+            )
         logger.info(f"[QDRANT] Upserted {len(points)} items to {collection_name} ({dict_type}).")
 
     def search_hybrid_tags(
         self,
         dense_query: np.ndarray,
-        sparse_query: Dict[str, float],
+        sparse_query: dict[str, float],
         limit: int = 50,
-        filter_dict_type: Optional[str] = None,
+        filter_dict_type: str | None = None,
         domain: str = config.DOMAIN_MARKET,
-        allowed_tags: Optional[List[str]] = None,
-    ) -> Tuple[List[ScoredPoint], List[ScoredPoint]]:
+        allowed_tags: list[str] | None = None,
+    ) -> tuple[list[ScoredPoint], list[ScoredPoint]]:
         """Returns separate dense and sparse search results for classification fusion.
-        
+
         If allowed_tags is provided, Qdrant will only return results whose 'tag' payload
         is in that list (used to restrict food GK search to the bt_gk_map).
         """
@@ -511,7 +562,9 @@ class VectorStore:
 
         must_conditions = []
         if filter_dict_type:
-            must_conditions.append(FieldCondition(key="dict_type", match=MatchValue(value=filter_dict_type)))
+            must_conditions.append(
+                FieldCondition(key="dict_type", match=MatchValue(value=filter_dict_type))
+            )
         if allowed_tags:
             must_conditions.append(FieldCondition(key="tag", match=MatchAny(any=allowed_tags)))
 
@@ -525,7 +578,7 @@ class VectorStore:
             using="dense",
             query_filter=query_filter,
             limit=limit,
-            with_payload=True
+            with_payload=True,
         ).points
 
         sparse_vector = self._parse_sparse_dict(sparse_query)
@@ -539,20 +592,20 @@ class VectorStore:
                 using="sparse",
                 query_filter=query_filter,
                 limit=limit,
-                with_payload=True
+                with_payload=True,
             ).points
 
         return dense_results, sparse_results
 
     def search_batch_hybrid_tags(
         self,
-        dense_queries: List[np.ndarray],
-        sparse_queries: List[Dict[str, float]],
-        filter_dict_type: Optional[str] = None,
+        dense_queries: list[np.ndarray],
+        sparse_queries: list[dict[str, float]],
+        filter_dict_type: str | None = None,
         domain: str = config.DOMAIN_MARKET,
-        allowed_tags_list: Optional[List[Optional[List[str]]]] = None,
+        allowed_tags_list: list[list[str] | None] | None = None,
         limit: int = config.TAG_SEARCH_LIMIT,
-    ) -> List[Tuple[List[ScoredPoint], List[ScoredPoint]]]:
+    ) -> list[tuple[list[ScoredPoint], list[ScoredPoint]]]:
         """Performs batch dense and sparse tag searches using query_batch_points for high throughput."""
         n = len(dense_queries)
         if n == 0:
@@ -568,31 +621,43 @@ class VectorStore:
         for i in range(n):
             must_conditions = []
             if filter_dict_type:
-                must_conditions.append(FieldCondition(key="dict_type", match=MatchValue(value=filter_dict_type)))
+                must_conditions.append(
+                    FieldCondition(key="dict_type", match=MatchValue(value=filter_dict_type))
+                )
             if allowed_tags_list[i]:
-                must_conditions.append(FieldCondition(key="tag", match=MatchAny(any=allowed_tags_list[i])))
+                must_conditions.append(
+                    FieldCondition(key="tag", match=MatchAny(any=allowed_tags_list[i]))
+                )
             query_filter = Filter(must=must_conditions) if must_conditions else None
 
             # Dense request
-            d_query = dense_queries[i].tolist() if hasattr(dense_queries[i], "tolist") else dense_queries[i]
-            requests.append(QueryRequest(
-                query=d_query,
-                using="dense",
-                filter=query_filter,
-                limit=limit,
-                with_payload=True
-            ))
+            d_query = (
+                dense_queries[i].tolist()
+                if hasattr(dense_queries[i], "tolist")
+                else dense_queries[i]
+            )
+            requests.append(
+                QueryRequest(
+                    query=d_query,
+                    using="dense",
+                    filter=query_filter,
+                    limit=limit,
+                    with_payload=True,
+                )
+            )
 
             # Sparse request
             sparse_vector = self._parse_sparse_dict(sparse_queries[i])
             if sparse_vector.indices:
-                requests.append(QueryRequest(
-                    query=sparse_vector,
-                    using="sparse",
-                    filter=query_filter,
-                    limit=limit,
-                    with_payload=True
-                ))
+                requests.append(
+                    QueryRequest(
+                        query=sparse_vector,
+                        using="sparse",
+                        filter=query_filter,
+                        limit=limit,
+                        with_payload=True,
+                    )
+                )
                 has_sparse_flags.append(True)
             else:
                 has_sparse_flags.append(False)
@@ -606,7 +671,7 @@ class VectorStore:
                 "query_batch_points (batch tags)",
                 self.client.query_batch_points,
                 collection_name=collection_name,
-                requests=chunk
+                requests=chunk,
             )
             raw_responses.extend(batch_res)
 

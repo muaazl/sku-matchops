@@ -1,6 +1,7 @@
 import hmac
 import os
 from collections import deque
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.security.api_key import APIKeyHeader
 
@@ -16,6 +17,7 @@ from backend.app.api.endpoints.requests_log import router as requests_log_router
 from backend.app.api.endpoints.rules_api import router as rules_router
 from backend.app.api.endpoints.upload import router as upload_router
 from backend.app.core import config
+from backend.app.core.db import DB_PATH
 from backend.app.schemas.models import (
     ClassifyRequest,
     EnqueueJobResponse,
@@ -24,7 +26,6 @@ from backend.app.schemas.models import (
 )
 from backend.app.services.engine_client import get_engine_health
 from backend.app.services.worker import enqueue_job
-from backend.app.core.db import DB_PATH
 
 api_router = APIRouter()
 
@@ -42,6 +43,7 @@ api_router.include_router(engine_callbacks_router)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+
 def get_api_key(api_key_header: str = Security(api_key_header)):
     if not hmac.compare_digest(api_key_header or "", config.API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key.")
@@ -56,7 +58,7 @@ def health():
         "status": "ok",
         "service": "matchops-backend",
         "loaded_domains": loaded_domains,
-        "engine": engine_status
+        "engine": engine_status,
     }
 
 
@@ -110,12 +112,12 @@ def get_logs(lines: int = Query(500, ge=1, le=20000)):
     log_file = os.path.join(os.path.dirname(DB_PATH), "logs", "app.log")
     if not os.path.exists(log_file):
         log_file = os.path.join(os.path.dirname(DB_PATH), "app.log")
-    
+
     if not os.path.exists(log_file):
         return {"logs": "Log file not found."}
-        
+
     try:
-        with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+        with open(log_file, encoding="utf-8", errors="ignore") as f:
             last_lines = deque(f, maxlen=lines)
             return {"logs": "".join(last_lines)}
     except Exception as e:

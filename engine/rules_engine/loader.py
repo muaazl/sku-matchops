@@ -1,5 +1,6 @@
 import functools
 import logging
+
 from engine.config import DB_PATH
 from engine.core.db import ensure_db_initialized
 
@@ -7,6 +8,7 @@ logger = logging.getLogger("matchops.rules_loader")
 
 # In-memory cache: { domain: { module: [ rule_dicts ] } }
 _RULES_CACHE = None
+
 
 class Rule:
     def __init__(self, row):
@@ -21,13 +23,16 @@ class Rule:
         self.conditions = []
         self.actions = []
 
+
 def load_rules_from_db():
     """Loads all active rules from the database into the in-memory cache."""
     global _RULES_CACHE
     try:
         conn = ensure_db_initialized(DB_PATH)
     except Exception as e:
-        logger.warning(f"Could not initialize rules database at {DB_PATH}: {e}. Rules engine will be empty.")
+        logger.warning(
+            f"Could not initialize rules database at {DB_PATH}: {e}. Rules engine will be empty."
+        )
         _RULES_CACHE = {}
         return
 
@@ -58,27 +63,27 @@ def load_rules_from_db():
     for row in cursor.fetchall():
         rule_id = row[0]
         if rule_id in rules_map:
-            rules_map[rule_id].conditions.append({
-                "condition_group": row[1],
-                "condition_type": row[2],
-                "value": row[3],
-                "negate": bool(row[4])
-            })
-            
+            rules_map[rule_id].conditions.append(
+                {
+                    "condition_group": row[1],
+                    "condition_type": row[2],
+                    "value": row[3],
+                    "negate": bool(row[4]),
+                }
+            )
+
     # 3. Load actions
     cursor.execute("SELECT rule_id, action_type, value FROM actions")
     for row in cursor.fetchall():
         rule_id = row[0]
         if rule_id in rules_map:
-            rules_map[rule_id].actions.append({
-                "action_type": row[1],
-                "value": row[2]
-            })
-            
+            rules_map[rule_id].actions.append({"action_type": row[1], "value": row[2]})
+
     conn.close()
-    
+
     _RULES_CACHE = new_cache
     logger.info(f"Loaded {len(rules_map)} active rules into memory.")
+
 
 @functools.lru_cache(maxsize=128)
 def get_rules(domain: str):
@@ -89,8 +94,8 @@ def get_rules(domain: str):
 
     rules = []
     # Load shared first
-    if _RULES_CACHE and 'shared' in _RULES_CACHE:
-        rules.extend(_RULES_CACHE['shared'])
+    if _RULES_CACHE and "shared" in _RULES_CACHE:
+        rules.extend(_RULES_CACHE["shared"])
 
     # Load domain specific second
     if _RULES_CACHE and domain in _RULES_CACHE:
@@ -99,6 +104,7 @@ def get_rules(domain: str):
     # Sort by priority
     rules.sort(key=lambda r: r.priority)
     return rules
+
 
 def refresh_rules_cache():
     """Forces a reload of the rules cache from DB."""

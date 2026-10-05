@@ -1,14 +1,15 @@
 import json
 import sqlite3
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.api.routes import api_router
+from backend.app.core.db import DB_PATH
 from backend.app.schemas.models import BaseRequest, SKUItem
 from backend.app.services.worker import enqueue_job
-from backend.app.core.db import DB_PATH
 
 app = FastAPI()
 app.include_router(api_router)
@@ -16,14 +17,13 @@ client = TestClient(app)
 
 
 class TestDecoupledEngineIntegration(unittest.TestCase):
-
     @patch("backend.app.api.routes.get_engine_health")
     def test_health_with_engine_status(self, mock_health):
         mock_health.return_value = {
             "status": "ok",
             "service": "matchops-engine",
             "loaded_domains": ["market", "food"],
-            "all_models_ready": True
+            "all_models_ready": True,
         }
         resp = client.get("/health")
         self.assertEqual(resp.status_code, 200)
@@ -40,7 +40,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             skus=[SKUItem(name="Test Item 1", price=10.0, description="Desc", category="Cat")],
             domain="market",
             callback_url="",
-            sheet_name="Sheet1"
+            sheet_name="Sheet1",
         )
         res = enqueue_job(req, "pipeline")
         self.assertIn("job_id", res)
@@ -67,7 +67,18 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
                 id, batch_id, type, status, current_stage, total_items, completed_items, created_by, started_at, domain, input_skus_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
             """,
-            (job_id, job_id, "pipeline", "queued", "queued", 1, 0, "test", "market", json.dumps([{"name": "Anchor Butter 200g"}]))
+            (
+                job_id,
+                job_id,
+                "pipeline",
+                "queued",
+                "queued",
+                1,
+                0,
+                "test",
+                "market",
+                json.dumps([{"name": "Anchor Butter 200g"}]),
+            ),
         )
         conn.commit()
         conn.close()
@@ -75,7 +86,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
         # 2. Engine reports progress
         prog_resp = client.post(
             f"/api/internal/jobs/{job_id}/progress",
-            json={"current_stage": "matching", "progress_pct": 50.0, "eta_seconds": 10}
+            json={"current_stage": "matching", "progress_pct": 50.0, "eta_seconds": 10},
         )
         self.assertEqual(prog_resp.status_code, 200)
 
@@ -105,10 +116,10 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
                         "logic_notes": "Direct catalog match",
                         "suggested_bt": "Butter",
                         "suggested_gk": "Butter, Dairy",
-                        "suggested_region": "Dairy"
+                        "suggested_region": "Dairy",
                     }
-                ]
-            }
+                ],
+            },
         )
         self.assertEqual(complete_resp.status_code, 200)
 

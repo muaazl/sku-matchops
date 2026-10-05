@@ -1,9 +1,11 @@
 import re
-from typing import Optional, Tuple
+
 from engine import config
+
 
 class UnitConfig:
     """Configuration for unit normalization and physical form mapping."""
+
     UNIT_MAP = {
         "g": (1, "g", "solid"),
         "gram": (1, "g", "solid"),
@@ -19,16 +21,18 @@ class UnitConfig:
         "cl": (10, "ml", "liquid"),
     }
 
+
 _FAST_WEIGHT_REGEX = re.compile(
     r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*(mg|milligram|milligrams|kg|kilogram|kilograms|g|gram|grams|ml|millilitre|millilitres|milliliter|milliliters|l|liter|liters|litre|litres|cl|tonne|tonnes)\b",
     re.IGNORECASE,
 )
 
+
 class UnitUtils:
     """Utility functions for parsing and normalizing measurements."""
 
     @staticmethod
-    def normalize_value(value: float, unit_str: str) -> Optional[Tuple[float, str, str]]:
+    def normalize_value(value: float, unit_str: str) -> tuple[float, str, str] | None:
         """Converts a value/unit pair to its base unit (g or ml)."""
         if not unit_str:
             return None
@@ -39,7 +43,7 @@ class UnitUtils:
         return None
 
     @staticmethod
-    def get_normalized_weight(text: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+    def get_normalized_weight(text: str) -> tuple[float | None, str | None, str | None]:
         """Extracts and normalizes the first measurement found in a text string."""
         if not isinstance(text, str):
             return None, None, None
@@ -62,6 +66,7 @@ class UnitUtils:
         # Fallback to robust parsing with quantulum3 for complex expressions
         try:
             from quantulum3 import parser as q_parser
+
             # Ensure space between digits and letters for better parsing
             clean_text = re.sub(r"(\d)([a-zA-Z])", r"\1 \2", text)
             quants = q_parser.parse(clean_text)
@@ -86,11 +91,12 @@ class UnitUtils:
 
         return None, None, None
 
+
 class TextPipeline:
     """Pipeline for SKU text cleaning, normalization, and feature extraction."""
 
     @staticmethod
-    def extract_weight_feature(text: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+    def extract_weight_feature(text: str) -> tuple[float | None, str | None, str | None]:
         """Feature extraction wrapper for normalized weights."""
         return UnitUtils.get_normalized_weight(text)
 
@@ -119,7 +125,11 @@ class TextPipeline:
 
         # Resolve '4 x 100g' and '100g x 4'
         text = re.sub(r"(\d+)\s*[xX]\s*(\d+(\.\d+)?)\s*([a-z]+)", calc_multipack, text)
-        text = re.sub(r"(\d+(\.\d+)?)\s*([a-z]+)\s*[xX]\s*(\d+)", lambda m: calc_multipack(m, reverse=True), text)
+        text = re.sub(
+            r"(\d+(\.\d+)?)\s*([a-z]+)\s*[xX]\s*(\d+)",
+            lambda m: calc_multipack(m, reverse=True),
+            text,
+        )
 
         def convert_match(match: re.Match) -> str:
             val = float(match.group(1))
@@ -151,7 +161,7 @@ class TextPipeline:
         return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod
-    def get_ice_cream_type(weight_str: str) -> Optional[str]:
+    def get_ice_cream_type(weight_str: str) -> str | None:
         """Maps a weight/volume value to an ice cream packaging type based on config buckets."""
         if not weight_str or not isinstance(weight_str, str):
             return None

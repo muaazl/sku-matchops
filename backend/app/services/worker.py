@@ -6,12 +6,11 @@ Persists job records in the database and dispatches async tasks to the dedicated
 import json
 import logging
 import sqlite3
-import uuid
 
+from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
 from backend.app.core.db import DB_PATH, get_next_job_id
 from backend.app.schemas.models import BaseRequest
 from backend.app.services.engine_client import dispatch_batch_job
-from backend.app.api.endpoints.engine_callbacks import _job_progress, _job_eta
 
 logger = logging.getLogger("matchops.backend.worker")
 
@@ -48,7 +47,20 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
                     started_at, domain, sheet_name, target_sheet, input_skus_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)
                 """,
-                (job_id, job_id, task, 'queued', 'queued', len(request.skus), 0, 'system', domain, request.sheet_name, target_sheet, input_skus_json)
+                (
+                    job_id,
+                    job_id,
+                    task,
+                    "queued",
+                    "queued",
+                    len(request.skus),
+                    0,
+                    "system",
+                    domain,
+                    request.sheet_name,
+                    target_sheet,
+                    input_skus_json,
+                ),
             )
             conn.commit()
             break
@@ -56,9 +68,15 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
             conn.rollback()
             job_id = None
             if attempt == max_attempts:
-                logger.error(f"Failed to allocate a unique job id after {max_attempts} attempts: {e}")
-                raise RuntimeError(f"Could not allocate a unique job id after {max_attempts} attempts: {e}")
-            logger.warning(f"Job id collided with an existing row (attempt {attempt}/{max_attempts}); retrying with a new id.")
+                logger.error(
+                    f"Failed to allocate a unique job id after {max_attempts} attempts: {e}"
+                )
+                raise RuntimeError(
+                    f"Could not allocate a unique job id after {max_attempts} attempts: {e}"
+                )
+            logger.warning(
+                f"Job id collided with an existing row (attempt {attempt}/{max_attempts}); retrying with a new id."
+            )
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to insert job into DB: {e}")
@@ -83,7 +101,7 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
             conn.execute("PRAGMA busy_timeout=60000;")
             conn.execute(
                 "UPDATE jobs SET status = 'failed', current_stage = 'failed', error_message = ? WHERE id = ?",
-                (str(dispatch_err), job_id)
+                (str(dispatch_err), job_id),
             )
             conn.commit()
             conn.close()
@@ -92,4 +110,3 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
         raise RuntimeError(f"Failed to dispatch job to ML Engine: {dispatch_err}")
 
     return {"job_id": job_id, "status": "queued", "total_skus": len(request.skus)}
-

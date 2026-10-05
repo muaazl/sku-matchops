@@ -18,13 +18,12 @@ import logging
 import os
 import sys
 import time
-from typing import Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder, StandardScaler
 import torch
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 # Resolve project roots
@@ -61,18 +60,23 @@ def load_catalog_data(
             if domain == config.DOMAIN_FOOD
             else config.MARKET_CATALOG_SHEET
         )
-        logger.info(f"[{domain.upper()}] Loading training data from sample sheet '{sheet_name}' in {sample_file}...")
+        logger.info(
+            f"[{domain.upper()}] Loading training data from sample sheet '{sheet_name}' in {sample_file}..."
+        )
         xl = pd.ExcelFile(sample_file)
         if sheet_name in xl.sheet_names:
             df = xl.parse(sheet_name)
     else:
         try:
             from engine.data_pipeline.ingestion import DataIngestion
+
             cat_df, _ = DataIngestion.load_catalog(config.GOOGLE_SHEET_ID, domain=domain)
             if not cat_df.empty:
                 df = cat_df
         except Exception as e:
-            logger.warning(f"[{domain.upper()}] Database/Sheet load failed: {e}. Checking sample fallback...")
+            logger.warning(
+                f"[{domain.upper()}] Database/Sheet load failed: {e}. Checking sample fallback..."
+            )
 
         if df.empty and os.path.exists(sample_file):
             logger.info(f"[{domain.upper()}] Loading catalog fallback from {sample_file}...")
@@ -90,7 +94,7 @@ def load_catalog_data(
 
     # Column standardization
     col_map = {c.lower().replace(" ", "").replace("_", ""): c for c in df.columns}
-    
+
     # Detect BasicType column
     bt_col = None
     for cand in ["basictype", "bt"]:
@@ -98,7 +102,9 @@ def load_catalog_data(
             bt_col = col_map[cand]
             break
     if not bt_col:
-        raise ValueError(f"[{domain.upper()}] Catalog missing BasicType column in: {list(df.columns)}")
+        raise ValueError(
+            f"[{domain.upper()}] Catalog missing BasicType column in: {list(df.columns)}"
+        )
 
     # Detect Name column
     name_col = None
@@ -159,7 +165,9 @@ def load_catalog_data(
     clean_df = clean_df.reset_index(drop=True)
 
     if len(clean_df) < 10:
-        raise ValueError(f"[{domain.upper()}] Insufficient training samples ({len(clean_df)} < 10).")
+        raise ValueError(
+            f"[{domain.upper()}] Insufficient training samples ({len(clean_df)} < 10)."
+        )
 
     logger.info(
         f"[{domain.upper()}] Loaded {len(clean_df)} labeled SKUs across "
@@ -171,7 +179,7 @@ def load_catalog_data(
 def extract_embeddings(
     df: pd.DataFrame,
     domain: str,
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
     force_embed: bool = False,
 ) -> np.ndarray:
     """Extracts or loads cached multi-field weighted text embeddings."""
@@ -179,7 +187,7 @@ def extract_embeddings(
     os.makedirs(cache_dir, exist_ok=True)
     cache_file = os.path.join(cache_dir, f"{domain}_weighted_skus_cache.pkl")
 
-    def _to_clean_str_list(series) -> List[str]:
+    def _to_clean_str_list(series) -> list[str]:
         return [
             str(v).strip() if pd.notna(v) and str(v).lower() not in ("nan", "none") else ""
             for v in series
@@ -200,9 +208,12 @@ def extract_embeddings(
     missing_indices = [i for i, k in enumerate(keys) if k not in sku_cache]
 
     if missing_indices:
-        logger.info(f"[{domain.upper()}] Embedding {len(missing_indices)} SKUs ({len(keys) - len(missing_indices)} from cache)...")
+        logger.info(
+            f"[{domain.upper()}] Embedding {len(missing_indices)} SKUs ({len(keys) - len(missing_indices)} from cache)..."
+        )
         try:
             from engine.core.resource_loader import _get_shared_models
+
             embed_engine, _ = _get_shared_models()
             missing_names = [names[i] for i in missing_indices]
             missing_descs = [descs[i] for i in missing_indices]
@@ -217,11 +228,15 @@ def extract_embeddings(
 
             joblib.dump(sku_cache, cache_file)
         except Exception as e:
-            logger.warning(f"[{domain.upper()}] Online embed_engine failed ({e}). Checking fallback cache...")
+            logger.warning(
+                f"[{domain.upper()}] Online embed_engine failed ({e}). Checking fallback cache..."
+            )
             if not sku_cache:
                 # Synthetic fallback for mock/offline testing environments
-                logger.warning(f"[{domain.upper()}] Generating deterministic pseudo-embeddings for {len(keys)} items...")
-                for i, k in enumerate(keys):
+                logger.warning(
+                    f"[{domain.upper()}] Generating deterministic pseudo-embeddings for {len(keys)} items..."
+                )
+                for k in keys:
                     rng = np.random.RandomState(abs(hash(k)) % (2**32))
                     sku_cache[k] = rng.randn(1024).astype(np.float32)
 
@@ -238,13 +253,13 @@ def train_bt_arcface(
     margin: float = 0.35,
     gamma: float = 2.0,
     weight_decay: float = 1e-4,
-    device_name: Optional[str] = None,
+    device_name: str | None = None,
     from_sample: bool = False,
     sample_file: str = "data/sample/SampleData.xlsx",
     force_embed: bool = False,
     no_quantize: bool = False,
-    output_dir: Optional[str] = None,
-) -> Dict[str, str]:
+    output_dir: str | None = None,
+) -> dict[str, str]:
     """
     Trains BTArcFaceNet, exports to ONNX, quantizes to INT8, and saves label mapping.
     """
@@ -252,7 +267,11 @@ def train_bt_arcface(
     if output_dir:
         arcface_dir = output_dir
     else:
-        arcface_dir = config.get_arcface_dir() if hasattr(config, "get_arcface_dir") else getattr(config, "ARCFACE_DIR", config.ONNX_DIR)
+        arcface_dir = (
+            config.get_arcface_dir()
+            if hasattr(config, "get_arcface_dir")
+            else getattr(config, "ARCFACE_DIR", config.ONNX_DIR)
+        )
     os.makedirs(arcface_dir, exist_ok=True)
 
     # 1. Load data
@@ -278,7 +297,9 @@ def train_bt_arcface(
     logger.info(f"[{domain.upper()}] Features shape: {X.shape}, Classes: {num_classes}")
 
     # 6. Setup PyTorch training
-    device = torch.device(device_name if device_name else ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = torch.device(
+        device_name if device_name else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
     logger.info(f"[{domain.upper()}] Training device: {device}")
 
     model = BTArcFaceNet(
@@ -291,11 +312,15 @@ def train_bt_arcface(
     ).to(device)
 
     dataset = TensorDataset(torch.from_numpy(X), torch.from_numpy(y).long())
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=(len(dataset) > batch_size))
+    dataloader = DataLoader(
+        dataset, batch_size=batch_size, shuffle=True, drop_last=(len(dataset) > batch_size)
+    )
 
     criterion = FocalLoss(gamma=gamma, reduction="mean")
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(epochs, 1), eta_min=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(epochs, 1), eta_min=1e-5
+    )
 
     model.train()
     for epoch in range(1, epochs + 1):
@@ -318,7 +343,9 @@ def train_bt_arcface(
         scheduler.step()
         avg_loss = epoch_loss / max(batches, 1)
         if epoch == 1 or epoch % max(1, epochs // 5) == 0 or epoch == epochs:
-            logger.info(f"[{domain.upper()}] Epoch {epoch:2d}/{epochs:2d} - Focal Loss: {avg_loss:.4f} (lr: {scheduler.get_last_lr()[0]:.6f})")
+            logger.info(
+                f"[{domain.upper()}] Epoch {epoch:2d}/{epochs:2d} - Focal Loss: {avg_loss:.4f} (lr: {scheduler.get_last_lr()[0]:.6f})"
+            )
 
     # 7. Export FP32 ONNX evaluation graph (inference forward without margins)
     model.eval()
@@ -350,6 +377,7 @@ def train_bt_arcface(
     if not no_quantize:
         logger.info(f"[{domain.upper()}] Quantizing model to INT8 via onnxruntime...")
         from onnxruntime.quantization import QuantType, quantize_dynamic
+
         quantize_dynamic(
             model_input=fp32_onnx_path,
             model_output=int8_onnx_path,
@@ -424,19 +452,34 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size for training.")
     parser.add_argument("--lr", type=float, default=1e-3, help="Peak learning rate for AdamW.")
     parser.add_argument("--scale", type=float, default=30.0, help="ArcFace angular scale s.")
-    parser.add_argument("--margin", type=float, default=0.35, help="ArcFace additive angular margin m.")
+    parser.add_argument(
+        "--margin", type=float, default=0.35, help="ArcFace additive angular margin m."
+    )
     parser.add_argument("--gamma", type=float, default=2.0, help="Focal loss gamma parameter.")
     parser.add_argument("--device", type=str, default=None, help="Device ('cpu', 'cuda', etc.).")
-    parser.add_argument("--from-sample", action="store_true", help="Force loading catalog from SampleData.xlsx.")
+    parser.add_argument(
+        "--from-sample", action="store_true", help="Force loading catalog from SampleData.xlsx."
+    )
     parser.add_argument(
         "--sample-file",
         type=str,
         default="data/sample/SampleData.xlsx",
         help="Path to sample Excel workbook.",
     )
-    parser.add_argument("--force-embed", action="store_true", help="Re-compute text embeddings instead of reading cache.")
-    parser.add_argument("--no-quantize", action="store_true", help="Skip INT8 dynamic quantization.")
-    parser.add_argument("--output-dir", type=str, default=None, help="Directory to save exported ONNX and labels (defaults to config.ARCFACE_DIR).")
+    parser.add_argument(
+        "--force-embed",
+        action="store_true",
+        help="Re-compute text embeddings instead of reading cache.",
+    )
+    parser.add_argument(
+        "--no-quantize", action="store_true", help="Skip INT8 dynamic quantization."
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to save exported ONNX and labels (defaults to config.ARCFACE_DIR).",
+    )
 
     args = parser.parse_args()
 

@@ -2,11 +2,15 @@ import logging
 import os
 import shutil
 import sys
+
 import torch
 import torch.nn as nn
+
 from engine.config import ONNX_DIR
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger("export_onnx")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,16 +20,18 @@ if PROJECT_ROOT not in sys.path:
 
 TMP_DIR = os.path.join(PROJECT_ROOT, "data", "cache", "onnx_tmp")
 
+
 def ensure_dirs():
     os.makedirs(ONNX_DIR, exist_ok=True)
     os.makedirs(TMP_DIR, exist_ok=True)
+
 
 class BGEHybridONNXWrapper(nn.Module):
     def __init__(self, flag_model):
         super().__init__()
         self.encoder = flag_model.model.model
         self.sparse_linear = flag_model.model.sparse_linear
-        
+
     def forward(self, input_ids, attention_mask):
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
         hidden_states = outputs.last_hidden_state
@@ -35,30 +41,36 @@ class BGEHybridONNXWrapper(nn.Module):
         sparse_weights = sparse_weights.squeeze(-1)
         return dense_vecs, sparse_weights
 
+
 def export_bge_m3(force: bool = False):
     target_dir = os.path.join(ONNX_DIR, "bge_m3")
     onnx_fp32 = os.path.join(target_dir, "model.onnx")
     onnx_int8 = os.path.join(target_dir, "model_int8.onnx")
     tokenizer_file = os.path.join(target_dir, "tokenizer.json")
-    
-    if not force and (os.path.exists(onnx_int8) or os.path.exists(onnx_fp32)) and os.path.exists(tokenizer_file):
+
+    if (
+        not force
+        and (os.path.exists(onnx_int8) or os.path.exists(onnx_fp32))
+        and os.path.exists(tokenizer_file)
+    ):
         logger.info("BGE-M3 ONNX model already exists. Skipping export.")
         return
 
     logger.info("Exporting Hybrid BGE-M3 (Dense + Sparse) to ONNX...")
     try:
         import gc
-        from transformers import AutoTokenizer
+
         from FlagEmbedding import BGEM3FlagModel
-        
+        from transformers import AutoTokenizer
+
         os.makedirs(target_dir, exist_ok=True)
 
         logger.info("Loading BGEM3FlagModel ('BAAI/bge-m3')...")
-        flag_model = BGEM3FlagModel('BAAI/bge-m3', use_fp16=False)
+        flag_model = BGEM3FlagModel("BAAI/bge-m3", use_fp16=False)
         wrapper = BGEHybridONNXWrapper(flag_model)
         wrapper.eval()
 
-        tokenizer = AutoTokenizer.from_pretrained('BAAI/bge-m3')
+        tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
         inputs = tokenizer(["Test"], padding=True, truncation=True, return_tensors="pt")
 
         logger.info("Tracing and exporting via torch.onnx.export...")
@@ -66,13 +78,13 @@ def export_bge_m3(force: bool = False):
             wrapper,
             (inputs["input_ids"], inputs["attention_mask"]),
             onnx_fp32,
-            input_names=['input_ids', 'attention_mask'],
-            output_names=['dense_vecs', 'sparse_weights'],
+            input_names=["input_ids", "attention_mask"],
+            output_names=["dense_vecs", "sparse_weights"],
             dynamic_axes={
-                'input_ids': {0: 'batch_size', 1: 'sequence_length'},
-                'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
-                'dense_vecs': {0: 'batch_size'},
-                'sparse_weights': {0: 'batch_size', 1: 'sequence_length'}
+                "input_ids": {0: "batch_size", 1: "sequence_length"},
+                "attention_mask": {0: "batch_size", 1: "sequence_length"},
+                "dense_vecs": {0: "batch_size"},
+                "sparse_weights": {0: "batch_size", 1: "sequence_length"},
             },
             opset_version=14,
             do_constant_folding=True,
@@ -89,26 +101,41 @@ def export_bge_m3(force: bool = False):
         logger.error(f"Failed to export Hybrid BGE-M3: {e}")
         raise
 
+
 def export_bge_reranker(force: bool = False):
     target_dir = os.path.join(ONNX_DIR, "reranker")
     onnx_file = os.path.join(target_dir, "model.onnx")
     onnx_int8 = os.path.join(target_dir, "model_int8.onnx")
     tokenizer_file = os.path.join(target_dir, "tokenizer.json")
 
-    if not force and (os.path.exists(onnx_int8) or os.path.exists(onnx_file)) and os.path.exists(tokenizer_file):
+    if (
+        not force
+        and (os.path.exists(onnx_int8) or os.path.exists(onnx_file))
+        and os.path.exists(tokenizer_file)
+    ):
         logger.info("BGE-Reranker ONNX model already exists. Skipping download.")
         return
 
     logger.info("Downloading pre-exported BGE-Reranker-v2-M3 ONNX model from Hugging Face...")
     try:
         import gc
+
         from huggingface_hub import snapshot_download
+
         os.makedirs(target_dir, exist_ok=True)
 
         snapshot_download(
             repo_id="onnx-community/bge-reranker-v2-m3-ONNX",
             local_dir=target_dir,
-            allow_patterns=["*.json", "*.txt", "*.model", "model.onnx", "model.onnx_data", "onnx/model.onnx", "onnx/model.onnx_data"]
+            allow_patterns=[
+                "*.json",
+                "*.txt",
+                "*.model",
+                "model.onnx",
+                "model.onnx_data",
+                "onnx/model.onnx",
+                "onnx/model.onnx_data",
+            ],
         )
 
         nested_onnx = os.path.join(target_dir, "onnx", "model.onnx")
@@ -122,9 +149,12 @@ def export_bge_reranker(force: bool = False):
         gc.collect()
         logger.info(f"Downloaded BGE-Reranker ONNX model successfully to {target_dir}")
     except Exception as e:
-        logger.warning(f"Direct download of BGE-Reranker ONNX failed ({e}); falling back to local PyTorch export...")
+        logger.warning(
+            f"Direct download of BGE-Reranker ONNX failed ({e}); falling back to local PyTorch export..."
+        )
         try:
             import gc
+
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
             os.makedirs(target_dir, exist_ok=True)
@@ -132,18 +162,20 @@ def export_bge_reranker(force: bool = False):
             model = AutoModelForSequenceClassification.from_pretrained("BAAI/bge-reranker-v2-m3")
             model.eval()
 
-            inputs = tokenizer(["query"], ["passage"], padding=True, truncation=True, return_tensors="pt")
+            inputs = tokenizer(
+                ["query"], ["passage"], padding=True, truncation=True, return_tensors="pt"
+            )
 
             torch.onnx.export(
                 model,
                 (inputs["input_ids"], inputs["attention_mask"]),
                 onnx_file,
-                input_names=['input_ids', 'attention_mask'],
-                output_names=['logits'],
+                input_names=["input_ids", "attention_mask"],
+                output_names=["logits"],
                 dynamic_axes={
-                    'input_ids': {0: 'batch_size', 1: 'sequence_length'},
-                    'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
-                    'logits': {0: 'batch_size'}
+                    "input_ids": {0: "batch_size", 1: "sequence_length"},
+                    "attention_mask": {0: "batch_size", 1: "sequence_length"},
+                    "logits": {0: "batch_size"},
                 },
                 opset_version=14,
                 do_constant_folding=True,
@@ -158,6 +190,7 @@ def export_bge_reranker(force: bool = False):
             logger.error(f"Failed to export BGE-Reranker: {e2}")
             raise
 
+
 def export_gliner(force: bool = False):
     target_dir = os.path.join(ONNX_DIR, "gliner")
     onnx_file = os.path.join(target_dir, "model.onnx")
@@ -170,31 +203,35 @@ def export_gliner(force: bool = False):
     logger.info("Downloading and exporting GLiNER Medium v2.1 ONNX model...")
     try:
         import gc
+
         from huggingface_hub import snapshot_download
+
         os.makedirs(target_dir, exist_ok=True)
-        
+
         # Download the ONNX converted repository for GLiNER
         snapshot_download(
             repo_id="onnx-community/gliner_medium-v2.1",
             local_dir=target_dir,
-            allow_patterns=["*.json", "*.txt", "model.onnx", "onnx/model.onnx"]
+            allow_patterns=["*.json", "*.txt", "model.onnx", "onnx/model.onnx"],
         )
-        
+
         # Move the onnx model from the subfolder if present
         nested_onnx = os.path.join(target_dir, "onnx", "model.onnx")
         if os.path.exists(nested_onnx):
             shutil.move(nested_onnx, onnx_file)
             shutil.rmtree(os.path.join(target_dir, "onnx"), ignore_errors=True)
-            
+
         gc.collect()
         logger.info(f"Downloaded full GLiNER ONNX model successfully to {target_dir}")
     except Exception as e:
         logger.error(f"Failed to process GLiNER ONNX: {e}")
         raise
 
+
 def cleanup():
     if os.path.exists(TMP_DIR):
         shutil.rmtree(TMP_DIR, ignore_errors=True)
+
 
 def export_all_models_if_needed(force: bool = False, quantize: bool = True):
     ensure_dirs()
@@ -207,16 +244,23 @@ def export_all_models_if_needed(force: bool = False, quantize: bool = True):
     if quantize:
         try:
             import subprocess
+
             logger.info("Triggering INT8 dynamic quantization in a dedicated isolated process...")
-            subprocess.run([sys.executable, os.path.join(SCRIPT_DIR, "quantize_models.py")], check=True)
+            subprocess.run(
+                [sys.executable, os.path.join(SCRIPT_DIR, "quantize_models.py")], check=True
+            )
         except Exception as e:
             logger.warning(f"INT8 dynamic quantization step encountered an issue: {e}")
 
+
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="SKU MatchOps ONNX Exporter & Downloader")
     parser.add_argument("--force", action="store_true", help="Force re-export even if models exist")
-    parser.add_argument("--no-quantize", action="store_true", help="Skip INT8 dynamic quantization after export")
+    parser.add_argument(
+        "--no-quantize", action="store_true", help="Skip INT8 dynamic quantization after export"
+    )
     args = parser.parse_args()
 
     logger.info("Starting ONNX Model Export for MatchOps...")

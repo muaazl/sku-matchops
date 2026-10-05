@@ -2,12 +2,12 @@
 SKU MatchOps Backend - Food Portal Client
 Fetches merchant SKU CSVs from the PickMe Food Portal API and parses them into SKU rows.
 """
+
 import csv
 import io
 import logging
 import os
 import time
-from typing import List, Optional
 
 import requests
 
@@ -16,15 +16,24 @@ from engine.core.db import log_outbound_request
 
 logger = logging.getLogger("matchops.portal_service")
 
-DEFAULT_PORTAL_URL = "https://uni-portal-api.pickme.lk/food/v1/t0001/food/place/skus/csv/{merchantid}"
+DEFAULT_PORTAL_URL = (
+    "https://uni-portal-api.pickme.lk/food/v1/t0001/food/place/skus/csv/{merchantid}"
+)
 PORTAL_URL = os.getenv("PORTAL_URL", DEFAULT_PORTAL_URL)
 
 # Portal error codes/messages indicating an invalid, blacklisted, or expired token.
 AUTH_ERROR_CODES = {"MER-4007", "MER-4006"}
-AUTH_ERROR_KEYWORDS = ("token blacklisted", "token expired", "invalid token", "unauthorized", "unauthenticated", "signature verification failed")
+AUTH_ERROR_KEYWORDS = (
+    "token blacklisted",
+    "token expired",
+    "invalid token",
+    "unauthorized",
+    "unauthenticated",
+    "signature verification failed",
+)
 
 
-def parse_csv_text_to_skus(text: str) -> List[SKUItem]:
+def parse_csv_text_to_skus(text: str) -> list[SKUItem]:
     """Parses raw CSV text into SKUItem rows, auto-detecting name/price/description/category columns.
 
     Shared by the direct CSV/TSV upload path and the merchant-portal fetch path so both
@@ -33,15 +42,19 @@ def parse_csv_text_to_skus(text: str) -> List[SKUItem]:
     reader = csv.DictReader(io.StringIO(text))
     fieldnames = reader.fieldnames or []
 
-    name_col = next((f for f in fieldnames if f.lower().strip() in ('name', 'sku_name', 'sku', 'title')), None)
-    price_col = next((f for f in fieldnames if f.lower().strip() in ('price', 'cost', 'mrp')), None)
-    desc_col = next((f for f in fieldnames if f.lower().strip() in ('description', 'desc')), None)
-    cat_col = next((f for f in fieldnames if f.lower().strip() in ('category', 'cat', 'type')), None)
+    name_col = next(
+        (f for f in fieldnames if f.lower().strip() in ("name", "sku_name", "sku", "title")), None
+    )
+    price_col = next((f for f in fieldnames if f.lower().strip() in ("price", "cost", "mrp")), None)
+    desc_col = next((f for f in fieldnames if f.lower().strip() in ("description", "desc")), None)
+    cat_col = next(
+        (f for f in fieldnames if f.lower().strip() in ("category", "cat", "type")), None
+    )
 
     if not name_col and fieldnames:
         name_col = fieldnames[0]
 
-    skus: List[SKUItem] = []
+    skus: list[SKUItem] = []
     for row in reader:
         if not name_col:
             continue
@@ -62,7 +75,7 @@ def parse_csv_text_to_skus(text: str) -> List[SKUItem]:
     return skus
 
 
-def fetch_merchant_csv(merchant_id: str, bearer_token: str, portal_url: Optional[str] = None) -> dict:
+def fetch_merchant_csv(merchant_id: str, bearer_token: str, portal_url: str | None = None) -> dict:
     """
     Fetches a merchant's SKU CSV from the Food Portal API (server-side) and parses it.
 
@@ -84,7 +97,11 @@ def fetch_merchant_csv(merchant_id: str, bearer_token: str, portal_url: Optional
         response = requests.get(url, headers=headers, timeout=30)
     except requests.RequestException as e:
         logger.warning(f"[PORTAL] Failed to reach merchant portal for '{merchant_id}': {e}")
-        return {"skus": [], "auth_failed": False, "error": f"Could not reach the merchant portal: {e}"}
+        return {
+            "skus": [],
+            "auth_failed": False,
+            "error": f"Could not reach the merchant portal: {e}",
+        }
 
     duration_ms = int((time.time() - t0) * 1000)
     text = response.text
@@ -112,14 +129,24 @@ def fetch_merchant_csv(merchant_id: str, bearer_token: str, portal_url: Optional
             or any(kw in str(e.get("message", "")).lower() for kw in AUTH_ERROR_KEYWORDS)
             for e in errors
         )
-        error_msg = ", ".join(e.get("message") or e.get("code") or "Unknown portal error" for e in errors)
+        error_msg = ", ".join(
+            e.get("message") or e.get("code") or "Unknown portal error" for e in errors
+        )
         return {"skus": [], "auth_failed": is_auth_failure, "error": error_msg}
 
     if response.status_code in (401, 403):
-        return {"skus": [], "auth_failed": True, "error": "Portal authentication failed (invalid or expired token)."}
+        return {
+            "skus": [],
+            "auth_failed": True,
+            "error": "Portal authentication failed (invalid or expired token).",
+        }
 
     if not response.ok:
-        return {"skus": [], "auth_failed": False, "error": f"Portal returned status {response.status_code}: {response.reason}"}
+        return {
+            "skus": [],
+            "auth_failed": False,
+            "error": f"Portal returned status {response.status_code}: {response.reason}",
+        }
 
     skus = parse_csv_text_to_skus(text)
     if not skus:

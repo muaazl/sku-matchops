@@ -1,11 +1,11 @@
 import pandas as pd
-from typing import List, Optional, Tuple
+
 
 def resolve_weight_bypass_candidate(
     raw_catalog: pd.DataFrame,
-    cand_indices: List[int],
-    input_w_data: Tuple[Optional[float], Optional[str], Optional[str]],
-) -> Tuple[int, str]:
+    cand_indices: list[int],
+    input_w_data: tuple[float | None, str | None, str | None],
+) -> tuple[int, str]:
     """
     Given catalog row indices tied on token-sorted text, picks the one whose
     weight is numerically closest to the input's (same physical-form type only).
@@ -26,7 +26,11 @@ def resolve_weight_bypass_candidate(
     for c_idx in cand_indices:
         cat_row = raw_catalog.iloc[c_idx]
         catalog_w_data = cat_row.get("weight_val")
-        if catalog_w_data is not None and isinstance(catalog_w_data, (tuple, list)) and catalog_w_data[0] is not None:
+        if (
+            catalog_w_data is not None
+            and isinstance(catalog_w_data, (tuple, list))
+            and catalog_w_data[0] is not None
+        ):
             cat_val, _, cat_type = catalog_w_data
             if in_type == cat_type:
                 max_val = max(in_val, cat_val)
@@ -47,7 +51,11 @@ def resolve_weight_bypass_candidate(
     else:
         cat_row = raw_catalog.iloc[selected_idx]
         catalog_w_data = cat_row.get("weight_val")
-        if catalog_w_data is not None and isinstance(catalog_w_data, (tuple, list)) and catalog_w_data[0] is not None:
+        if (
+            catalog_w_data is not None
+            and isinstance(catalog_w_data, (tuple, list))
+            and catalog_w_data[0] is not None
+        ):
             weight_reason = f" | Weight Mismatch ({int(in_val)} vs {int(catalog_w_data[0])})"
 
     return selected_idx, weight_reason

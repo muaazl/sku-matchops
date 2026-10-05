@@ -1,22 +1,44 @@
 import logging
 from collections import Counter, defaultdict
-from typing import Dict, List, Optional, Set
+
 import pandas as pd
+
 from engine.config import PRIMARY_DISH_TYPES, UMBRELLA_MINING_THRESHOLD
 
 logger = logging.getLogger("matchops.loader")
 
 # Single-word names that carry almost no food signal
 _DEGENERATE_NAMES = {
-    "small", "medium", "large", "extra large", "xl",
-    "chicken", "fish", "beef", "mutton", "prawn", "prawns",
-    "vegetable", "veg", "egg", "seafood", "mixed", "mix",
-    "regular", "special", "normal", "half", "full", "quarter",
+    "small",
+    "medium",
+    "large",
+    "extra large",
+    "xl",
+    "chicken",
+    "fish",
+    "beef",
+    "mutton",
+    "prawn",
+    "prawns",
+    "vegetable",
+    "veg",
+    "egg",
+    "seafood",
+    "mixed",
+    "mix",
+    "regular",
+    "special",
+    "normal",
+    "half",
+    "full",
+    "quarter",
 }
+
 
 def is_degenerate_name(name: str) -> bool:
     """Returns True if the SKU name is a single generic word with minimal context."""
     return name.strip().lower() in _DEGENERATE_NAMES
+
 
 def build_sku_query(row: pd.Series, col_name: str, col_desc: str, col_cat: str) -> str:
     """Combines SKU metadata into a single enriched query string for encoding."""
@@ -27,7 +49,13 @@ def build_sku_query(row: pd.Series, col_name: str, col_desc: str, col_cat: str) 
             parts.append(val)
     return " | ".join(parts)
 
-def build_descriptions(domain: str, dicts: Dict[str, List[str]], bt_gk_map: Optional[Dict[str, List[str]]] = None, bt_third_tag_map: Optional[Dict[str, str]] = None) -> Dict[str, dict]:
+
+def build_descriptions(
+    domain: str,
+    dicts: dict[str, list[str]],
+    bt_gk_map: dict[str, list[str]] | None = None,
+    bt_third_tag_map: dict[str, str] | None = None,
+) -> dict[str, dict]:
     """Builds semantic descriptions for BT and third-tag classes."""
     bt_descriptions = {}
     for bt in dicts.get("bt", []):
@@ -133,7 +161,8 @@ def build_descriptions(domain: str, dicts: Dict[str, List[str]], bt_gk_map: Opti
         "bt_gk_map": bt_gk_map or {},
     }
 
-def _find_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+
+def _find_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
     """Finds the first matching column name from candidates, ignoring case and whitespace."""
     if df is None or df.empty:
         return None
@@ -144,44 +173,64 @@ def _find_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
             return col_map[cand_key]
     return None
 
-def build_bt_third_tag_map_from_catalog(cat_df: pd.DataFrame, domain: str) -> Dict[str, str]:
+
+def build_bt_third_tag_map_from_catalog(cat_df: pd.DataFrame, domain: str) -> dict[str, str]:
     """Mines the catalog to discover the most frequent Region/Category for each Basic Type."""
     if cat_df.empty:
         return {}
-        
+
     bt_col = _find_column(cat_df, ["basictype", "BasicType", "basic_type", "BT"])
     if not bt_col:
         return {}
-        
+
     from engine.config import get_third_tag_col
+
     target_name = get_third_tag_col(domain)
-    target_col = _find_column(cat_df, [target_name, "region", "Region", "category", "Categories", "Categories / generic keywords"])
-    
+    target_col = _find_column(
+        cat_df,
+        [
+            target_name,
+            "region",
+            "Region",
+            "category",
+            "Categories",
+            "Categories / generic keywords",
+        ],
+    )
+
     if not target_col:
         return {}
 
     try:
         df = cat_df.fillna("")
-        df = df[(df[bt_col].astype(str).str.strip() != "") & (df[target_col].astype(str).str.strip() != "")].copy()
+        df = df[
+            (df[bt_col].astype(str).str.strip() != "")
+            & (df[target_col].astype(str).str.strip() != "")
+        ].copy()
 
         bt_map = {}
         for bt, group in df.groupby(bt_col):
             bt = str(bt).strip()
             if not bt:
                 continue
-            
+
             # Find the most common third tag for this BT
             most_common = str(group[target_col].value_counts().idxmax()).strip()
             if most_common:
                 bt_map[bt] = most_common
 
-        logger.info(f"[Loader] Mined {len(bt_map)} BT->{target_col.capitalize()} overrides from catalog.")
+        logger.info(
+            f"[Loader] Mined {len(bt_map)} BT->{target_col.capitalize()} overrides from catalog."
+        )
         return bt_map
     except Exception as e:
         logger.error(f"build_bt_third_tag_map_from_catalog failed: {e}")
         return {}
 
-def build_umbrella_from_training(cat_df: pd.DataFrame, threshold: float = UMBRELLA_MINING_THRESHOLD) -> Dict[str, List[str]]:
+
+def build_umbrella_from_training(
+    cat_df: pd.DataFrame, threshold: float = UMBRELLA_MINING_THRESHOLD
+) -> dict[str, list[str]]:
     """Mines the catalog to discover GK tags that reliably co-occur with specific BTs."""
     if cat_df.empty:
         return {}
@@ -193,7 +242,9 @@ def build_umbrella_from_training(cat_df: pd.DataFrame, threshold: float = UMBREL
 
     try:
         df = cat_df.fillna("")
-        df = df[(df[bt_col].astype(str).str.strip() != "") & (df[gk_col].astype(str).str.strip() != "")].copy()
+        df = df[
+            (df[bt_col].astype(str).str.strip() != "") & (df[gk_col].astype(str).str.strip() != "")
+        ].copy()
 
         umbrella = {}
         for bt, group in df.groupby(bt_col):
@@ -245,7 +296,10 @@ def is_conflicting_dish_tag(tag: str, bt: str) -> bool:
                 return True
     return False
 
-def augment_bt_gk_map_with_training(cat_df: pd.DataFrame, bt_gk_map: Dict[str, List[str]], gk_dict_list: List[str]) -> Dict[str, List[str]]:
+
+def augment_bt_gk_map_with_training(
+    cat_df: pd.DataFrame, bt_gk_map: dict[str, list[str]], gk_dict_list: list[str]
+) -> dict[str, list[str]]:
     """Augments the BT->GK map using co-occurrences found in the catalog, filtering conflicting dish types."""
     if cat_df.empty:
         return bt_gk_map
@@ -287,7 +341,10 @@ def augment_bt_gk_map_with_training(cat_df: pd.DataFrame, bt_gk_map: Dict[str, L
 
     return augmented
 
-def mine_umbrella_words_from_training(cat_df: pd.DataFrame, min_bts: int = 10, max_match_frac: float = 0.30) -> Set[str]:
+
+def mine_umbrella_words_from_training(
+    cat_df: pd.DataFrame, min_bts: int = 10, max_match_frac: float = 0.30
+) -> set[str]:
     """Discovers generic category words that appear across many BTs but rarely in SKU names."""
     if cat_df.empty:
         return set()
@@ -306,19 +363,31 @@ def mine_umbrella_words_from_training(cat_df: pd.DataFrame, min_bts: int = 10, m
         basic_types = df["basictype"].tolist()
 
         for name_val, gk_val, bt_val in zip(names, generic_keywords, basic_types):
-            name_words = {w.strip().translate(str.maketrans("", "", "-&'")).lower() for w in str(name_val).split()}
+            name_words = {
+                w.strip().translate(str.maketrans("", "", "-&'")).lower()
+                for w in str(name_val).split()
+            }
             gks = [t.strip().lower() for t in str(gk_val).split(",") if t.strip()]
             bt = str(bt_val).strip()
 
             for gk in gks:
-                gk_words = {w.strip().translate(str.maketrans("", "", "-&'")).lower() for w in gk.split()}
+                gk_words = {
+                    w.strip().translate(str.maketrans("", "", "-&'")).lower() for w in gk.split()
+                }
                 for w in gk_words:
-                    if not w: continue
+                    if not w:
+                        continue
                     word_total[w] += 1
-                    if bt: word_bt_count[w].add(bt)
-                    if w in name_words: word_sku_match[w] += 1
+                    if bt:
+                        word_bt_count[w].add(bt)
+                    if w in name_words:
+                        word_sku_match[w] += 1
 
-        umbrella_words = {w for w, bts in word_bt_count.items() if len(bts) >= min_bts and (word_sku_match[w] / word_total[w]) < max_match_frac}
+        umbrella_words = {
+            w
+            for w, bts in word_bt_count.items()
+            if len(bts) >= min_bts and (word_sku_match[w] / word_total[w]) < max_match_frac
+        }
         logger.info(f"[Loader] Mined {len(umbrella_words)} generic umbrella words.")
         return umbrella_words
     except Exception as e:

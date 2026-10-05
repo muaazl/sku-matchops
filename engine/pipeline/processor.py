@@ -6,20 +6,22 @@ Executes Matching, Classification, and Pipeline escalation tasks.
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
+
 import pandas as pd
 
 from engine import config
 from engine.classification.tagger import tag_all_skus
-from engine.rules_engine import run_rules_engine
 from engine.core.resource_loader import (
     _get_shared_models,
     _get_vector_store,
-    get_pipeline,
+    check_models_loaded,
     get_classifier,
     get_ner_engine,
-    check_models_loaded,
+    get_pipeline,
 )
+from engine.rules_engine import run_rules_engine
 from engine.templates.template_suggest import suggest_tags_from_template
 
 logger = logging.getLogger("matchops.engine.processor")
@@ -27,6 +29,7 @@ logger = logging.getLogger("matchops.engine.processor")
 
 class RerankerWrapper:
     """Lightweight wrapper to score candidate pairs with the Cross-Encoder."""
+
     def __init__(self, embed_engine):
         self.embed_engine = embed_engine
 
@@ -34,11 +37,13 @@ class RerankerWrapper:
         return self.embed_engine.score_cross_encoder(pairs)
 
 
-def _build_sku_dataframe(skus: List[Dict[str, Any]]) -> pd.DataFrame:
+def _build_sku_dataframe(skus: list[dict[str, Any]]) -> pd.DataFrame:
     """Constructs a standard SKU DataFrame from SKU dictionaries."""
     data = {
         "SKU": [
-            str(sku.get("name") or sku.get("sku_raw") or sku.get("Name") or sku.get("SKU") or "").strip()
+            str(
+                sku.get("name") or sku.get("sku_raw") or sku.get("Name") or sku.get("SKU") or ""
+            ).strip()
             for sku in skus
         ],
         "Price": [sku.get("price", 0.0) or 0.0 for sku in skus],
@@ -48,7 +53,7 @@ def _build_sku_dataframe(skus: List[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
-def _clean_field(row, key: str) -> Optional[str]:
+def _clean_field(row, key: str) -> str | None:
     """Helper to safely extract a non-empty string or None from a pandas row."""
     if key not in row:
         return None
@@ -59,14 +64,18 @@ def _clean_field(row, key: str) -> Optional[str]:
     return s if s else None
 
 
-def _extract_query_embeddings(embed_engine, names: List[str], descriptions: List[str], categories: List[str]):
+def _extract_query_embeddings(
+    embed_engine, names: list[str], descriptions: list[str], categories: list[str]
+):
     """Encodes query texts with the Bi-Encoder using fallback for description/category."""
     safe_descs = [d if d else "" for d in descriptions]
     safe_cats = [c if c else "" for c in categories]
     return embed_engine.embed_weighted_sku(names, safe_descs, safe_cats)
 
 
-def _apply_template_tag_enrichment(skus: List[Dict[str, Any]], results: List[dict], domain: str, mode: str = "classifier"):
+def _apply_template_tag_enrichment(
+    skus: list[dict[str, Any]], results: list[dict], domain: str, mode: str = "classifier"
+):
     """Enriches predicted tags using template-based keyword substitution if enabled."""
     if not getattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", False):
         return
@@ -77,10 +86,17 @@ def _apply_template_tag_enrichment(skus: List[Dict[str, Any]], results: List[dic
                 break
             status_val = results[i].get("status", "")
             bt_status_val = results[i].get("bt_status", "")
-            if status_val in ["Exact Text Match", "High Confidence", "HIGH", "AUTO"] or bt_status_val in ["Exact Text Match", "High Confidence", "HIGH", "AUTO"]:
+            if status_val in [
+                "Exact Text Match",
+                "High Confidence",
+                "HIGH",
+                "AUTO",
+            ] or bt_status_val in ["Exact Text Match", "High Confidence", "HIGH", "AUTO"]:
                 continue
             sku_name = sku.get("name", "")
-            sug_res = suggest_tags_from_template(sku_name, domain=domain, current_bt=results[i].get("suggested_bt"))
+            sug_res = suggest_tags_from_template(
+                sku_name, domain=domain, current_bt=results[i].get("suggested_bt")
+            )
             if sug_res.get("matched"):
                 s_bt = sug_res.get("suggested_bt", "")
                 s_gk_list = sug_res.get("suggested_gk", [])
@@ -89,34 +105,46 @@ def _apply_template_tag_enrichment(skus: List[Dict[str, Any]], results: List[dic
                     results[i]["suggested_bt"] = s_bt
                     if mode == "classifier":
                         results[i]["bt_status"] = "AUTO"
-                        results[i]["bt_confidence"] = max(results[i].get("bt_confidence", 0.0), 0.95)
+                        results[i]["bt_confidence"] = max(
+                            results[i].get("bt_confidence", 0.0), 0.95
+                        )
                     elif mode == "pipeline":
                         results[i]["bt_status"] = "High Confidence"
-                        results[i]["bt_confidence"] = max(results[i].get("bt_confidence") or 0.0, 0.95)
+                        results[i]["bt_confidence"] = max(
+                            results[i].get("bt_confidence") or 0.0, 0.95
+                        )
                 if s_gk:
                     existing_gk_str = results[i].get("suggested_gk", "")
                     existing_gks = [x.strip() for x in str(existing_gk_str).split(",") if x.strip()]
-                    template_gks = s_gk_list if isinstance(s_gk_list, list) else [x.strip() for x in s_gk.split(",") if x.strip()]
+                    template_gks = (
+                        s_gk_list
+                        if isinstance(s_gk_list, list)
+                        else [x.strip() for x in s_gk.split(",") if x.strip()]
+                    )
                     merged_gks = list(dict.fromkeys(existing_gks + template_gks))
                     results[i]["suggested_gk"] = ", ".join(merged_gks)
                     if mode == "classifier":
                         results[i]["gk_status"] = "AUTO"
-                        results[i]["gk_confidence"] = max(results[i].get("gk_confidence", 0.0), 0.95)
+                        results[i]["gk_confidence"] = max(
+                            results[i].get("gk_confidence", 0.0), 0.95
+                        )
                     elif mode == "pipeline":
                         results[i]["gk_status"] = "High Confidence"
-                        results[i]["gk_confidence"] = max(results[i].get("gk_confidence") or 0.0, 0.95)
+                        results[i]["gk_confidence"] = max(
+                            results[i].get("gk_confidence") or 0.0, 0.95
+                        )
     except Exception as e:
         logger.warning(f"Template tag enrichment failed for {mode}: {e}")
 
 
 def process_request(
-    skus: List[Dict[str, Any]],
+    skus: list[dict[str, Any]],
     task: str,
     domain: str = "market",
-    job_id: Optional[str] = None,
-    progress_callback: Optional[Callable[[str, float, Optional[int]], None]] = None,
-    is_cancelled: Optional[Callable[[], bool]] = None
-) -> Dict[str, Any]:
+    job_id: str | None = None,
+    progress_callback: Callable[[str, float, int | None], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     """
     Executes Matching, Classification, or Pipeline for a batch of SKUs.
     Calls progress_callback(stage_name, progress_pct, eta_seconds) dynamically.
@@ -130,7 +158,7 @@ def process_request(
         if is_cancelled and is_cancelled():
             raise InterruptedError("Job cancelled by user.")
 
-    def emit_progress(stage: str, pct: float, eta: Optional[int] = None):
+    def emit_progress(stage: str, pct: float, eta: int | None = None):
         if progress_callback:
             progress_callback(stage, min(100.0, max(0.0, round(float(pct), 2))), eta)
 
@@ -150,13 +178,14 @@ def process_request(
             for i, sku in enumerate(skus):
                 flavor_set = ner_results[i].get("flavor", set())
                 name = sku.get("name", "")
-                seafood_set = getattr(ner_engine, 'seafood_flavors', set())
-                meat_set = getattr(ner_engine, 'meat_flavors', set())
-                veg_set = getattr(ner_engine, 'vegetable_flavors', set())
+                seafood_set = getattr(ner_engine, "seafood_flavors", set())
+                meat_set = getattr(ner_engine, "meat_flavors", set())
+                veg_set = getattr(ner_engine, "vegetable_flavors", set())
                 has_seafood = any(f in seafood_set for f in flavor_set)
                 # Exclude meta-categories ('mixed') and special protein ('egg') from land meats
                 land_meats = [
-                    f for f in flavor_set
+                    f
+                    for f in flavor_set
                     if f in meat_set and f not in seafood_set and f not in ("egg", "mixed")
                 ]
                 meat_count = len(land_meats)
@@ -177,7 +206,7 @@ def process_request(
                     if "mix" not in name.lower():
                         name += " mixed"
                 elif not has_seafood and not has_meat and has_veg:
-                    pass # name += " veg"
+                    pass  # name += " veg"
                 # DO NOT mutate sku["name"] if it's just veg, it destroys exact matching downstream.
                 sku["name"] = name
 
@@ -204,35 +233,39 @@ def process_request(
         results_df = matcher.process_inputs(input_df, progress_callback=matcher_cb)
 
         out = []
-        for i, sku in enumerate(skus):
+        for i in range(len(skus)):
             if i < len(results_df):
                 row = results_df.iloc[i]
                 region_val = _clean_field(row, "Region") or _clean_field(row, "Categories")
-                out.append({
-                    "matched_catalog_name": _clean_field(row, "Matched Catalog Name") or "",
-                    "score": float(row.get("Final Score", 0.0)),
-                    "status": _clean_field(row, "Status") or "",
-                    "logic_notes": _clean_field(row, "Logic Notes") or "",
-                    "suggested_bt": _clean_field(row, "BasicType") or "",
-                    "suggested_gk": _clean_field(row, "GenericKeywords") or "",
-                    "suggested_region": region_val or "",
-                    "input_entities": row.get("Input Entities") or {},
-                    "catalog_entities": row.get("Catalog Entities") or {},
-                    "rules_applied": ""
-                })
+                out.append(
+                    {
+                        "matched_catalog_name": _clean_field(row, "Matched Catalog Name") or "",
+                        "score": float(row.get("Final Score", 0.0)),
+                        "status": _clean_field(row, "Status") or "",
+                        "logic_notes": _clean_field(row, "Logic Notes") or "",
+                        "suggested_bt": _clean_field(row, "BasicType") or "",
+                        "suggested_gk": _clean_field(row, "GenericKeywords") or "",
+                        "suggested_region": region_val or "",
+                        "input_entities": row.get("Input Entities") or {},
+                        "catalog_entities": row.get("Catalog Entities") or {},
+                        "rules_applied": "",
+                    }
+                )
             else:
-                out.append({
-                    "matched_catalog_name": "",
-                    "score": 0.0,
-                    "status": "Low / Rejected",
-                    "logic_notes": "No candidate found",
-                    "suggested_bt": "",
-                    "suggested_gk": "",
-                    "suggested_region": "",
-                    "input_entities": {},
-                    "catalog_entities": {},
-                    "rules_applied": ""
-                })
+                out.append(
+                    {
+                        "matched_catalog_name": "",
+                        "score": 0.0,
+                        "status": "Low / Rejected",
+                        "logic_notes": "No candidate found",
+                        "suggested_bt": "",
+                        "suggested_gk": "",
+                        "suggested_region": "",
+                        "input_entities": {},
+                        "catalog_entities": {},
+                        "rules_applied": "",
+                    }
+                )
 
         emit_progress("writing_results", 95.0)
         _apply_template_tag_enrichment(skus, out, domain, mode="matcher")
@@ -243,14 +276,18 @@ def process_request(
         emit_progress("embedding", 5.0)
         classifier = get_classifier(domain)
         embed_engine, _ = _get_shared_models()
-        ner_engine = getattr(classifier, 'ner_engine', None) or get_ner_engine(domain)
+        ner_engine = getattr(classifier, "ner_engine", None) or get_ner_engine(domain)
         vector_store = _get_vector_store()
-        reranker = RerankerWrapper(embed_engine) if (hasattr(embed_engine, 'cross_session') and embed_engine.cross_session) else None
+        reranker = (
+            RerankerWrapper(embed_engine)
+            if (hasattr(embed_engine, "cross_session") and embed_engine.cross_session)
+            else None
+        )
 
         chunk_size = getattr(config, "CLASSIFY_CHUNK_SIZE", 250)
         results = []
 
-        for chunk_idx, chunk_start in enumerate(range(0, total_skus, chunk_size)):
+        for chunk_start in range(0, total_skus, chunk_size):
             check_cancel()
             chunk_end = min(chunk_start + chunk_size, total_skus)
             chunk_skus = skus[chunk_start:chunk_end]
@@ -259,11 +296,18 @@ def process_request(
             sku_cats = [sku.get("category", "") for sku in chunk_skus]
             sku_prices = [sku.get("price", 0.0) or 0.0 for sku in chunk_skus]
 
-            query_embeddings = _extract_query_embeddings(embed_engine, sku_names, sku_descs, sku_cats)
+            query_embeddings = _extract_query_embeddings(
+                embed_engine, sku_names, sku_descs, sku_cats
+            )
 
-            def clf_progress_cb(pct, msg=None):
+            def clf_progress_cb(
+                pct,
+                msg=None,
+                _start=chunk_start,
+                _len=len(chunk_skus),
+            ):
                 check_cancel()
-                overall_pct = ((chunk_start + (float(pct) / 100.0) * len(chunk_skus)) / total_skus) * 100.0
+                overall_pct = ((_start + (float(pct) / 100.0) * _len) / total_skus) * 100.0
                 elapsed = max(0.1, time.time() - start_time)
                 if overall_pct < 15.0:
                     stage = "embedding"
@@ -273,7 +317,11 @@ def process_request(
                     stage = "reranking"
                 else:
                     stage = "classifying"
-                eta = max(1, int((elapsed / (overall_pct / 100.0)) - elapsed)) if overall_pct > 1.0 else None
+                eta = (
+                    max(1, int((elapsed / (overall_pct / 100.0)) - elapsed))
+                    if overall_pct > 1.0
+                    else None
+                )
                 emit_progress(stage, overall_pct, eta)
 
             chunk_results = tag_all_skus(
@@ -286,12 +334,13 @@ def process_request(
                 sku_descriptions=sku_descs,
                 sku_prices=sku_prices,
                 embed_engine=embed_engine,
-                ner_engine=getattr(classifier, 'ner_engine', ner_engine),
+                ner_engine=getattr(classifier, "ner_engine", ner_engine),
                 is_cancelled=is_cancelled or (lambda: False),
-                progress_callback=clf_progress_cb
+                progress_callback=clf_progress_cb,
             )
             results.extend(chunk_results)
             import gc
+
             gc.collect()
 
         out = [
@@ -305,12 +354,16 @@ def process_request(
                 "suggested_gk": str(res.get("suggested_gk") or ""),
                 "gk_confidence": float(res.get("gk_confidence") or 0.0),
                 "gk_status": str(res.get("gk_status") or ""),
-                "suggested_region": str(res.get("suggested_region") or res.get("suggested_category") or ""),
-                "region_confidence": float(res.get("region_confidence") or res.get("category_confidence") or 0.0),
+                "suggested_region": str(
+                    res.get("suggested_region") or res.get("suggested_category") or ""
+                ),
+                "region_confidence": float(
+                    res.get("region_confidence") or res.get("category_confidence") or 0.0
+                ),
                 "region_status": str(res.get("region_status") or res.get("category_status") or ""),
                 "region_source": str(res.get("region_source") or res.get("category_source") or ""),
                 "rules_applied": str(res.get("rules_applied") or ""),
-                "logic_notes": str(res.get("reasoning") or "")
+                "logic_notes": str(res.get("reasoning") or ""),
             }
             for res in results
         ]
@@ -333,14 +386,18 @@ def process_request(
                 "confidence": row.get("bt_confidence", 0.0) or 0.0,
                 "match_source": "classifier",
                 "matched_sku": "",
-                "reasoning": row.get("logic_notes", "")
+                "reasoning": row.get("logic_notes", ""),
             }
 
             aug_record = run_rules_engine(record)
 
             row["suggested_bt"] = str(aug_record.get("bt") or "")
             row["suggested_gk"] = ", ".join(aug_record.get("gk", []))
-            row["suggested_region"] = str(aug_record.get("region") or "") if domain == config.DOMAIN_FOOD else str(aug_record.get("category") or "")
+            row["suggested_region"] = (
+                str(aug_record.get("region") or "")
+                if domain == config.DOMAIN_FOOD
+                else str(aug_record.get("category") or "")
+            )
 
             applied = aug_record.get("rules_applied", [])
             row["rules_applied"] = json.dumps(applied) if applied else ""
@@ -365,7 +422,11 @@ def process_request(
             else:
                 stage = "classifying"
             elapsed = max(0.1, time.time() - start_time)
-            eta = max(1, int((elapsed / (overall_pct / 100.0)) - elapsed)) if overall_pct > 1.0 else None
+            eta = (
+                max(1, int((elapsed / (overall_pct / 100.0)) - elapsed))
+                if overall_pct > 1.0
+                else None
+            )
             emit_progress(stage, overall_pct, eta)
 
         match_df = matcher.process_inputs(input_df, progress_callback=matcher_pipeline_cb)
@@ -373,11 +434,11 @@ def process_request(
         pipeline_out = []
         escalate_indices = []
 
-        for i, sku in enumerate(skus):
+        for i in range(len(skus)):
             if i < len(match_df):
                 row = match_df.iloc[i]
                 m_status = _clean_field(row, "Status") or "Low / Rejected"
-                m_score  = float(row.get("Final Score", 0.0))
+                m_score = float(row.get("Final Score", 0.0))
                 region_val = _clean_field(row, "Region") or _clean_field(row, "Categories")
 
                 result = {
@@ -386,24 +447,36 @@ def process_request(
                     "status": m_status,
                     "logic_notes": _clean_field(row, "Logic Notes") or "",
                     "suggested_bt": _clean_field(row, "BasicType") or "",
-                    "bt_confidence": m_score, "bt_status": m_status,
+                    "bt_confidence": m_score,
+                    "bt_status": m_status,
                     "suggested_gk": _clean_field(row, "GenericKeywords") or "",
-                    "gk_confidence": m_score, "gk_status": m_status,
+                    "gk_confidence": m_score,
+                    "gk_status": m_status,
                     "suggested_region": region_val,
-                    "region_confidence": m_score, "region_status": m_status,
+                    "region_confidence": m_score,
+                    "region_status": m_status,
                     "pipeline_source": "Matcher",
                     "escalated": False,
                 }
             else:
                 m_status = "Low / Rejected"
-                m_score  = 0.0
+                m_score = 0.0
                 result = {
-                    "matched_catalog_name": "", "score": 0.0,
-                    "status": "Low / Rejected", "logic_notes": "No candidate found",
-                    "suggested_bt": "", "bt_confidence": 0.0, "bt_status": "Low / Rejected",
-                    "suggested_gk": "", "gk_confidence": 0.0, "gk_status": "Low / Rejected",
-                    "suggested_region": "", "region_confidence": 0.0, "region_status": "Low / Rejected",
-                    "pipeline_source": "", "escalated": False,
+                    "matched_catalog_name": "",
+                    "score": 0.0,
+                    "status": "Low / Rejected",
+                    "logic_notes": "No candidate found",
+                    "suggested_bt": "",
+                    "bt_confidence": 0.0,
+                    "bt_status": "Low / Rejected",
+                    "suggested_gk": "",
+                    "gk_confidence": 0.0,
+                    "gk_status": "Low / Rejected",
+                    "suggested_region": "",
+                    "region_confidence": 0.0,
+                    "region_status": "Low / Rejected",
+                    "pipeline_source": "",
+                    "escalated": False,
                 }
 
             if m_status in config.PIPELINE_ESCALATE_STATUSES:
@@ -415,31 +488,46 @@ def process_request(
             emit_progress("classifying", 70.0)
             classifier = get_classifier(domain)
             embed_engine, _ = _get_shared_models()
-            ner_engine = getattr(classifier, 'ner_engine', None) or get_ner_engine(domain)
+            ner_engine = getattr(classifier, "ner_engine", None) or get_ner_engine(domain)
             vector_store = _get_vector_store()
-            reranker = RerankerWrapper(embed_engine) if (hasattr(embed_engine, 'cross_session') and embed_engine.cross_session) else None
+            reranker = (
+                RerankerWrapper(embed_engine)
+                if (hasattr(embed_engine, "cross_session") and embed_engine.cross_session)
+                else None
+            )
 
             total_esc = len(escalate_indices)
             esc_chunk_size = getattr(config, "CLASSIFY_CHUNK_SIZE", 250)
 
-            for esc_chunk_idx, esc_start in enumerate(range(0, total_esc, esc_chunk_size)):
+            for esc_start in range(0, total_esc, esc_chunk_size):
                 check_cancel()
                 esc_end = min(esc_start + esc_chunk_size, total_esc)
                 chunk_esc_indices = escalate_indices[esc_start:esc_end]
                 esc_skus = [skus[i] for i in chunk_esc_indices]
                 sku_names = [s.get("name", "") for s in esc_skus]
                 sku_descs = [s.get("description", "") or "" for s in esc_skus]
-                sku_cats  = [s.get("category", "") or "" for s in esc_skus]
+                sku_cats = [s.get("category", "") or "" for s in esc_skus]
                 sku_prices = [s.get("price", 0.0) or 0.0 for s in esc_skus]
 
-                query_embeddings = _extract_query_embeddings(embed_engine, sku_names, sku_descs, sku_cats)
+                query_embeddings = _extract_query_embeddings(
+                    embed_engine, sku_names, sku_descs, sku_cats
+                )
 
-                def pipeline_clf_cb(pct, msg=None):
+                def pipeline_clf_cb(
+                    pct,
+                    msg=None,
+                    _start=esc_start,
+                    _len=len(chunk_esc_indices),
+                ):
                     check_cancel()
-                    chunk_overall_esc_pct = ((esc_start + (float(pct) / 100.0) * len(chunk_esc_indices)) / total_esc)
+                    chunk_overall_esc_pct = (_start + (float(pct) / 100.0) * _len) / total_esc
                     overall_pct = 70.0 + (chunk_overall_esc_pct * 20.0)
                     elapsed = max(0.1, time.time() - start_time)
-                    eta = max(1, int((elapsed / (overall_pct / 100.0)) - elapsed)) if overall_pct > 1.0 else None
+                    eta = (
+                        max(1, int((elapsed / (overall_pct / 100.0)) - elapsed))
+                        if overall_pct > 1.0
+                        else None
+                    )
                     emit_progress("classifying", overall_pct, eta)
 
                 clf_results = tag_all_skus(
@@ -452,9 +540,9 @@ def process_request(
                     sku_descriptions=sku_descs,
                     sku_prices=sku_prices,
                     embed_engine=embed_engine,
-                    ner_engine=getattr(classifier, 'ner_engine', ner_engine),
+                    ner_engine=getattr(classifier, "ner_engine", ner_engine),
                     is_cancelled=is_cancelled or (lambda: False),
-                    progress_callback=pipeline_clf_cb
+                    progress_callback=pipeline_clf_cb,
                 )
 
                 for j, orig_idx in enumerate(chunk_esc_indices):
@@ -467,27 +555,36 @@ def process_request(
 
                     matcher_norm = min(float(row.get("score", 0.0)), 1.0)
                     clf_confidence = float(clf.get("bt_confidence", 0.0))
-                    classifier_won = (clf_confidence > matcher_norm)
+                    classifier_won = clf_confidence > matcher_norm
                     row["pipeline_source"] = "Classifier" if classifier_won else "Matcher"
 
                     if classifier_won:
-                        row["suggested_bt"]      = str(clf.get("suggested_bt", ""))
-                        row["bt_confidence"]     = float(clf.get("bt_confidence", 0.0))
-                        row["bt_status"]         = str(clf.get("bt_status", ""))
-                        row["suggested_gk"]      = str(clf.get("suggested_gk", ""))
-                        row["gk_confidence"]     = float(clf.get("gk_confidence", 0.0))
-                        row["gk_status"]         = str(clf.get("gk_status", ""))
-                        row["suggested_region"]  = str(clf.get("suggested_region", clf.get("suggested_category", "")))
-                        row["region_confidence"] = float(clf.get("region_confidence", clf.get("category_confidence", 0.0)))
-                        row["region_status"]     = str(clf.get("region_status", clf.get("category_status", "")))
-                        row["model"]             = str(clf.get("model") or "logreg")
-                        row["bt_model"]          = str(clf.get("bt_model") or clf.get("model") or "logreg")
+                        row["suggested_bt"] = str(clf.get("suggested_bt", ""))
+                        row["bt_confidence"] = float(clf.get("bt_confidence", 0.0))
+                        row["bt_status"] = str(clf.get("bt_status", ""))
+                        row["suggested_gk"] = str(clf.get("suggested_gk", ""))
+                        row["gk_confidence"] = float(clf.get("gk_confidence", 0.0))
+                        row["gk_status"] = str(clf.get("gk_status", ""))
+                        row["suggested_region"] = str(
+                            clf.get("suggested_region", clf.get("suggested_category", ""))
+                        )
+                        row["region_confidence"] = float(
+                            clf.get("region_confidence", clf.get("category_confidence", 0.0))
+                        )
+                        row["region_status"] = str(
+                            clf.get("region_status", clf.get("category_status", ""))
+                        )
+                        row["model"] = str(clf.get("model") or "logreg")
+                        row["bt_model"] = str(clf.get("bt_model") or clf.get("model") or "logreg")
 
                         prior = str(row.get("logic_notes") or "").strip()
                         clf_note = str(clf.get("reasoning", ""))
-                        row["logic_notes"] = f"Escalated from matcher [{prior}] -> {clf_note}" if prior else clf_note
+                        row["logic_notes"] = (
+                            f"Escalated from matcher [{prior}] -> {clf_note}" if prior else clf_note
+                        )
 
                 import gc
+
                 gc.collect()
         else:
             emit_progress("classifying", 90.0)
@@ -510,17 +607,23 @@ def process_request(
                 "category": row.get("suggested_region") if domain == config.DOMAIN_MARKET else None,
                 "price": sku.get("price", 0.0),
                 "confidence": max(row.get("score", 0), row.get("bt_confidence", 0) or 0),
-                "match_source": "classifier" if row.get("pipeline_source") == "Classifier" else "catalogue",
+                "match_source": "classifier"
+                if row.get("pipeline_source") == "Classifier"
+                else "catalogue",
                 "matched_sku": row.get("matched_catalog_name", ""),
-                "reasoning": row.get("logic_notes", "")
+                "reasoning": row.get("logic_notes", ""),
             }
-            
+
             aug_record = run_rules_engine(record)
-            
+
             row["suggested_bt"] = str(aug_record.get("bt") or "")
             row["suggested_gk"] = ", ".join(aug_record.get("gk", []))
-            row["suggested_region"] = str(aug_record.get("region") or "") if domain == config.DOMAIN_FOOD else str(aug_record.get("category") or "")
-            
+            row["suggested_region"] = (
+                str(aug_record.get("region") or "")
+                if domain == config.DOMAIN_FOOD
+                else str(aug_record.get("category") or "")
+            )
+
             applied = aug_record.get("rules_applied", [])
             row["rules_applied"] = json.dumps(applied) if applied else ""
 

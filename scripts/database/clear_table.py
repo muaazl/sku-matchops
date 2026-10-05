@@ -1,7 +1,7 @@
 import argparse
 import os
-import sys
 import sqlite3
+import sys
 
 # Add project root to python path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -10,6 +10,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from engine.config import DB_PATH
+
 
 def clear_table(table_name):
     if not os.path.exists(DB_PATH):
@@ -50,13 +51,14 @@ def clear_table(table_name):
     finally:
         conn.close()
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Erase data from a database table.")
     parser.add_argument("--table", help="The name of the table to clear.")
     parser.add_argument("--arg", help="The name of the table to clear.")
-    
+
     args = parser.parse_args()
-    
+
     table_name = args.table or args.arg
     if not table_name:
         parser.error("You must specify a table using either --table or --arg")

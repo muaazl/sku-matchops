@@ -19,7 +19,6 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
 
 import numpy as np
 import onnxruntime as ort
@@ -53,17 +52,18 @@ EXPORTS_DIR = DATA_DIR / "exports"
 # 1. Pydantic Schemas for Guaranteed Structured JSON Output
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class KeywordGroup(BaseModel):
     basic_type: str = Field(
         description="The canonical Basic Type / product category (e.g. Tomato, Seer Fish, Lamb Chop, Spring Onion)."
     )
-    generic_keywords: List[str] = Field(
+    generic_keywords: list[str] = Field(
         description="Deduplicated list of search autocomplete suggestions combining the base item with attributes, category, and synonyms. Strictly alphanumeric and spaces only."
     )
 
 
 class KeywordResponse(BaseModel):
-    keyword_groups: List[KeywordGroup] = Field(
+    keyword_groups: list[KeywordGroup] = Field(
         description="List of keyword groups categorized by basic_type."
     )
 
@@ -72,7 +72,8 @@ class KeywordResponse(BaseModel):
 # 2. Database Queries: Jobs, SKUs, and Catalog Few-Shots
 # ─────────────────────────────────────────────────────────────────────────────
 
-def parse_job_id_range(job_arg: str) -> List[str]:
+
+def parse_job_id_range(job_arg: str) -> list[str]:
     """Parses single IDs, comma-separated lists, and ranges like '578-596'."""
     job_ids = []
     tokens = [t.strip() for t in job_arg.split(",") if t.strip()]
@@ -85,10 +86,12 @@ def parse_job_id_range(job_arg: str) -> List[str]:
                     job_ids.append(str(i))
                 continue
         job_ids.append(token.lstrip("#"))
-    return sorted(list(set(job_ids)), key=lambda x: int(x) if x.isdigit() else x)
+    return sorted(set(job_ids), key=lambda x: int(x) if x.isdigit() else x)
 
 
-def fetch_low_confidence_skus(db_path: Path, job_ids: List[str], max_conf: float = 0.75) -> List[str]:
+def fetch_low_confidence_skus(
+    db_path: Path, job_ids: list[str], max_conf: float = 0.75
+) -> list[str]:
     """Fetches non-high-confidence SKUs from processed_skus for the specified jobs."""
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
@@ -108,11 +111,15 @@ def fetch_low_confidence_skus(db_path: Path, job_ids: List[str], max_conf: float
     conn.close()
 
     raw_skus = [r[0].strip() for r in rows if r[0] and r[0].strip()]
-    logger.info(f"Retrieved {len(raw_skus)} candidate SKU rows from jobs {job_ids[0]}..{job_ids[-1]} with confidence < {max_conf}.")
+    logger.info(
+        f"Retrieved {len(raw_skus)} candidate SKU rows from jobs {job_ids[0]}..{job_ids[-1]} with confidence < {max_conf}."
+    )
     return raw_skus
 
 
-def fetch_catalog_few_shots(db_path: Path, categories: List[str], limit_per_cat: int = 7) -> List[Tuple[str, List[str]]]:
+def fetch_catalog_few_shots(
+    db_path: Path, categories: list[str], limit_per_cat: int = 7
+) -> list[tuple[str, list[str]]]:
     """Fetches 10-20 high quality tagged SKUs from catalog_items across specified categories."""
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
@@ -142,7 +149,7 @@ def fetch_catalog_few_shots(db_path: Path, categories: List[str], limit_per_cat:
                     gk_list = [k.strip() for k in gks_raw.split(",") if k.strip()]
             else:
                 gk_list = [k.strip() for k in gks_raw.split(",") if k.strip()]
-            
+
             # Clean keywords to alphanumeric and spaces
             cleaned_gks = []
             for k in gk_list:
@@ -150,18 +157,21 @@ def fetch_catalog_few_shots(db_path: Path, categories: List[str], limit_per_cat:
                 clean_k = re.sub(r"\s+", " ", clean_k)
                 if clean_k and clean_k not in cleaned_gks:
                     cleaned_gks.append(clean_k)
-            
+
             if cleaned_gks:
                 examples.append((name, cleaned_gks))
 
     conn.close()
-    logger.info(f"Mined {len(examples)} high-quality catalog few-shot examples across categories: {categories}.")
+    logger.info(
+        f"Mined {len(examples)} high-quality catalog few-shot examples across categories: {categories}."
+    )
     return examples
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Text Normalization & Semantic Vector Deduplication (BGE-M3 ONNX)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def clean_sku_text(text: str) -> str:
     """Strips weights, package sizes, Sinhala/non-ASCII characters, and punctuation."""
@@ -194,11 +204,11 @@ def clean_sku_text(text: str) -> str:
 
 
 def vector_deduplicate_skus(
-    raw_skus: List[str],
+    raw_skus: list[str],
     onnx_path: Path,
     sim_threshold: float = 0.85,
     batch_size: int = 64,
-) -> List[str]:
+) -> list[str]:
     """
     Uses local BGE-M3 ONNX model to compute dense embeddings and performs
     greedy clustering to isolate distinct products (skipping variants/brand duplicates).
@@ -215,7 +225,9 @@ def vector_deduplicate_skus(
         logger.warning("No valid SKUs after cleaning.")
         return []
 
-    logger.info(f"Loaded {len(sku_pairs)} SKUs with valid English product text for vector deduplication.")
+    logger.info(
+        f"Loaded {len(sku_pairs)} SKUs with valid English product text for vector deduplication."
+    )
 
     # 2. Load BGE-M3 Tokenizer and ONNX Session
     logger.info(f"Loading local BGE-M3 ONNX model from {onnx_path}...")
@@ -243,7 +255,9 @@ def vector_deduplicate_skus(
         all_dense.append(dense_norm)
 
     dense_matrix = np.vstack(all_dense)  # Shape: (N, 1024)
-    logger.info(f"Computed embeddings for {len(clean_texts)} SKUs. Running greedy clustering (threshold = {sim_threshold})...")
+    logger.info(
+        f"Computed embeddings for {len(clean_texts)} SKUs. Running greedy clustering (threshold = {sim_threshold})..."
+    )
 
     # 4. Greedy Cosine Similarity Clustering
     accepted_indices = []
@@ -266,7 +280,9 @@ def vector_deduplicate_skus(
             accepted_vecs.append(cand_vec)
 
     distinct_skus = [sku_pairs[i][0] for i in accepted_indices]
-    logger.info(f"Vector deduplication complete: {len(raw_skus)} raw -> {len(distinct_skus)} distinct products.")
+    logger.info(
+        f"Vector deduplication complete: {len(raw_skus)} raw -> {len(distinct_skus)} distinct products."
+    )
     return distinct_skus
 
 
@@ -274,7 +290,8 @@ def vector_deduplicate_skus(
 # 4. Dynamic Prompt Building & Gemini Structured Output
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_system_prompt(few_shots: List[Tuple[str, List[str]]], subgroup: str) -> str:
+
+def build_system_prompt(few_shots: list[tuple[str, list[str]]], subgroup: str) -> str:
     """Builds the comprehensive keyword generator system prompt with dynamic catalog examples."""
     examples_text = ""
     for idx, (name, gks) in enumerate(few_shots, 1):
@@ -307,7 +324,7 @@ Below is a raw list of untagged SKUs. Generate a comprehensive, deduplicated lis
     stop=stop_after_attempt(5),
     retry=retry_if_exception_type(Exception),
 )
-def generate_keywords_batch(client, system_prompt: str, sku_batch: List[str]) -> KeywordResponse:
+def generate_keywords_batch(client, system_prompt: str, sku_batch: list[str]) -> KeywordResponse:
     """Calls Gemini with exponential backoff and guaranteed JSON response schema."""
     batch_text = "\n".join(f"- {sku}" for sku in sku_batch)
     full_content = f"{system_prompt}\n\nRaw SKUs to process:\n{batch_text}"
@@ -330,6 +347,7 @@ def generate_keywords_batch(client, system_prompt: str, sku_batch: List[str]) ->
 # 5. Master Aggregation & Post-Processing
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def sanitize_keyword(keyword: str) -> str:
     """Strips illegal characters, normalizes whitespace, and applies Title Case."""
     cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", str(keyword))
@@ -338,10 +356,10 @@ def sanitize_keyword(keyword: str) -> str:
 
 
 def merge_and_finalize_keywords(
-    all_responses: List[KeywordResponse],
-) -> Dict[str, any]:
+    all_responses: list[KeywordResponse],
+) -> dict[str, any]:
     """Merges keyword groups across batches, deduplicates keywords, and validates counts."""
-    master_groups: Dict[str, Set[str]] = {}
+    master_groups: dict[str, set[str]] = {}
 
     for resp in all_responses:
         for group in resp.keyword_groups:
@@ -362,13 +380,15 @@ def merge_and_finalize_keywords(
     total_unique_keywords = set()
 
     for bt in sorted(master_groups.keys()):
-        kw_list = sorted(list(master_groups[bt]))
+        kw_list = sorted(master_groups[bt])
         total_unique_keywords.update(kw_list)
-        final_keyword_groups.append({
-            "basic_type": bt,
-            "keyword_count": len(kw_list),
-            "generic_keywords": kw_list,
-        })
+        final_keyword_groups.append(
+            {
+                "basic_type": bt,
+                "keyword_count": len(kw_list),
+                "generic_keywords": kw_list,
+            }
+        )
 
     result = {
         "metadata": {
@@ -386,9 +406,14 @@ def merge_and_finalize_keywords(
 # 6. Main Orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Generate search autocomplete keywords for Market categories.")
-    parser.add_argument("--job-ids", type=str, default="578-596", help="Job IDs or range (e.g., 578-596)")
+    parser = argparse.ArgumentParser(
+        description="Generate search autocomplete keywords for Market categories."
+    )
+    parser.add_argument(
+        "--job-ids", type=str, default="578-596", help="Job IDs or range (e.g., 578-596)"
+    )
     parser.add_argument(
         "--categories",
         type=str,
@@ -396,10 +421,19 @@ def main():
         help="Comma-separated catalog categories",
     )
     parser.add_argument("--subgroup", type=str, default="Fresh", help="Target subgroup name")
-    parser.add_argument("--max-conf", type=float, default=0.75, help="Confidence threshold to select low-conf SKUs")
-    parser.add_argument("--sim-threshold", type=float, default=0.85, help="Vector cosine similarity clustering threshold")
+    parser.add_argument(
+        "--max-conf", type=float, default=0.75, help="Confidence threshold to select low-conf SKUs"
+    )
+    parser.add_argument(
+        "--sim-threshold",
+        type=float,
+        default=0.85,
+        help="Vector cosine similarity clustering threshold",
+    )
     parser.add_argument("--batch-size", type=int, default=100, help="SKUs per Gemini call batch")
-    parser.add_argument("--db-path", type=str, default=str(DEFAULT_DB_PATH), help="Path to sqlite3 database")
+    parser.add_argument(
+        "--db-path", type=str, default=str(DEFAULT_DB_PATH), help="Path to sqlite3 database"
+    )
     args = parser.parse_args()
 
     load_dotenv(REPO_ROOT / ".env")
@@ -409,6 +443,7 @@ def main():
         sys.exit(1)
 
     from google import genai
+
     client = genai.Client(api_key=api_key)
 
     db_path = Path(args.db_path)
@@ -448,7 +483,7 @@ def main():
     system_prompt = build_system_prompt(few_shots, args.subgroup)
 
     # Step 4: Batch Processing with Gemini & State Persistence
-    all_responses: List[KeywordResponse] = []
+    all_responses: list[KeywordResponse] = []
     total_skus = len(distinct_skus)
 
     for i in range(0, total_skus, args.batch_size):
@@ -458,16 +493,20 @@ def main():
 
         # Check if batch was already processed in a previous run
         if checkpoint_file.exists():
-            logger.info(f"[Batch {batch_idx + 1}] Found existing checkpoint at {checkpoint_file.name}. Loading...")
+            logger.info(
+                f"[Batch {batch_idx + 1}] Found existing checkpoint at {checkpoint_file.name}. Loading..."
+            )
             try:
-                with open(checkpoint_file, "r", encoding="utf-8") as f:
+                with open(checkpoint_file, encoding="utf-8") as f:
                     batch_data = json.load(f)
                     all_responses.append(KeywordResponse(**batch_data))
                     continue
             except Exception as e:
                 logger.warning(f"Error reading checkpoint {checkpoint_file}: {e}. Reprocessing...")
 
-        logger.info(f"[Batch {batch_idx + 1}/{(total_skus + args.batch_size - 1) // args.batch_size}] Generating keywords for {len(batch_skus)} SKUs...")
+        logger.info(
+            f"[Batch {batch_idx + 1}/{(total_skus + args.batch_size - 1) // args.batch_size}] Generating keywords for {len(batch_skus)} SKUs..."
+        )
         try:
             resp = generate_keywords_batch(client, system_prompt, batch_skus)
             all_responses.append(resp)
@@ -475,7 +514,9 @@ def main():
             # Persist checkpoint immediately
             with open(checkpoint_file, "w", encoding="utf-8") as f:
                 json.dump(resp.model_dump(), f, indent=2, ensure_ascii=False)
-            logger.info(f"[Batch {batch_idx + 1}] Successfully saved checkpoint ({len(resp.keyword_groups)} basic types).")
+            logger.info(
+                f"[Batch {batch_idx + 1}] Successfully saved checkpoint ({len(resp.keyword_groups)} basic types)."
+            )
         except Exception as e:
             logger.error(f"[Batch {batch_idx + 1}] Failed after retries: {e}")
             raise e

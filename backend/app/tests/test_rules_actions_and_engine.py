@@ -7,7 +7,13 @@ from engine.rules_engine.loader import Rule
 
 
 class TestRulesActions(unittest.TestCase):
-    def _create_rule(self, actions: list, rule_id: str = "r1", description: str = "desc", reasoning: str = "reason") -> Rule:
+    def _create_rule(
+        self,
+        actions: list,
+        rule_id: str = "r1",
+        description: str = "desc",
+        reasoning: str = "reason",
+    ) -> Rule:
         rule = MagicMock(spec=Rule)
         rule.rule_id = rule_id
         rule.description = description
@@ -114,18 +120,23 @@ class TestRulesActions(unittest.TestCase):
         self.assertEqual(changes_bad, "")
 
     def test_compound_actions(self):
-        rule = self._create_rule([
-            {"action_type": "set_bt", "value": "Ice Cream Tub"},
-            {"action_type": "add_gk", "value": "Dessert"},
-            {"action_type": "set_visibility", "value": "visible"}
-        ])
+        rule = self._create_rule(
+            [
+                {"action_type": "set_bt", "value": "Ice Cream Tub"},
+                {"action_type": "add_gk", "value": "Dessert"},
+                {"action_type": "set_visibility", "value": "visible"},
+            ]
+        )
         record = {"bt": "Cone", "gk": ["Dairy"], "visibility": "draft"}
         changes = apply_actions(rule, record)
 
         self.assertEqual(record["bt"], "Ice Cream Tub")
         self.assertEqual(record["gk"], ["Dairy", "Dessert"])
         self.assertEqual(record["visibility"], "visible")
-        self.assertEqual(changes, "BT changed to 'Ice Cream Tub'; Added GK 'Dessert'; Visibility set to 'visible'")
+        self.assertEqual(
+            changes,
+            "BT changed to 'Ice Cream Tub'; Added GK 'Dessert'; Visibility set to 'visible'",
+        )
 
 
 class TestRulesEngineOrchestrator(unittest.TestCase):
@@ -172,7 +183,9 @@ class TestRulesEngineOrchestrator(unittest.TestCase):
         mock_get_rules.return_value = [r1]
         mock_eval.return_value = True
 
-        existing_audit = [{"rule_id": "PREV_01", "description": "prior", "change": "none", "reasoning": "test"}]
+        existing_audit = [
+            {"rule_id": "PREV_01", "description": "prior", "change": "none", "reasoning": "test"}
+        ]
         record = {"domain": "market", "bt": "Cone", "rules_applied": existing_audit}
 
         result = run_rules_engine(record)

@@ -1,20 +1,24 @@
 import functools
 import re
-from typing import Dict, List, Optional, Tuple, Union
+
 import numpy as np
+
 from engine.config import (
-    AUTO_THRESHOLD,
-    REVIEW_THRESHOLD,
-    RERANKER_THRESHOLD,
-    RERANKER_MARGIN,
-    TOP_K_RETRIEVAL as TOP_K_FUSED,
-    FUSION_METHOD,
     ALPHA,
-    USE_RERANKER,
+    AUTO_THRESHOLD,
+    FUSION_METHOD,
+    RERANKER_MARGIN,
+    RERANKER_THRESHOLD,
+    REVIEW_THRESHOLD,
     RRF_K,
     TAG_SEARCH_LIMIT,
+    USE_RERANKER,
+)
+from engine.config import (
+    TOP_K_RETRIEVAL as TOP_K_FUSED,
 )
 from engine.nlp.text_cleaner import TextPipeline
+
 
 def get_status(confidence: float, has_tags: bool, source: str = "") -> str:
     """Resolves classification status (AUTO, REVIEW, LOW) based on confidence and provenance."""
@@ -32,25 +36,25 @@ def get_status(confidence: float, has_tags: bool, source: str = "") -> str:
 def _rrf_fusion(dense_results, sparse_results, k=RRF_K) -> list:
     """Reciprocal Rank Fusion"""
     scores = {}
-    
+
     for rank, hit in enumerate(dense_results):
         tag = hit.payload.get("tag")
         if tag not in scores:
             scores[tag] = 0
         scores[tag] += 1 / (k + rank + 1)
-        
+
     for rank, hit in enumerate(sparse_results):
         tag = hit.payload.get("tag")
         if tag not in scores:
             scores[tag] = 0
         scores[tag] += 1 / (k + rank + 1)
-        
+
     fused = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [{"tag": tag, "score": score, "source": "rrf"} for tag, score in fused]
 
 
 @functools.lru_cache(maxsize=128)
-def _get_gk_regex(gk_tuple: Tuple[str, ...]) -> re.Pattern:
+def _get_gk_regex(gk_tuple: tuple[str, ...]) -> re.Pattern:
     """Pre-compiles a single regex pattern for a list of GKs, optimized with alternation."""
     # Sort by length descending to match longest phrases first (e.g., 'bubble tea' before 'tea')
     sorted_gks = sorted(gk_tuple, key=len, reverse=True)
@@ -62,20 +66,21 @@ def _get_gk_regex(gk_tuple: Tuple[str, ...]) -> re.Pattern:
 def _weighted_fusion(dense_results, sparse_results, alpha=ALPHA) -> list:
     """Weighted Sum Fusion"""
     scores = {}
-    
+
     for hit in dense_results:
         tag = hit.payload.get("tag")
         scores[tag] = scores.get(tag, 0) + alpha * hit.score
-        
+
     for hit in sparse_results:
         tag = hit.payload.get("tag")
         scores[tag] = scores.get(tag, 0) + (1 - alpha) * hit.score
-        
+
     fused = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [{"tag": tag, "score": score, "source": "weighted"} for tag, score in fused]
 
 
 _TAGGER_FLAVOR_PATTERN_CACHE = {}
+
 
 def _resolve_flavors_from_text(text: str, flavors_dict: dict) -> set:
     """Returns canonical flavor names found in a tag/BT/GK text string."""
@@ -86,7 +91,9 @@ def _resolve_flavors_from_text(text: str, flavors_dict: dict) -> set:
     if pattern is None:
         sorted_terms = sorted(flavors_dict.keys(), key=len, reverse=True)
         if sorted_terms:
-            pattern = re.compile(r"(?<![a-z0-9])(" + "|".join(re.escape(t) for t in sorted_terms) + r")(?![a-z0-9])")
+            pattern = re.compile(
+                r"(?<![a-z0-9])(" + "|".join(re.escape(t) for t in sorted_terms) + r")(?![a-z0-9])"
+            )
         _TAGGER_FLAVOR_PATTERN_CACHE[dict_id] = pattern
 
     text_lower = text.lower()
@@ -99,7 +106,15 @@ def _resolve_flavors_from_text(text: str, flavors_dict: dict) -> set:
     return result
 
 
-def match_bt(vec_dense, classifier, extracted_flavors=None, known_flavors=None, price=None, sku_name: str = "", sku_description: str = "") -> tuple[str, float, str, list[str]]:
+def match_bt(
+    vec_dense,
+    classifier,
+    extracted_flavors=None,
+    known_flavors=None,
+    price=None,
+    sku_name: str = "",
+    sku_description: str = "",
+) -> tuple[str, float, str, list[str]]:
     bt_tag, confidence, source, propagated_gks = classifier.predict_bt(
         vec_dense, price=price, sku_name=sku_name, sku_description=sku_description
     )
@@ -120,30 +135,42 @@ def match_bt(vec_dense, classifier, extracted_flavors=None, known_flavors=None, 
     return bt_tag, confidence, source, propagated_gks
 
 
-def match_third_tag(vec_dense, sku_name, description, classifier, predicted_bt="", price=None) -> tuple[str, float, str]:
-    tag, conf, source = classifier.predict_third_tag(vec_dense, sku_name, description, predicted_bt, price=price)
+def match_third_tag(
+    vec_dense, sku_name, description, classifier, predicted_bt="", price=None
+) -> tuple[str, float, str]:
+    tag, conf, source = classifier.predict_third_tag(
+        vec_dense, sku_name, description, predicted_bt, price=price
+    )
     if source != "override" and conf < REVIEW_THRESHOLD:
         return "", conf, source
     return tag, conf, source
 
 
-
-
 class DomainStrategy:
     @staticmethod
-    def filter_search_tags(allowed_gks_for_bt: list, trained_conf: float, source: str, guaranteed: list) -> tuple:
-        return allowed_gks_for_bt, None # search_allowed_tags, early_return
+    def filter_search_tags(
+        allowed_gks_for_bt: list, trained_conf: float, source: str, guaranteed: list
+    ) -> tuple:
+        return allowed_gks_for_bt, None  # search_allowed_tags, early_return
 
     @staticmethod
     def apply_post_search_filters(top_candidates: list, allowed_gks_lower: set) -> list:
         return top_candidates
 
     @staticmethod
-    def inject_synthetic_tags(top_candidates: list, market_brand: str, bt: str, category: str, extracted_flavors: list) -> list:
+    def inject_synthetic_tags(
+        top_candidates: list, market_brand: str, bt: str, category: str, extracted_flavors: list
+    ) -> list:
         return top_candidates
 
     @staticmethod
-    def apply_flavor_leak_filters(guaranteed: list, trained_gk: list, top_candidates: list, extracted_flavors: list, ner_engine) -> tuple:
+    def apply_flavor_leak_filters(
+        guaranteed: list,
+        trained_gk: list,
+        top_candidates: list,
+        extracted_flavors: list,
+        ner_engine,
+    ) -> tuple:
         return guaranteed, trained_gk, top_candidates
 
     @staticmethod
@@ -157,10 +184,15 @@ class DomainStrategy:
 
 class FoodStrategy(DomainStrategy):
     @staticmethod
-    def filter_search_tags(allowed_gks_for_bt: list, trained_conf: float, source: str, guaranteed: list) -> tuple:
+    def filter_search_tags(
+        allowed_gks_for_bt: list, trained_conf: float, source: str, guaranteed: list
+    ) -> tuple:
         if not allowed_gks_for_bt:
             # Prevent cross-contamination if no schema maps
-            return None, (guaranteed, trained_conf if (source == "trained" and trained_conf >= AUTO_THRESHOLD) else 0.0)
+            return None, (
+                guaranteed,
+                trained_conf if (source == "trained" and trained_conf >= AUTO_THRESHOLD) else 0.0,
+            )
         return allowed_gks_for_bt, None
 
     @staticmethod
@@ -170,7 +202,9 @@ class FoodStrategy(DomainStrategy):
         return top_candidates
 
     @staticmethod
-    def inject_synthetic_tags(top_candidates: list, market_brand: str, bt: str, category: str, extracted_flavors: list) -> list:
+    def inject_synthetic_tags(
+        top_candidates: list, market_brand: str, bt: str, category: str, extracted_flavors: list
+    ) -> list:
         if extracted_flavors:
             synthetic_tags = list(extracted_flavors)
             if len(extracted_flavors) > 1:
@@ -179,13 +213,21 @@ class FoodStrategy(DomainStrategy):
             existing_tags_lower = {c["tag"].lower().strip() for c in top_candidates}
             for st in synthetic_tags:
                 if st.lower().strip() not in existing_tags_lower:
-                    top_candidates.insert(0, {"tag": st.title(), "score": 1.0, "source": "synthetic"})
+                    top_candidates.insert(
+                        0, {"tag": st.title(), "score": 1.0, "source": "synthetic"}
+                    )
         return top_candidates
 
     @staticmethod
-    def apply_flavor_leak_filters(guaranteed: list, trained_gk: list, top_candidates: list, extracted_flavors: list, ner_engine) -> tuple:
+    def apply_flavor_leak_filters(
+        guaranteed: list,
+        trained_gk: list,
+        top_candidates: list,
+        extracted_flavors: list,
+        ner_engine,
+    ) -> tuple:
         if ner_engine:
-            input_flavors_canonical = set(f.lower().strip() for f in (extracted_flavors or []))
+            input_flavors_canonical = {f.lower().strip() for f in (extracted_flavors or [])}
 
             def has_unrelated_flavor(tag: str) -> bool:
                 gk_strong, gk_weak = ner_engine._get_dict_entities(tag)
@@ -212,7 +254,9 @@ class FoodStrategy(DomainStrategy):
 
 class MarketStrategy(DomainStrategy):
     @staticmethod
-    def filter_search_tags(allowed_gks_for_bt: list, trained_conf: float, source: str, guaranteed: list) -> tuple:
+    def filter_search_tags(
+        allowed_gks_for_bt: list, trained_conf: float, source: str, guaranteed: list
+    ) -> tuple:
         if allowed_gks_for_bt:
             return allowed_gks_for_bt, None
         return None, None
@@ -220,15 +264,23 @@ class MarketStrategy(DomainStrategy):
     @staticmethod
     def apply_post_search_filters(top_candidates: list, allowed_gks_lower: set) -> list:
         import engine.config as config
+
         if allowed_gks_lower:
             if getattr(config, "ALLOW_UNREGISTERED_TEMPLATE_KEYWORDS", True):
-                return [c for c in top_candidates if c["tag"].lower().strip() in allowed_gks_lower or c.get("source") == "synthetic"]
+                return [
+                    c
+                    for c in top_candidates
+                    if c["tag"].lower().strip() in allowed_gks_lower
+                    or c.get("source") == "synthetic"
+                ]
             else:
                 return [c for c in top_candidates if c["tag"].lower().strip() in allowed_gks_lower]
         return top_candidates
 
     @staticmethod
-    def inject_synthetic_tags(top_candidates: list, market_brand: str, bt: str, category: str, extracted_flavors: list) -> list:
+    def inject_synthetic_tags(
+        top_candidates: list, market_brand: str, bt: str, category: str, extracted_flavors: list
+    ) -> list:
         if market_brand:
             synthetic_tags = []
             if bt:
@@ -254,6 +306,7 @@ class MarketStrategy(DomainStrategy):
             return [t for t in trained_gk if t.lower().strip() in allowed_gks_lower]
         return trained_gk
 
+
 def get_strategy(domain: str) -> DomainStrategy:
     if domain == "food":
         return FoodStrategy()
@@ -261,21 +314,35 @@ def get_strategy(domain: str) -> DomainStrategy:
         return MarketStrategy()
     return DomainStrategy()
 
-def match_gk_hybrid(sku_name, description, query_dense, query_sparse, vector_store, reranker, classifier, bt: str, market_brand: str = "", category: str = "", extracted_flavors: list = None, price=None) -> tuple[list[str], float]:
+
+def match_gk_hybrid(
+    sku_name,
+    description,
+    query_dense,
+    query_sparse,
+    vector_store,
+    reranker,
+    classifier,
+    bt: str,
+    market_brand: str = "",
+    category: str = "",
+    extracted_flavors: list = None,
+    price=None,
+) -> tuple[list[str], float]:
     strategy = get_strategy(classifier.domain)
 
     # 1. Guaranteed tags from classifier
     guaranteed = classifier.get_guaranteed_gk(bt)
     if not isinstance(guaranteed, list):
         guaranteed = list(guaranteed)
-    
+
     # 2. Trained GK tags
     trained_gk, trained_conf, source = classifier.predict_gk(query_dense, price=price)
-    
+
     # 3. Build the allowed GK list from bt_gk_map for this BT
-    bt_gk_map = getattr(classifier, 'bt_gk_map', {})
+    bt_gk_map = getattr(classifier, "bt_gk_map", {})
     allowed_gks_for_bt = bt_gk_map.get(bt, [])
-    allowed_gks_lower = set(kw.lower().strip() for kw in allowed_gks_for_bt)
+    allowed_gks_lower = {kw.lower().strip() for kw in allowed_gks_for_bt}
 
     # ── BT-as-GK fallback (only if BT exists as a known GK) ────────────────
     if bt and bt not in guaranteed:
@@ -309,38 +376,44 @@ def match_gk_hybrid(sku_name, description, query_dense, query_sparse, vector_sto
             original_gk = gk_map[matched_gk_lower]
             if original_gk not in guaranteed:
                 guaranteed.append(original_gk)
-    
+
     # Strategy: filter search tags
-    search_allowed_tags, early_return = strategy.filter_search_tags(allowed_gks_for_bt, trained_conf, source, guaranteed)
+    search_allowed_tags, early_return = strategy.filter_search_tags(
+        allowed_gks_for_bt, trained_conf, source, guaranteed
+    )
     if early_return is not None:
         return early_return
-    
+
     # 4. Hybrid Search
     dense_hits, sparse_hits = vector_store.search_hybrid_tags(
-        dense_query=query_dense, 
-        sparse_query=query_sparse, 
-        limit=TAG_SEARCH_LIMIT, 
+        dense_query=query_dense,
+        sparse_query=query_sparse,
+        limit=TAG_SEARCH_LIMIT,
         filter_dict_type="gk",
         domain=classifier.domain,
-        allowed_tags=search_allowed_tags
+        allowed_tags=search_allowed_tags,
     )
-    
+
     if FUSION_METHOD == "rrf":
         fused_candidates = _rrf_fusion(dense_hits, sparse_hits)
     else:
         fused_candidates = _weighted_fusion(dense_hits, sparse_hits)
-        
+
     top_candidates = fused_candidates[:TOP_K_FUSED]
-    
+
     # Strategy: post search filters
     top_candidates = strategy.apply_post_search_filters(top_candidates, allowed_gks_lower)
-        
+
     # Strategy: Inject synthetic tags
-    top_candidates = strategy.inject_synthetic_tags(top_candidates, market_brand, bt, category, extracted_flavors)
-    
+    top_candidates = strategy.inject_synthetic_tags(
+        top_candidates, market_brand, bt, category, extracted_flavors
+    )
+
     # Strategy: GK Flavor Leak & Conflict Filters
     ner_engine = getattr(classifier, "ner_engine", None)
-    guaranteed, trained_gk, top_candidates = strategy.apply_flavor_leak_filters(guaranteed, trained_gk, top_candidates, extracted_flavors, ner_engine)
+    guaranteed, trained_gk, top_candidates = strategy.apply_flavor_leak_filters(
+        guaranteed, trained_gk, top_candidates, extracted_flavors, ner_engine
+    )
 
     # 5. Reranking Layer
     reranked_tags = []
@@ -349,20 +422,20 @@ def match_gk_hybrid(sku_name, description, query_dense, query_sparse, vector_sto
     if top_candidates and USE_RERANKER and reranker is not None:
         query_text = (sku_name + " " + description).strip()
         pairs = [[query_text, c["tag"]] for c in top_candidates]
-        
+
         raw_scores = reranker.predict(pairs)
-        
-        if isinstance(raw_scores, float) or (hasattr(raw_scores, 'item') and raw_scores.ndim == 0):
+
+        if isinstance(raw_scores, float) or (hasattr(raw_scores, "item") and raw_scores.ndim == 0):
             scores = [float(raw_scores)]
         else:
             scores = [float(s) for s in raw_scores]
-            
+
         scored_candidates = []
         for c, score in zip(top_candidates, scores):
             tag_lower = c["tag"].lower().strip()
             if strategy.get_reranker_threshold(score, tag_lower, allowed_gks_lower):
                 scored_candidates.append((c["tag"], score))
-                
+
         scored_candidates.sort(key=lambda x: x[1], reverse=True)
 
         if scored_candidates:
@@ -377,7 +450,7 @@ def match_gk_hybrid(sku_name, description, query_dense, query_sparse, vector_sto
         reranked_tags = [c["tag"] for c in top_candidates]
         if top_candidates:
             final_conf = min(1.0, top_candidates[0]["score"])
-            
+
     seen = set()
     merged = []
 
@@ -389,13 +462,26 @@ def match_gk_hybrid(sku_name, description, query_dense, query_sparse, vector_sto
         if key not in seen:
             seen.add(key)
             merged.append(tag)
-            
+
     conf = trained_conf if (source == "trained" and trained_conf >= AUTO_THRESHOLD) else final_conf
-    
+
     return merged, conf
 
 
-def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, reranker, classifier, sku_descriptions=None, sku_prices=None, embed_engine=None, ner_engine=None, is_cancelled=None, progress_callback=None):
+def tag_all_skus(
+    sku_names,
+    sku_categories,
+    query_embeddings,
+    vector_store,
+    reranker,
+    classifier,
+    sku_descriptions=None,
+    sku_prices=None,
+    embed_engine=None,
+    ner_engine=None,
+    is_cancelled=None,
+    progress_callback=None,
+):
     n = len(sku_names)
     if n == 0:
         return []
@@ -406,11 +492,10 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
         sku_prices = [0.0] * n
     if sku_categories is None:
         sku_categories = [""] * n
-        
+
     brands_per_sku = [""] * n
     flavors_per_sku = [[] for _ in range(n)]
-    known_flavors = set()
-    
+
     # 1. Batch NER extraction
     if ner_engine:
         combined_texts = []
@@ -425,9 +510,8 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
             for i, ents in enumerate(ner_results):
                 brand_set = ents.get("brand", set())
                 if brand_set:
-                    brands_per_sku[i] = sorted(list(brand_set), key=len, reverse=True)[0].title()
+                    brands_per_sku[i] = sorted(brand_set, key=len, reverse=True)[0].title()
         elif classifier.domain == "food":
-            known_flavors = set(ner_engine.brand_mapping.keys()) | set(ner_engine.brand_mapping.values())
             ner_results = ner_engine.batch_extract_entities(combined_texts)
             for i, ents in enumerate(ner_results):
                 flavor_set = ents.get("flavor", set())
@@ -498,8 +582,8 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
 
     # 5. Hybrid GK Search Setup
     strategy = get_strategy(classifier.domain)
-    bt_gk_map = getattr(classifier, 'bt_gk_map', {})
-    
+    bt_gk_map = getattr(classifier, "bt_gk_map", {})
+
     all_guaranteed = []
     all_allowed_gks_lower = []
     all_search_allowed_tags = []
@@ -511,16 +595,16 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
         guaranteed = classifier.get_guaranteed_gk(bt)
         if not isinstance(guaranteed, list):
             guaranteed = list(guaranteed)
-        
+
         # Propagate Tier 2 ML-kNN Generic Keywords if present from few-shot neighbors
         if i in router_gks:
             for extra_gk in router_gks[i]:
                 if extra_gk not in guaranteed:
                     guaranteed.append(extra_gk)
-        
+
         trained_gk, trained_conf, trained_source = trained_gk_preds[i]
         allowed_gks_for_bt = bt_gk_map.get(bt, [])
-        allowed_gks_lower = set(kw.lower().strip() for kw in allowed_gks_for_bt)
+        allowed_gks_lower = {kw.lower().strip() for kw in allowed_gks_for_bt}
 
         # BT-as-GK fallback
         if bt and bt not in guaranteed:
@@ -554,7 +638,9 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
                 if original_gk not in guaranteed:
                     guaranteed.append(original_gk)
 
-        search_allowed_tags, early_return = strategy.filter_search_tags(allowed_gks_for_bt, trained_conf, trained_source, guaranteed)
+        search_allowed_tags, early_return = strategy.filter_search_tags(
+            allowed_gks_for_bt, trained_conf, trained_source, guaranteed
+        )
         all_guaranteed.append(guaranteed)
         all_allowed_gks_lower.append(allowed_gks_lower)
         all_search_allowed_tags.append(search_allowed_tags)
@@ -580,7 +666,7 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
             filter_dict_type="gk",
             domain=classifier.domain,
             allowed_tags_list=search_allowed,
-            limit=TAG_SEARCH_LIMIT
+            limit=TAG_SEARCH_LIMIT,
         )
 
         if is_cancelled and is_cancelled():
@@ -590,7 +676,7 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
 
         # 7. Post-Search Fusion & Candidate Assembly
         all_rerank_pairs = []
-        pair_mapping = [] # (list_idx, candidate_idx)
+        pair_mapping = []  # (list_idx, candidate_idx)
         per_item_top_candidates = []
 
         for list_idx, orig_idx in enumerate(needs_search_indices):
@@ -600,17 +686,31 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
             else:
                 fused = _weighted_fusion(dense_hits, sparse_hits)
             top_candidates = fused[:TOP_K_FUSED]
-            top_candidates = strategy.apply_post_search_filters(top_candidates, all_allowed_gks_lower[orig_idx])
+            top_candidates = strategy.apply_post_search_filters(
+                top_candidates, all_allowed_gks_lower[orig_idx]
+            )
             top_candidates = strategy.inject_synthetic_tags(
-                top_candidates, brands_per_sku[orig_idx], predicted_bts[orig_idx], sku_categories[orig_idx], flavors_per_sku[orig_idx]
+                top_candidates,
+                brands_per_sku[orig_idx],
+                predicted_bts[orig_idx],
+                sku_categories[orig_idx],
+                flavors_per_sku[orig_idx],
             )
             ner_eng = getattr(classifier, "ner_engine", ner_engine)
             guaranteed, trained_gk, top_candidates = strategy.apply_flavor_leak_filters(
-                all_guaranteed[orig_idx], trained_gk_preds[orig_idx][0], top_candidates, flavors_per_sku[orig_idx], ner_eng
+                all_guaranteed[orig_idx],
+                trained_gk_preds[orig_idx][0],
+                top_candidates,
+                flavors_per_sku[orig_idx],
+                ner_eng,
             )
             all_guaranteed[orig_idx] = guaranteed
             # Store modified trained_gk
-            trained_gk_preds[orig_idx] = (trained_gk, trained_gk_preds[orig_idx][1], trained_gk_preds[orig_idx][2])
+            trained_gk_preds[orig_idx] = (
+                trained_gk,
+                trained_gk_preds[orig_idx][1],
+                trained_gk_preds[orig_idx][2],
+            )
             per_item_top_candidates.append(top_candidates)
 
             if top_candidates and USE_RERANKER and reranker is not None:
@@ -623,7 +723,9 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
         scored_candidates_per_item = {list_idx: [] for list_idx in range(len(needs_search_indices))}
         if all_rerank_pairs:
             raw_scores = reranker.predict(all_rerank_pairs)
-            if isinstance(raw_scores, float) or (hasattr(raw_scores, 'item') and raw_scores.ndim == 0):
+            if isinstance(raw_scores, float) or (
+                hasattr(raw_scores, "item") and raw_scores.ndim == 0
+            ):
                 scores = [float(raw_scores)]
             else:
                 scores = [float(s) for s in raw_scores]
@@ -633,7 +735,9 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
                 c = per_item_top_candidates[list_idx][c_idx]
                 score = scores[pair_idx]
                 tag_lower = c["tag"].lower().strip()
-                if strategy.get_reranker_threshold(score, tag_lower, all_allowed_gks_lower[orig_idx]):
+                if strategy.get_reranker_threshold(
+                    score, tag_lower, all_allowed_gks_lower[orig_idx]
+                ):
                     scored_candidates_per_item[list_idx].append((c["tag"], score))
 
         if is_cancelled and is_cancelled():
@@ -661,7 +765,9 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
             seen = set()
             merged = []
             trained_gk, trained_conf, trained_source = trained_gk_preds[orig_idx]
-            trained_gk = strategy.filter_final_trained_gk(trained_gk, all_allowed_gks_lower[orig_idx])
+            trained_gk = strategy.filter_final_trained_gk(
+                trained_gk, all_allowed_gks_lower[orig_idx]
+            )
 
             for tag in all_guaranteed[orig_idx] + trained_gk + reranked_tags:
                 key = tag.lower().strip()
@@ -669,7 +775,11 @@ def tag_all_skus(sku_names, sku_categories, query_embeddings, vector_store, rera
                     seen.add(key)
                     merged.append(tag)
 
-            conf = trained_conf if (trained_source == "trained" and trained_conf >= AUTO_THRESHOLD) else final_conf
+            conf = (
+                trained_conf
+                if (trained_source == "trained" and trained_conf >= AUTO_THRESHOLD)
+                else final_conf
+            )
             gk_final_results[orig_idx] = (merged, conf)
 
     # 10. Assemble Final Output Dicts

@@ -1,20 +1,22 @@
 import unittest
+
 from pydantic import ValidationError
+
 from backend.app.api.endpoints.catalog import escape_meili_filter_value
-from backend.app.schemas.models import RuleModel, RuleConditionModel, RuleActionModel
+from backend.app.schemas.models import RuleModel
+
 
 class TestSecurityHardening(unittest.TestCase):
-    
     def test_meili_filter_escaping(self):
         # Escape simple values
         self.assertEqual(escape_meili_filter_value("Colombo"), "Colombo")
-        
+
         # Escape double quotes
         self.assertEqual(escape_meili_filter_value('food" OR price >= 0'), 'food\\" OR price >= 0')
-        
+
         # Escape backslashes
         self.assertEqual(escape_meili_filter_value("a\\b"), "a\\\\b")
-        
+
         # Escape mixed characters
         self.assertEqual(escape_meili_filter_value('a\\"b'), 'a\\\\\\"b')
 
@@ -33,15 +35,10 @@ class TestSecurityHardening(unittest.TestCase):
                     "condition_group": 1,
                     "condition_type": "sku_contains",
                     "value": "coke",
-                    "negate": 0
+                    "negate": 0,
                 }
             ],
-            "actions": [
-                {
-                    "action_type": "set_bt",
-                    "value": "Soft Drink"
-                }
-            ]
+            "actions": [{"action_type": "set_bt", "value": "Soft Drink"}],
         }
         try:
             RuleModel(**valid_payload)
@@ -57,7 +54,7 @@ class TestSecurityHardening(unittest.TestCase):
             "description": "Description",
             "reasoning": "Reasoning",
             "conditions": [],
-            "actions": []
+            "actions": [],
         }
         with self.assertRaises(ValidationError):
             RuleModel(**invalid_payload)
@@ -72,7 +69,7 @@ class TestSecurityHardening(unittest.TestCase):
             "description": long_description,
             "reasoning": "Reasoning",
             "conditions": [],
-            "actions": []
+            "actions": [],
         }
         with self.assertRaises(ValidationError):
             RuleModel(**invalid_payload)
@@ -89,10 +86,10 @@ class TestSecurityHardening(unittest.TestCase):
                 {
                     "condition_group": 1,
                     "condition_type": "invalid_type",  # Rejected
-                    "value": "test"
+                    "value": "test",
                 }
             ],
-            "actions": []
+            "actions": [],
         }
         with self.assertRaises(ValidationError):
             RuleModel(**invalid_payload)
@@ -109,9 +106,9 @@ class TestSecurityHardening(unittest.TestCase):
             "actions": [
                 {
                     "action_type": "invalid_action",  # Rejected
-                    "value": "test"
+                    "value": "test",
                 }
-            ]
+            ],
         }
         with self.assertRaises(ValidationError):
             RuleModel(**invalid_payload)

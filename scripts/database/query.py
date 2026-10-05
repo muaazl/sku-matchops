@@ -11,13 +11,13 @@ Features:
   6. Professional Formatting (-fmt / --formatted): Google Sheets & Excel styling with tailored column widths, sticky headers, zebra striping, and auto-filters.
 """
 
-import sys
+import argparse
+import csv
+import json
 import os
 import re
 import sqlite3
-import json
-import csv
-import argparse
+import sys
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows terminal
@@ -53,18 +53,18 @@ def get_connection(readonly: bool = True) -> sqlite3.Connection:
 
 def sanitize_filename(name: str) -> str:
     """Removes characters forbidden in filenames on Windows/Linux."""
-    return re.sub(r'[<>:"/\\|?*\']', '', str(name)).strip()
+    return re.sub(r'[<>:"/\\|?*\']', "", str(name)).strip()
 
 
 def parse_job_ids(raw_input: str) -> list:
     """Safely extracts clean job IDs, stripping quotes, spaces, hashes, brackets, etc."""
     if not raw_input:
         return []
-    cleaned = str(raw_input).strip().strip('"\'[](){}')
+    cleaned = str(raw_input).strip().strip("\"'[](){}")
     tokens = cleaned.replace(";", ",").split(",")
     job_ids = []
     for t in tokens:
-        token = t.strip().strip('"\'# ')
+        token = t.strip().strip("\"'# ")
         if token:
             job_ids.append(token)
     return job_ids
@@ -73,7 +73,7 @@ def parse_job_ids(raw_input: str) -> list:
 def sanitize_sheet_name(name: str, fallback: str, used_names: set) -> str:
     """Sanitizes sheet names to conform with Excel 31-char limit and invalid chars."""
     raw = (name or "").strip() or fallback
-    cleaned = re.sub(r'[\\/*?:\[\]]', '_', raw).strip() or fallback
+    cleaned = re.sub(r"[\\/*?:\[\]]", "_", raw).strip() or fallback
     candidate = cleaned[:31].strip() or fallback[:31].strip()
 
     if candidate not in used_names:
@@ -127,7 +127,7 @@ def print_table(headers: list, rows: list, max_col_width: int = 50, max_rows: in
             v = r.get(h, "") if isinstance(r, dict) else r[h]
             val_str = "" if v is None else str(v).replace("\n", " ").replace("\r", "")
             if len(val_str) > max_col_width:
-                val_str = val_str[:max_col_width - 3] + "..."
+                val_str = val_str[: max_col_width - 3] + "..."
             row_cells.append(val_str)
         str_rows.append(row_cells)
 
@@ -155,7 +155,9 @@ def print_table(headers: list, rows: list, max_col_width: int = 50, max_rows: in
         print(f"Total: {len(rows)} row(s)")
 
 
-def apply_sheet_formatting(ws, headers: list, col_widths_override: dict = None, freeze_panes: str = "A2"):
+def apply_sheet_formatting(
+    ws, headers: list, col_widths_override: dict = None, freeze_panes: str = "A2"
+):
     """
     Applies professional styling for Google Sheets & Excel:
       - Dark Navy Slate header with bold white text (28pt row height)
@@ -167,7 +169,7 @@ def apply_sheet_formatting(ws, headers: list, col_widths_override: dict = None, 
       - Content-aware column widths tailored for readability (no congestion)
     """
     try:
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
 
         header_font = Font(name="Google Sans", size=11, bold=True, color="000000")
@@ -200,7 +202,10 @@ def apply_sheet_formatting(ws, headers: list, col_widths_override: dict = None, 
         alignments = {}
         for c_idx, h in enumerate(headers, 1):
             h_lower = str(h).lower()
-            if any(k in h_lower for k in ["conf", "rate", "score", "status", "source", "duration", "id"]):
+            if any(
+                k in h_lower
+                for k in ["conf", "rate", "score", "status", "source", "duration", "id"]
+            ):
                 alignments[c_idx] = align_center
             elif any(k in h_lower for k in ["total", "count", "items"]):
                 alignments[c_idx] = align_right
@@ -209,7 +214,9 @@ def apply_sheet_formatting(ws, headers: list, col_widths_override: dict = None, 
 
         # Style data rows
         max_r = ws.max_row
-        for row_idx, row_cells in enumerate(ws.iter_rows(min_row=2, max_row=max_r, max_col=len(headers)), start=2):
+        for row_idx, row_cells in enumerate(
+            ws.iter_rows(min_row=2, max_row=max_r, max_col=len(headers)), start=2
+        ):
             ws.row_dimensions[row_idx].height = 20
             fill = zebra_fill if row_idx % 2 == 1 else white_fill
             for c_idx, cell in enumerate(row_cells, start=1):
@@ -251,7 +258,14 @@ def apply_sheet_formatting(ws, headers: list, col_widths_override: dict = None, 
         print(f"[Note] Sheet formatting error ({e})")
 
 
-def export_data(data: list, base_name: str, export_csv: bool = True, export_xlsx: bool = True, sheet_name: str = "Sheet1", formatted: bool = False):
+def export_data(
+    data: list,
+    base_name: str,
+    export_csv: bool = True,
+    export_xlsx: bool = True,
+    sheet_name: str = "Sheet1",
+    formatted: bool = False,
+):
     """Exports list of dictionaries to CSV and/or XLSX in exports directory."""
     if not data:
         print("[Notice] No data to export.")
@@ -273,7 +287,12 @@ def export_data(data: list, base_name: str, export_csv: bool = True, export_xlsx
         if formatted:
             try:
                 import openpyxl
-                out_name = f"{clean_base}_formatted" if not clean_base.endswith("_formatted") else clean_base
+
+                out_name = (
+                    f"{clean_base}_formatted"
+                    if not clean_base.endswith("_formatted")
+                    else clean_base
+                )
                 xlsx_file = EXPORTS_DIR / f"{out_name}.xlsx"
                 wb = openpyxl.Workbook()
                 ws = wb.active
@@ -281,7 +300,9 @@ def export_data(data: list, base_name: str, export_csv: bool = True, export_xlsx
                 ws.title = valid_sheet
                 ws.append(fieldnames)
                 for row_dict in data:
-                    ws.append(["" if row_dict.get(h) is None else row_dict.get(h) for h in fieldnames])
+                    ws.append(
+                        ["" if row_dict.get(h) is None else row_dict.get(h) for h in fieldnames]
+                    )
                 apply_sheet_formatting(ws, fieldnames)
                 wb.save(xlsx_file)
                 print(f"Saved Formatted XLSX (Google Sheets ready): {xlsx_file}")
@@ -290,6 +311,7 @@ def export_data(data: list, base_name: str, export_csv: bool = True, export_xlsx
         else:
             try:
                 import pandas as pd
+
                 xlsx_file = EXPORTS_DIR / f"{clean_base}.xlsx"
                 df = pd.DataFrame(data)
                 valid_sheet = sanitize_sheet_name(sheet_name, "Data", set())
@@ -299,10 +321,10 @@ def export_data(data: list, base_name: str, export_csv: bool = True, export_xlsx
                 print(f"[Note] XLSX export skipped ({e})")
 
 
-
 # ==============================================================================
 # FEATURE 1: Job Summary (Sheet Name, Total SKUs, High Conf SKUs, Match Rate, etc.)
 # ==============================================================================
+
 
 def query_job_summaries(conn: sqlite3.Connection, job_ids: list) -> list:
     """Fetches high-level metrics for given job numbers."""
@@ -334,6 +356,7 @@ def query_job_summaries(conn: sqlite3.Connection, job_ids: list) -> list:
 # ==============================================================================
 # FEATURE 2: SKU Match Details (Sku name, matched catalog, confidences, etc.)
 # ==============================================================================
+
 
 def query_job_skus(conn: sqlite3.Connection, job_id: str) -> list:
     """Fetches detailed SKU rows for a given job."""
@@ -380,26 +403,30 @@ def query_job_skus(conn: sqlite3.Connection, job_id: str) -> list:
 
         category_val = r["category"] if r["category"] else (r["region"] or "")
 
-        results.append({
-            "Sku name": r["sku_name"] or "",
-            "matched catalog": r["matched_catalog_name"] or "",
-            "matcher confidence": format_conf(matcher_conf),
-            "classifier confidence": format_conf(classifier_conf),
-            "categories": category_val,
-            "generic keywords": parse_generic_keywords(r["gk_json"]),
-            "basic type": r["bt"] or "",
-            "source (matcher or classifier)": raw_source,
-        })
+        results.append(
+            {
+                "Sku name": r["sku_name"] or "",
+                "matched catalog": r["matched_catalog_name"] or "",
+                "matcher confidence": format_conf(matcher_conf),
+                "classifier confidence": format_conf(classifier_conf),
+                "categories": category_val,
+                "generic keywords": parse_generic_keywords(r["gk_json"]),
+                "basic type": r["bt"] or "",
+                "source (matcher or classifier)": raw_source,
+            }
+        )
     return results
 
 
-def export_multi_job_skus(conn: sqlite3.Connection, job_ids: list, formatted: bool = False, out_name: str = None):
+def export_multi_job_skus(
+    conn: sqlite3.Connection, job_ids: list, formatted: bool = False, out_name: str = None
+):
     """Exports SKU details for multiple jobs into separate CSVs and multi-tab XLSX."""
     cursor = conn.cursor()
     placeholders = ",".join("?" for _ in job_ids)
     cursor.execute(
         f"SELECT id, COALESCE(NULLIF(sheet_name, ''), NULLIF(target_sheet, ''), 'Job ' || id) AS sheet_name FROM jobs WHERE id IN ({placeholders})",
-        [str(j).strip().lstrip("#") for j in job_ids]
+        [str(j).strip().lstrip("#") for j in job_ids],
     )
     sheet_map = {str(r["id"]): r["sheet_name"] for r in cursor.fetchall()}
 
@@ -420,7 +447,7 @@ def export_multi_job_skus(conn: sqlite3.Connection, job_ids: list, formatted: bo
 
     summary_name = sanitize_filename(out_name) if out_name else "_".join(job_ids[:5])
     if not out_name and len(job_ids) > 5:
-        summary_name += f"_and_{len(job_ids)-5}_more"
+        summary_name += f"_and_{len(job_ids) - 5}_more"
 
     # Save CSVs
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -448,9 +475,9 @@ def export_multi_job_skus(conn: sqlite3.Connection, job_ids: list, formatted: bo
 
     # Save multi-tab Excel
     try:
-
         if formatted:
             import openpyxl
+
             xlsx_path = EXPORTS_DIR / f"jobs_skus_{summary_name}_formatted.xlsx"
             wb = openpyxl.Workbook()
             wb.remove(wb.active)  # remove default sheet
@@ -461,51 +488,88 @@ def export_multi_job_skus(conn: sqlite3.Connection, job_ids: list, formatted: bo
                 if summaries:
                     ws_sum = wb.create_sheet(title="Overview & Stores")
                     sum_headers = [
-                        "Job ID", "Store / Sheet Name", "Total SKUs", "High Conf SKUs",
-                        "Med Conf SKUs", "Low Conf SKUs", "Match Rate (%)", "Status",
-                        "Duration (min)", "Completed At"
+                        "Job ID",
+                        "Store / Sheet Name",
+                        "Total SKUs",
+                        "High Conf SKUs",
+                        "Med Conf SKUs",
+                        "Low Conf SKUs",
+                        "Match Rate (%)",
+                        "Status",
+                        "Duration (min)",
+                        "Completed At",
                     ]
                     ws_sum.append(sum_headers)
                     for s in summaries:
-                        rate_val = f"{s['match_rate']:.2f}%" if s.get('match_rate') is not None else "0.00%"
-                        dur_val = f"{s['duration_min']:.2f}" if s.get('duration_min') is not None else "0.00"
-                        ws_sum.append([
-                            s.get("job_id"),
-                            s.get("sheet_name"),
-                            s.get("total_skus"),
-                            s.get("high_conf_skus"),
-                            s.get("med_conf_skus"),
-                            s.get("low_conf_skus"),
-                            rate_val,
-                            s.get("status"),
-                            dur_val,
-                            str(s.get("completed_at") or "")
-                        ])
+                        rate_val = (
+                            f"{s['match_rate']:.2f}%"
+                            if s.get("match_rate") is not None
+                            else "0.00%"
+                        )
+                        dur_val = (
+                            f"{s['duration_min']:.2f}"
+                            if s.get("duration_min") is not None
+                            else "0.00"
+                        )
+                        ws_sum.append(
+                            [
+                                s.get("job_id"),
+                                s.get("sheet_name"),
+                                s.get("total_skus"),
+                                s.get("high_conf_skus"),
+                                s.get("med_conf_skus"),
+                                s.get("low_conf_skus"),
+                                rate_val,
+                                s.get("status"),
+                                dur_val,
+                                str(s.get("completed_at") or ""),
+                            ]
+                        )
                     apply_sheet_formatting(
-                        ws_sum, sum_headers,
-                        col_widths_override={1: 12, 2: 38, 3: 14, 4: 16, 5: 16, 6: 16, 7: 16, 8: 14, 9: 16, 10: 22}
+                        ws_sum,
+                        sum_headers,
+                        col_widths_override={
+                            1: 12,
+                            2: 38,
+                            3: 14,
+                            4: 16,
+                            5: 16,
+                            6: 16,
+                            7: 16,
+                            8: 14,
+                            9: 16,
+                            10: 22,
+                        },
                     )
 
             # 2. Individual store tabs
-            used_sheets = set(["Overview & Stores"])
+            used_sheets = {"Overview & Stores"}
             sku_col_widths = {1: 38, 2: 38, 3: 18, 4: 18, 5: 28, 6: 36, 7: 22, 8: 20}
             for j_str, (sheet_label, skus) in all_jobs_data.items():
                 tab_name = sanitize_sheet_name(sheet_label, f"Job {j_str}", used_sheets)
                 ws = wb.create_sheet(title=tab_name)
                 headers = [
-                    "Sku name", "matched catalog", "matcher confidence",
-                    "classifier confidence", "categories", "generic keywords",
-                    "basic type", "source (matcher or classifier)"
+                    "Sku name",
+                    "matched catalog",
+                    "matcher confidence",
+                    "classifier confidence",
+                    "categories",
+                    "generic keywords",
+                    "basic type",
+                    "source (matcher or classifier)",
                 ]
                 ws.append(headers)
                 for row in skus:
                     ws.append([row.get(h, "") for h in headers])
-                apply_sheet_formatting(ws, headers, col_widths_override=sku_col_widths, freeze_panes="A2")
+                apply_sheet_formatting(
+                    ws, headers, col_widths_override=sku_col_widths, freeze_panes="A2"
+                )
 
             wb.save(xlsx_path)
             print(f"\nSaved Formatted Multi-Tab XLSX (Google Sheets ready): {xlsx_path}")
         else:
             import pandas as pd
+
             xlsx_path = EXPORTS_DIR / f"jobs_skus_{summary_name}.xlsx"
             used_sheets = set()
             with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
@@ -514,11 +578,18 @@ def export_multi_job_skus(conn: sqlite3.Connection, job_ids: list, formatted: bo
                     if skus:
                         df = pd.DataFrame(skus)
                     else:
-                        df = pd.DataFrame(columns=[
-                            "Sku name", "matched catalog", "matcher confidence",
-                            "classifier confidence", "categories", "generic keywords",
-                            "basic type", "source (matcher or classifier)"
-                        ])
+                        df = pd.DataFrame(
+                            columns=[
+                                "Sku name",
+                                "matched catalog",
+                                "matcher confidence",
+                                "classifier confidence",
+                                "categories",
+                                "generic keywords",
+                                "basic type",
+                                "source (matcher or classifier)",
+                            ]
+                        )
                     df.to_excel(writer, sheet_name=tab_name, index=False)
             print(f"\nCombined Multi-Tab XLSX: {xlsx_path}")
     except Exception as e:
@@ -529,7 +600,15 @@ def export_multi_job_skus(conn: sqlite3.Connection, job_ids: list, formatted: bo
 # FEATURE 3: General Table Query & Raw SQL
 # ==============================================================================
 
-def query_table(conn: sqlite3.Connection, table: str, columns: str = "*", where: str = None, order: str = None, limit: int = None) -> list:
+
+def query_table(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: str = "*",
+    where: str = None,
+    order: str = None,
+    limit: int = None,
+) -> list:
     """Queries any table with optional column selection, filter, sort, and limit."""
     cursor = conn.cursor()
     col_str = columns if columns and columns.strip() else "*"
@@ -557,17 +636,24 @@ def run_raw_sql(conn: sqlite3.Connection, sql: str) -> list:
 def list_tables_and_schema(conn: sqlite3.Connection):
     """Prints all tables, their row counts, and column definitions."""
     cursor = conn.cursor()
-    tables = [r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+    tables = [
+        r[0]
+        for r in cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+    ]
 
     summary = []
     for t in tables:
         count = cursor.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({t})").fetchall()]
-        summary.append({
-            "Table Name": t,
-            "Row Count": count,
-            "Columns": ", ".join(cols[:8]) + ("..." if len(cols) > 8 else "")
-        })
+        summary.append(
+            {
+                "Table Name": t,
+                "Row Count": count,
+                "Columns": ", ".join(cols[:8]) + ("..." if len(cols) > 8 else ""),
+            }
+        )
 
     print_table(["Table Name", "Row Count", "Columns"], summary, max_col_width=60, max_rows=100)
 
@@ -575,6 +661,7 @@ def list_tables_and_schema(conn: sqlite3.Connection):
 # ==============================================================================
 # INTERACTIVE CLI MENU
 # ==============================================================================
+
 
 def interactive_menu(conn: sqlite3.Connection):
     while True:
@@ -608,11 +695,22 @@ def interactive_menu(conn: sqlite3.Connection):
                 print_table(list(data[0].keys()), data, max_col_width=35)
                 save_prompt = input("\nExport to CSV and XLSX? [Y/n]: ").strip().lower()
                 if save_prompt in ("", "y", "yes"):
-                    fmt_prompt = input("Apply professional styling (Google Sheets / Excel ready)? [Y/n]: ").strip().lower()
+                    fmt_prompt = (
+                        input("Apply professional styling (Google Sheets / Excel ready)? [Y/n]: ")
+                        .strip()
+                        .lower()
+                    )
                     summary_name = "_".join(job_ids[:4])
                     if len(job_ids) > 4:
-                        summary_name += f"_and_{len(job_ids)-4}_more"
-                    export_data(data, f"job_summary_{summary_name}", export_csv=True, export_xlsx=True, sheet_name="Job Summary", formatted=fmt_prompt in ("", "y", "yes"))
+                        summary_name += f"_and_{len(job_ids) - 4}_more"
+                    export_data(
+                        data,
+                        f"job_summary_{summary_name}",
+                        export_csv=True,
+                        export_xlsx=True,
+                        sheet_name="Job Summary",
+                        formatted=fmt_prompt in ("", "y", "yes"),
+                    )
             else:
                 print("[Notice] No records found for the given jobs.")
 
@@ -624,36 +722,69 @@ def interactive_menu(conn: sqlite3.Connection):
             if not job_ids:
                 print("[Error] No valid job IDs entered.")
                 continue
-            fmt_prompt = input("Apply professional styling (Google Sheets / Excel ready)? [Y/n]: ").strip().lower()
+            fmt_prompt = (
+                input("Apply professional styling (Google Sheets / Excel ready)? [Y/n]: ")
+                .strip()
+                .lower()
+            )
             print(f"\nExtracting SKU details for {len(job_ids)} job(s)...")
             export_multi_job_skus(conn, job_ids, formatted=fmt_prompt in ("", "y", "yes"))
 
         elif choice == "3":
             cursor = conn.cursor()
-            tables = [r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+            tables = [
+                r[0]
+                for r in cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                ).fetchall()
+            ]
             print("\nAvailable tables: " + ", ".join(tables))
             table_name = input("Table name: ").strip()
             if table_name not in tables:
                 print(f"[Error] Table '{table_name}' does not exist.")
                 continue
 
-            cols_info = [r[1] for r in cursor.execute(f"PRAGMA table_info({table_name})").fetchall()]
+            cols_info = [
+                r[1] for r in cursor.execute(f"PRAGMA table_info({table_name})").fetchall()
+            ]
             print(f"Columns: {', '.join(cols_info)}")
 
             cols_input = input("Columns to select (Enter for *): ").strip() or "*"
-            where_input = input("WHERE clause (e.g. status='completed', or press Enter to skip): ").strip()
+            where_input = input(
+                "WHERE clause (e.g. status='completed', or press Enter to skip): "
+            ).strip()
             order_input = input("ORDER BY clause (or press Enter to skip): ").strip()
             limit_input = input("LIMIT (default 50): ").strip() or "50"
 
             try:
-                data = query_table(conn, table_name, columns=cols_input, where=where_input, order=order_input, limit=int(limit_input))
+                data = query_table(
+                    conn,
+                    table_name,
+                    columns=cols_input,
+                    where=where_input,
+                    order=order_input,
+                    limit=int(limit_input),
+                )
                 if data:
                     print(f"\nResults from {table_name}:")
                     print_table(list(data[0].keys()), data, max_col_width=40, max_rows=50)
                     save_prompt = input("\nExport to CSV and XLSX? [Y/n]: ").strip().lower()
                     if save_prompt in ("", "y", "yes"):
-                        fmt_prompt = input("Apply professional styling (Google Sheets / Excel ready)? [Y/n]: ").strip().lower()
-                        export_data(data, f"table_{table_name}", export_csv=True, export_xlsx=True, sheet_name=table_name, formatted=fmt_prompt in ("", "y", "yes"))
+                        fmt_prompt = (
+                            input(
+                                "Apply professional styling (Google Sheets / Excel ready)? [Y/n]: "
+                            )
+                            .strip()
+                            .lower()
+                        )
+                        export_data(
+                            data,
+                            f"table_{table_name}",
+                            export_csv=True,
+                            export_xlsx=True,
+                            sheet_name=table_name,
+                            formatted=fmt_prompt in ("", "y", "yes"),
+                        )
                 else:
                     print("[Notice] No matching rows found.")
             except Exception as e:
@@ -674,8 +805,20 @@ def interactive_menu(conn: sqlite3.Connection):
                     print_table(list(data[0].keys()), data, max_col_width=40, max_rows=50)
                     save_prompt = input("\nExport to CSV and XLSX? [Y/n]: ").strip().lower()
                     if save_prompt in ("", "y", "yes"):
-                        fmt_prompt = input("Apply professional styling (Google Sheets / Excel ready)? [Y/n]: ").strip().lower()
-                        export_data(data, "custom_query_results", export_csv=True, export_xlsx=True, formatted=fmt_prompt in ("", "y", "yes"))
+                        fmt_prompt = (
+                            input(
+                                "Apply professional styling (Google Sheets / Excel ready)? [Y/n]: "
+                            )
+                            .strip()
+                            .lower()
+                        )
+                        export_data(
+                            data,
+                            "custom_query_results",
+                            export_csv=True,
+                            export_xlsx=True,
+                            formatted=fmt_prompt in ("", "y", "yes"),
+                        )
                 else:
                     print("[Notice] Query returned 0 rows.")
             except Exception as e:
@@ -692,25 +835,47 @@ def interactive_menu(conn: sqlite3.Connection):
 # MAIN / CLI PARSER
 # ==============================================================================
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="High-level database query & export tool for sku-matchops.db"
     )
     # Mode flags
-    parser.add_argument("-js", "--job-summary", help="Comma-separated job IDs to get sheet name, total SKUs, high conf SKUs, etc.")
-    parser.add_argument("-skus", "--job-skus", help="Comma-separated job IDs to extract full SKU match details")
-    parser.add_argument("-t", "--table", help="Table name to query (e.g. jobs, processed_skus, rules, catalog_items)")
-    parser.add_argument("-c", "--columns", default="*", help="Columns to select (comma-separated, default: *)")
+    parser.add_argument(
+        "-js",
+        "--job-summary",
+        help="Comma-separated job IDs to get sheet name, total SKUs, high conf SKUs, etc.",
+    )
+    parser.add_argument(
+        "-skus", "--job-skus", help="Comma-separated job IDs to extract full SKU match details"
+    )
+    parser.add_argument(
+        "-t",
+        "--table",
+        help="Table name to query (e.g. jobs, processed_skus, rules, catalog_items)",
+    )
+    parser.add_argument(
+        "-c", "--columns", default="*", help="Columns to select (comma-separated, default: *)"
+    )
     parser.add_argument("-w", "--where", help="WHERE filter clause (e.g. \"status='completed'\")")
-    parser.add_argument("-o", "--order", help="ORDER BY clause (e.g. \"id DESC\")")
-    parser.add_argument("-l", "--limit", type=int, default=100, help="Max rows to return (default: 100)")
+    parser.add_argument("-o", "--order", help='ORDER BY clause (e.g. "id DESC")')
+    parser.add_argument(
+        "-l", "--limit", type=int, default=100, help="Max rows to return (default: 100)"
+    )
     parser.add_argument("--sql", help="Raw SELECT SQL statement to execute")
-    parser.add_argument("--tables", action="store_true", help="List all tables, row counts, and columns")
+    parser.add_argument(
+        "--tables", action="store_true", help="List all tables, row counts, and columns"
+    )
 
     # Output & Styling flags
     parser.add_argument("--csv", action="store_true", help="Export results to CSV in ./exports/")
     parser.add_argument("--xlsx", action="store_true", help="Export results to XLSX in ./exports/")
-    parser.add_argument("-fmt", "--formatted", action="store_true", help="Apply professional Google Sheets / Excel styling (proper column widths, dark header, frozen panes, zebra striping, borders, auto-filters)")
+    parser.add_argument(
+        "-fmt",
+        "--formatted",
+        action="store_true",
+        help="Apply professional Google Sheets / Excel styling (proper column widths, dark header, frozen panes, zebra striping, borders, auto-filters)",
+    )
     parser.add_argument("--out", help="Custom base filename for export (saved under ./exports/)")
 
     args = parser.parse_args()
@@ -755,7 +920,7 @@ def main():
                 export_csv=do_csv,
                 export_xlsx=do_xlsx,
                 sheet_name="Job Summary",
-                formatted=args.formatted
+                formatted=args.formatted,
             )
         else:
             print("[Notice] No records found for the given jobs.")
@@ -770,11 +935,17 @@ def main():
         conn.close()
         return
 
-
     # CLI 4: Table query
     if args.table:
         try:
-            data = query_table(conn, args.table, columns=args.columns, where=args.where, order=args.order, limit=args.limit)
+            data = query_table(
+                conn,
+                args.table,
+                columns=args.columns,
+                where=args.where,
+                order=args.order,
+                limit=args.limit,
+            )
             if data:
                 print(f"\nQuery from table '{args.table}':")
                 print_table(list(data[0].keys()), data, max_col_width=40, max_rows=args.limit)
@@ -786,7 +957,7 @@ def main():
                         export_csv=args.csv or (not args.xlsx and not args.formatted),
                         export_xlsx=args.xlsx or args.formatted,
                         sheet_name=args.table,
-                        formatted=args.formatted
+                        formatted=args.formatted,
                     )
             else:
                 print(f"[Notice] 0 rows returned from table '{args.table}'.")
@@ -813,7 +984,7 @@ def main():
                         base_name,
                         export_csv=args.csv or (not args.xlsx and not args.formatted),
                         export_xlsx=args.xlsx or args.formatted,
-                        formatted=args.formatted
+                        formatted=args.formatted,
                     )
             else:
                 print("[Notice] 0 rows returned from SQL query.")

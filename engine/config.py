@@ -1,5 +1,6 @@
 import os
 import warnings
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -7,12 +8,19 @@ load_dotenv()
 # --- Resource & Threading Limits ---
 # Limit CPU thread pools to half of available cores to avoid resource starvation
 MAX_CPU_CORES = max(1, (os.cpu_count() or 4) // 2)
-for _thread_var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
+for _thread_var in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
     os.environ[_thread_var] = str(MAX_CPU_CORES)
 
 # Suppress harmless third-party library warnings
 try:
     from sklearn.exceptions import InconsistentVersionWarning
+
     warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 except ImportError:
     pass
@@ -77,11 +85,19 @@ GLINER_MODEL = os.path.join(ONNX_DIR, "gliner")
 
 BI_ENCODER_ONNX_FP32 = os.path.join(ONNX_DIR, "bge_m3", "model.onnx")
 BI_ENCODER_ONNX_INT8 = os.path.join(ONNX_DIR, "bge_m3", "model_int8.onnx")
-BI_ENCODER_ONNX = BI_ENCODER_ONNX_INT8 if (USE_INT8_MODELS and os.path.exists(BI_ENCODER_ONNX_INT8)) else BI_ENCODER_ONNX_FP32
+BI_ENCODER_ONNX = (
+    BI_ENCODER_ONNX_INT8
+    if (USE_INT8_MODELS and os.path.exists(BI_ENCODER_ONNX_INT8))
+    else BI_ENCODER_ONNX_FP32
+)
 
 CROSS_ENCODER_ONNX_FP32 = os.path.join(ONNX_DIR, "reranker", "model.onnx")
 CROSS_ENCODER_ONNX_INT8 = os.path.join(ONNX_DIR, "reranker", "model_int8.onnx")
-CROSS_ENCODER_ONNX = CROSS_ENCODER_ONNX_INT8 if (USE_INT8_MODELS and os.path.exists(CROSS_ENCODER_ONNX_INT8)) else CROSS_ENCODER_ONNX_FP32
+CROSS_ENCODER_ONNX = (
+    CROSS_ENCODER_ONNX_INT8
+    if (USE_INT8_MODELS and os.path.exists(CROSS_ENCODER_ONNX_INT8))
+    else CROSS_ENCODER_ONNX_FP32
+)
 
 GLINER_ONNX = os.path.join(ONNX_DIR, "gliner", "model.onnx")
 
@@ -98,9 +114,11 @@ MARKET_BT_ARCFACE_FP32 = os.path.join(ARCFACE_DIR, "market_bt_arcface.onnx")
 MARKET_BT_ARCFACE_INT8 = os.path.join(ARCFACE_DIR, "market_bt_arcface_int8.onnx")
 MARKET_BT_ARCFACE_LABELS = os.path.join(ARCFACE_DIR, "market_bt_arcface_labels.json")
 
+
 def get_bt_model(domain: str) -> str:
     """Returns the configured BT model identifier ('arcface' or 'logreg') for a domain."""
     return FOOD_BT_MODEL if domain == DOMAIN_FOOD else MARKET_BT_MODEL
+
 
 def get_arcface_dir() -> str:
     """Returns the effective ArcFace directory, preferring ONNX_DIR/arcface if present, else ONNX_DIR."""
@@ -112,7 +130,9 @@ def get_arcface_dir() -> str:
 
 def get_bt_arcface_onnx_path(domain: str) -> str:
     """Returns the expected ONNX artifact path for the domain's ArcFace BT model."""
-    int8_name = "food_bt_arcface_int8.onnx" if domain == DOMAIN_FOOD else "market_bt_arcface_int8.onnx"
+    int8_name = (
+        "food_bt_arcface_int8.onnx" if domain == DOMAIN_FOOD else "market_bt_arcface_int8.onnx"
+    )
     fp32_name = "food_bt_arcface.onnx" if domain == DOMAIN_FOOD else "market_bt_arcface.onnx"
     target_dir = get_arcface_dir()
     int8_path = os.path.join(target_dir, int8_name)
@@ -124,10 +144,14 @@ def get_bt_arcface_onnx_path(domain: str) -> str:
         return fp32_path
     return int8_path if USE_INT8_MODELS else fp32_path
 
+
 def get_bt_arcface_labels_path(domain: str) -> str:
     """Returns the path to the label mapping JSON for the domain's ArcFace BT model."""
-    labels_name = "food_bt_arcface_labels.json" if domain == DOMAIN_FOOD else "market_bt_arcface_labels.json"
+    labels_name = (
+        "food_bt_arcface_labels.json" if domain == DOMAIN_FOOD else "market_bt_arcface_labels.json"
+    )
     return os.path.join(get_arcface_dir(), labels_name)
+
 
 # --- NER & Entity Extraction ---
 MARKET_NER_LABELS = ["brand"]
@@ -145,9 +169,9 @@ CLASSIFY_CHUNK_SIZE = 250
 
 CONFIDENCE_THRESHOLD_HIGH = 4.0
 CONFIDENCE_THRESHOLD_MEDIUM = 0.0
-LOGIC_GATE_SIGMOID_SCALE = 0.55       # Calibrated logistic scale: 1 / (1 + exp(-scale * score))
-FUZZY_BYPASS_RATIO = 90.0             # Token-sort ratio for bypass
-FUZZY_BYPASS_TYPO_RATIO = 80.0        # Character alignment ratio for typo bypass
+LOGIC_GATE_SIGMOID_SCALE = 0.55  # Calibrated logistic scale: 1 / (1 + exp(-scale * score))
+FUZZY_BYPASS_RATIO = 90.0  # Token-sort ratio for bypass
+FUZZY_BYPASS_TYPO_RATIO = 80.0  # Character alignment ratio for typo bypass
 MATCHER_LOGIC_GATE_CANDIDATES = 5
 
 # --- Template Tag Enrichment ---
@@ -185,32 +209,52 @@ BT_DEFAULT_CONFIDENCE_THRESHOLD = 0.50
 BT_TRAINED_CONFIDENCE_THRESHOLD = 0.40
 GK_TRAINED_CONFIDENCE_THRESHOLD = 0.50
 
+
 def get_bt_confidence_threshold(source: str) -> float:
     """Returns minimum confidence required to apply predicted basic-type filter."""
-    return BT_ZERO_SHOT_CONFIDENCE_THRESHOLD if source == "zero-shot" else BT_DEFAULT_CONFIDENCE_THRESHOLD
+    return (
+        BT_ZERO_SHOT_CONFIDENCE_THRESHOLD
+        if source == "zero-shot"
+        else BT_DEFAULT_CONFIDENCE_THRESHOLD
+    )
+
 
 # Cross-encoder logit scoring (raw logits, >0 is considered relevant match)
 RERANKER_THRESHOLD = 0.0
 RERANKER_MARGIN = 2.5
 
 # --- Hybrid Fusion & Cold-Start Router ---
-FUSION_METHOD = "rrf"                 # "rrf" (Reciprocal Rank Fusion) or "weighted"
-ALPHA = 0.5                           # Dense vs sparse weight when FUSION_METHOD is "weighted"
+FUSION_METHOD = "rrf"  # "rrf" (Reciprocal Rank Fusion) or "weighted"
+ALPHA = 0.5  # Dense vs sparse weight when FUSION_METHOD is "weighted"
 USE_RERANKER = True
 RRF_K = 60
 TAG_SEARCH_LIMIT = 50
 
-LIFECYCLE_FEW_SHOT_THRESHOLD = 15     # Sample cutoff separating few-shot from centroid prototypes
-COLD_START_TAU = 0.05                 # Temperature scaling for centroid cosine similarities
+LIFECYCLE_FEW_SHOT_THRESHOLD = 15  # Sample cutoff separating few-shot from centroid prototypes
+COLD_START_TAU = 0.05  # Temperature scaling for centroid cosine similarities
 FEW_SHOT_TOP_K = 15
 FEW_SHOT_GK_WEIGHT_THRESHOLD = 0.35
 ZERO_SHOT_MAX_CANDIDATES = 5
 
 # --- Domain Dish Logic & Training Mining ---
 PRIMARY_DISH_TYPES = [
-    "fried rice", "chop suey rice", "chop suey noodles", "chop suey",
-    "biriyani", "kottu", "rice and curry", "nasi goreng", "noodles",
-    "fried noodles", "pasta", "burger", "pizza", "submarine", "wrap", "taco", "soup",
+    "fried rice",
+    "chop suey rice",
+    "chop suey noodles",
+    "chop suey",
+    "biriyani",
+    "kottu",
+    "rice and curry",
+    "nasi goreng",
+    "noodles",
+    "fried noodles",
+    "pasta",
+    "burger",
+    "pizza",
+    "submarine",
+    "wrap",
+    "taco",
+    "soup",
 ]
 UMBRELLA_MINING_THRESHOLD = 0.80
 
@@ -229,9 +273,11 @@ CATALOG_COL_MAP_MARKET = {
     "Category": "category",
 }
 
+
 def get_third_tag_col(domain: str) -> str:
     """Returns column name for domain's third classification tag."""
     return "region" if domain == DOMAIN_FOOD else "category"
+
 
 def get_third_tag_name(domain: str) -> str:
     """Returns display name for domain's third classification tag."""

@@ -1,10 +1,11 @@
 import gc
 import logging
 import re
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
-from rapidfuzz import fuzz
+
 from engine import config
 from engine.nlp.text_cleaner import TextPipeline
 from engine.utils.flavor_utils import build_food_flavors_info, triage_input_flavors
@@ -12,10 +13,23 @@ from engine.utils.weight_utils import resolve_weight_bypass_candidate
 
 logger = logging.getLogger("matchops.matcher")
 
+
 class SKUMatcher:
     """Main SKU matching pipeline orchestrator."""
 
-    def __init__(self, catalog_df: pd.DataFrame, brands_df: pd.DataFrame, ner_engine, embed_engine, cache_manager, logic_gates, domain: str = config.DOMAIN_MARKET, classifier=None, check_for_updates: bool = False, force_sync: bool = False):
+    def __init__(
+        self,
+        catalog_df: pd.DataFrame,
+        brands_df: pd.DataFrame,
+        ner_engine,
+        embed_engine,
+        cache_manager,
+        logic_gates,
+        domain: str = config.DOMAIN_MARKET,
+        classifier=None,
+        check_for_updates: bool = False,
+        force_sync: bool = False,
+    ):
         self.ner = ner_engine
         self.embedder = embed_engine
         self.rules = logic_gates
@@ -38,7 +52,11 @@ class SKUMatcher:
                 row = brands_df[brands_df["Flavor Name"].str.lower() == name.lower()]
                 if not row.empty:
                     aliases_str = str(row.iloc[0].get("Aliases", ""))
-                    if aliases_str and aliases_str.lower() != "none" and aliases_str.lower() != "nan":
+                    if (
+                        aliases_str
+                        and aliases_str.lower() != "none"
+                        and aliases_str.lower() != "nan"
+                    ):
                         aliases = [x.strip().lower() for x in aliases_str.split(",") if x.strip()]
                         terms.update(aliases)
                 # Apply pluralization variations to ensure coverage
@@ -60,10 +78,16 @@ class SKUMatcher:
         def _compile_terms(terms_set):
             if not terms_set:
                 return None
-            sorted_t = sorted([t.lower().strip() for t in terms_set if t.strip()], key=lambda x: (len(x), x), reverse=True)
+            sorted_t = sorted(
+                [t.lower().strip() for t in terms_set if t.strip()],
+                key=lambda x: (len(x), x),
+                reverse=True,
+            )
             if not sorted_t:
                 return None
-            return re.compile(r"\b(" + "|".join(re.escape(t) for t in sorted_t) + r")\b", re.IGNORECASE)
+            return re.compile(
+                r"\b(" + "|".join(re.escape(t) for t in sorted_t) + r")\b", re.IGNORECASE
+            )
 
         self._mixed_pattern = _compile_terms(self.mixed_terms)
         self._seafood_pattern = _compile_terms(self.seafood_terms)
@@ -71,8 +95,11 @@ class SKUMatcher:
 
         if self.flavor_categories:
             specific_terms = [
-                term for term in self.flavor_categories.keys()
-                if term not in self.mixed_terms and term not in self.seafood_terms and term not in self.veg_terms
+                term
+                for term in self.flavor_categories.keys()
+                if term not in self.mixed_terms
+                and term not in self.seafood_terms
+                and term not in self.veg_terms
             ]
             self._specific_flavor_pattern = _compile_terms(specific_terms)
         else:
@@ -80,13 +107,17 @@ class SKUMatcher:
 
         # Sync catalog with cache and vector store
         self.raw_catalog, self.vector_store = cache_manager.manage_catalog_cache(
-            catalog_df, brands_df, domain=domain, check_for_updates=check_for_updates, force_sync=force_sync
+            catalog_df,
+            brands_df,
+            domain=domain,
+            check_for_updates=check_for_updates,
+            force_sync=force_sync,
         )
         self.raw_catalog = self.raw_catalog.reset_index(drop=True)
 
         # Build lookup maps for fast O(1) exact matching and O(1) token-sort fuzzy bypass
-        self.exact_match_map: Dict[str, int] = {}
-        self.token_sorted_map: Dict[str, List[int]] = {}
+        self.exact_match_map: dict[str, int] = {}
+        self.token_sorted_map: dict[str, list[int]] = {}
 
         # Perf: iterate pre-extracted column lists instead of DataFrame.iterrows(), which
         # allocates a pandas Series per row. Benchmarked on the cached food catalog
@@ -94,14 +125,22 @@ class SKUMatcher:
         # raw_catalog has a RangeIndex (reset above), so enumerate() yields the same positional i.
         n_rows = len(self.raw_catalog)
         cols = self.raw_catalog.columns
-        clean_col = self.raw_catalog["clean_text"].tolist() if "clean_text" in cols else [None] * n_rows
-        no_w_col = self.raw_catalog["clean_no_weights"].tolist() if "clean_no_weights" in cols else [None] * n_rows
+        clean_col = (
+            self.raw_catalog["clean_text"].tolist() if "clean_text" in cols else [None] * n_rows
+        )
+        no_w_col = (
+            self.raw_catalog["clean_no_weights"].tolist()
+            if "clean_no_weights" in cols
+            else [None] * n_rows
+        )
         name_col = self.raw_catalog["Name"].tolist() if "Name" in cols else [""] * n_rows
 
         for i, (raw_clean, raw_no_w, raw_name) in enumerate(zip(clean_col, no_w_col, name_col)):
             clean_txt = str(raw_clean or "").strip()
             if not clean_txt or clean_txt == "None":
-                clean_txt = TextPipeline.normalize_final(TextPipeline.standardize_units(str(raw_name)))
+                clean_txt = TextPipeline.normalize_final(
+                    TextPipeline.standardize_units(str(raw_name))
+                )
             no_weights = str(raw_no_w or TextPipeline.strip_weights(clean_txt)).strip()
 
             if clean_txt and clean_txt != "None":
@@ -115,14 +154,28 @@ class SKUMatcher:
                     self.token_sorted_map[sorted_tokens] = []
                 self.token_sorted_map[sorted_tokens].append(i)
 
-    def search_candidates(self, input_vec_dense: np.ndarray, input_vec_sparse: Dict[str, float], bt_filter: Optional[str] = None) -> pd.DataFrame:
+    def search_candidates(
+        self,
+        input_vec_dense: np.ndarray,
+        input_vec_sparse: dict[str, float],
+        bt_filter: str | None = None,
+    ) -> pd.DataFrame:
         """Retrieves top-K candidates from the vector store using hybrid search, optionally filtered by BT."""
         hits = self.vector_store.search_from_vectors(
-            dense_vec=input_vec_dense, sparse_vec_dict=input_vec_sparse, domain=self.domain, top_k=config.TOP_K_RETRIEVAL, bt_filter=bt_filter
+            dense_vec=input_vec_dense,
+            sparse_vec_dict=input_vec_sparse,
+            domain=self.domain,
+            top_k=config.TOP_K_RETRIEVAL,
+            bt_filter=bt_filter,
         )
         return pd.DataFrame(hits) if hits else pd.DataFrame()
 
-    def process_inputs(self, input_df: pd.DataFrame, progress_callback: Optional[Callable] = None, chunk_size: Optional[int] = None) -> pd.DataFrame:
+    def process_inputs(
+        self,
+        input_df: pd.DataFrame,
+        progress_callback: Callable | None = None,
+        chunk_size: int | None = None,
+    ) -> pd.DataFrame:
         """Matches input SKUs against the catalog with automatic chunking to keep RAM flat and prevent OOM."""
         total_skus = len(input_df)
         if total_skus == 0:
@@ -134,17 +187,29 @@ class SKUMatcher:
             return self._process_single_chunk(input_df, progress_callback=progress_callback)
 
         num_chunks = (total_skus + effective_chunk_size - 1) // effective_chunk_size
-        logger.info(f"[MATCH] Processing {total_skus} SKUs in {num_chunks} chunks (chunk_size={effective_chunk_size})...")
+        logger.info(
+            f"[MATCH] Processing {total_skus} SKUs in {num_chunks} chunks (chunk_size={effective_chunk_size})..."
+        )
 
         results = []
         for chunk_idx, chunk_start in enumerate(range(0, total_skus, effective_chunk_size)):
             chunk_end = min(chunk_start + effective_chunk_size, total_skus)
             chunk_df = input_df.iloc[chunk_start:chunk_end]
 
-            def chunk_cb(pct, msg=None):
+            def chunk_cb(
+                pct,
+                msg=None,
+                _start=chunk_start,
+                _len=len(chunk_df),
+                _idx=chunk_idx,
+                _end=chunk_end,
+            ):
                 if progress_callback:
-                    overall_pct = ((chunk_start + (float(pct) / 100.0) * len(chunk_df)) / total_skus) * 100.0
-                    progress_callback(overall_pct, msg or f"Chunk {chunk_idx + 1}/{num_chunks} ({chunk_end}/{total_skus} SKUs)")
+                    overall_pct = ((_start + (float(pct) / 100.0) * _len) / total_skus) * 100.0
+                    progress_callback(
+                        overall_pct,
+                        msg or f"Chunk {_idx + 1}/{num_chunks} ({_end}/{total_skus} SKUs)",
+                    )
 
             chunk_res = self._process_single_chunk(chunk_df, progress_callback=chunk_cb)
             results.append(chunk_res)
@@ -155,16 +220,28 @@ class SKUMatcher:
 
         return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
 
-    def _process_single_chunk(self, input_df: pd.DataFrame, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
+    def _process_single_chunk(
+        self, input_df: pd.DataFrame, progress_callback: Callable | None = None
+    ) -> pd.DataFrame:
         """Matches a single chunk of input SKUs against the catalog."""
         results = []
         logger.debug(f"[MATCH] Pre-processing {len(input_df)} input SKUs...")
 
-        raw_names, clean_inputs, prices, input_no_weights_list, input_w_data_list = [], [], [], [], []
+        raw_names, clean_inputs, prices, input_no_weights_list, input_w_data_list = (
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
         descriptions, categories = [], []
         cols = input_df.columns
         name_col = "Name" if "Name" in cols else (cols[0] if len(cols) > 0 else None)
-        desc_col = "Description" if "Description" in cols else ("description" if "description" in cols else None)
+        desc_col = (
+            "Description"
+            if "Description" in cols
+            else ("description" if "description" in cols else None)
+        )
         cat_col = "Category" if "Category" in cols else ("category" if "category" in cols else None)
         price_col = "Price" if "Price" in cols else ("price" if "price" in cols else None)
 
@@ -189,14 +266,17 @@ class SKUMatcher:
 
             # Extract price for logic gate validation
             try:
-                prices.append(float(re.sub(r"[^\d\.]", "", str(raw_price))) if raw_price and not pd.isna(raw_price) else 0.0)
+                prices.append(
+                    float(re.sub(r"[^\d\.]", "", str(raw_price)))
+                    if raw_price and not pd.isna(raw_price)
+                    else 0.0
+                )
             except (ValueError, TypeError):
                 prices.append(0.0)
 
         # Batch encode input SKUs for retrieval & ArcFace BT prediction
         encoded = self.embedder.embed_weighted_sku(
-            clean_inputs, descriptions, categories,
-            weights=config.MATCHER_WEIGHTS
+            clean_inputs, descriptions, categories, weights=config.MATCHER_WEIGHTS
         )
         input_dense_embs = encoded["dense"]
         input_sparse_embs = encoded["sparse"]
@@ -205,8 +285,10 @@ class SKUMatcher:
         bt_filters = [None] * len(raw_names)
         if self.classifier:
             bt_preds = self.classifier.batch_predict_bt(
-                np.array(input_dense_embs), prices,
-                sku_names=raw_names, sku_descriptions=descriptions
+                np.array(input_dense_embs),
+                prices,
+                sku_names=raw_names,
+                sku_descriptions=descriptions,
             )
             for idx, p_res in enumerate(bt_preds):
                 if p_res:
@@ -217,7 +299,7 @@ class SKUMatcher:
 
         # Step 1: Exact & Fuzzy Matching (AI Bypass with BasicType consistency check)
         ai_indices = []
-        bypass_results: List[Optional[Tuple]] = [None] * len(raw_names)
+        bypass_results: list[tuple | None] = [None] * len(raw_names)
         logger.info("[MATCH] Executing exact-match and deterministic rules fast-path...")
 
         for i, clean_input in enumerate(clean_inputs):
@@ -232,10 +314,10 @@ class SKUMatcher:
 
             # Exact text match lookup
             cat_indices = self.exact_match_map.get(clean_input)
-            
+
             if cat_indices is None and clean_input.endswith(" mixed"):
                 cat_indices = self.exact_match_map.get(clean_input[:-6])
-                
+
             if cat_indices is not None:
                 if isinstance(cat_indices, int):
                     cat_indices = [cat_indices]
@@ -244,8 +326,17 @@ class SKUMatcher:
                 if conf_bt:
                     conf_bt_norm = conf_bt.strip().lower()
                     bt_matched = [
-                        idx for idx in cat_indices
-                        if str(self.raw_catalog.iloc[idx].get("basictype", self.raw_catalog.iloc[idx].get("BasicType", "")) or "").strip().lower() == conf_bt_norm
+                        idx
+                        for idx in cat_indices
+                        if str(
+                            self.raw_catalog.iloc[idx].get(
+                                "basictype", self.raw_catalog.iloc[idx].get("BasicType", "")
+                            )
+                            or ""
+                        )
+                        .strip()
+                        .lower()
+                        == conf_bt_norm
                     ]
                     if bt_matched:
                         selected_idx = bt_matched[0]
@@ -255,7 +346,12 @@ class SKUMatcher:
                     selected_idx = cat_indices[0]
 
                 if selected_idx is not None:
-                    bypass_results[i] = (self.raw_catalog.iloc[selected_idx], 1.0, "High Confidence", "Exact Text Match")
+                    bypass_results[i] = (
+                        self.raw_catalog.iloc[selected_idx],
+                        1.0,
+                        "High Confidence",
+                        "Exact Text Match",
+                    )
                     continue
                 else:
                     ai_indices.append(i)
@@ -273,8 +369,17 @@ class SKUMatcher:
                 if conf_bt:
                     conf_bt_norm = conf_bt.strip().lower()
                     bt_matched = [
-                        idx for idx in cand_indices
-                        if str(self.raw_catalog.iloc[idx].get("basictype", self.raw_catalog.iloc[idx].get("BasicType", "")) or "").strip().lower() == conf_bt_norm
+                        idx
+                        for idx in cand_indices
+                        if str(
+                            self.raw_catalog.iloc[idx].get(
+                                "basictype", self.raw_catalog.iloc[idx].get("BasicType", "")
+                            )
+                            or ""
+                        )
+                        .strip()
+                        .lower()
+                        == conf_bt_norm
                     ]
                     if bt_matched:
                         valid_cands = bt_matched
@@ -285,7 +390,12 @@ class SKUMatcher:
                         self.raw_catalog, valid_cands, input_w_data
                     )
                     best_reason = f"Fuzzy Match (100%){weight_reason}"
-                    bypass_results[i] = (self.raw_catalog.iloc[selected_idx], combined_score, "High Confidence", best_reason)
+                    bypass_results[i] = (
+                        self.raw_catalog.iloc[selected_idx],
+                        combined_score,
+                        "High Confidence",
+                        best_reason,
+                    )
                 else:
                     ai_indices.append(i)
             else:
@@ -319,16 +429,20 @@ class SKUMatcher:
         search_dense = []
         search_sparse = []
         search_filters = []
-        search_map = [] # stores (sku_index, query_type) e.g. (i, 'filtered'), (i, 'unfiltered'), (i, 'stripped')
-        
+        search_map = []  # stores (sku_index, query_type) e.g. (i, 'filtered'), (i, 'unfiltered'), (i, 'stripped')
+
         # Pre-batch brand stripped embeddings
         stripped_batch_texts = []
         stripped_batch_descs = []
         stripped_batch_cats = []
         stripped_batch_indices = []
-        
+
         for i in ai_indices:
-            if getattr(config, "ENABLE_BRAND_STRIPPED_SEARCH", True) and ai_entities.get(i) and any(ai_entities[i].get("brand", [])):
+            if (
+                getattr(config, "ENABLE_BRAND_STRIPPED_SEARCH", True)
+                and ai_entities.get(i)
+                and any(ai_entities[i].get("brand", []))
+            ):
                 brand_stripped = clean_inputs[i]
                 for b in ai_entities[i].get("brand", []):
                     pattern = re.compile(r"\b" + re.escape(b) + r"\b", re.IGNORECASE)
@@ -342,13 +456,16 @@ class SKUMatcher:
                     stripped_batch_descs.append(i_desc)
                     stripped_batch_cats.append(i_cat)
                     stripped_batch_indices.append(i)
-        
+
         stripped_embs_dense = {}
         stripped_embs_sparse = {}
         if stripped_batch_texts:
             try:
                 stripped_encoded = self.embedder.embed_weighted_sku(
-                    stripped_batch_texts, stripped_batch_descs, stripped_batch_cats, weights=config.MATCHER_WEIGHTS
+                    stripped_batch_texts,
+                    stripped_batch_descs,
+                    stripped_batch_cats,
+                    weights=config.MATCHER_WEIGHTS,
                 )
                 for idx, orig_idx in enumerate(stripped_batch_indices):
                     stripped_embs_dense[orig_idx] = stripped_encoded["dense"][idx]
@@ -358,29 +475,36 @@ class SKUMatcher:
 
         for i in ai_indices:
             dense, sparse = input_dense_embs[i], input_sparse_embs[i]
-            
+
             # BT-filtered query
             if bt_filters[i]:
                 search_dense.append(dense)
                 search_sparse.append(sparse)
                 search_filters.append(bt_filters[i])
-                search_map.append((i, 'filtered'))
-            
+                search_map.append((i, "filtered"))
+
             # Unfiltered query
             search_dense.append(dense)
             search_sparse.append(sparse)
             search_filters.append(None)
-            search_map.append((i, 'unfiltered'))
-            
+            search_map.append((i, "unfiltered"))
+
             # Brand-stripped query
             if i in stripped_embs_dense:
                 search_dense.append(stripped_embs_dense[i])
                 search_sparse.append(stripped_embs_sparse[i])
                 search_filters.append(None)
-                search_map.append((i, 'stripped'))
-        
+                search_map.append((i, "stripped"))
+
         # Execute batch Qdrant searches
-        sku_candidates = {i: {'filtered': pd.DataFrame(), 'unfiltered': pd.DataFrame(), 'stripped': pd.DataFrame()} for i in ai_indices}
+        sku_candidates = {
+            i: {
+                "filtered": pd.DataFrame(),
+                "unfiltered": pd.DataFrame(),
+                "stripped": pd.DataFrame(),
+            }
+            for i in ai_indices
+        }
         if search_dense:
             all_candidates = self.vector_store.search_batch_from_vectors(
                 search_dense, search_sparse, search_filters, domain=self.domain
@@ -393,71 +517,88 @@ class SKUMatcher:
 
         if progress_callback:
             progress_callback(50.0)
-            
+
         # 3C. Batch Cross-Encoder Scoring
         cross_pairs = []
-        pair_map = [] # stores (sku_index, q_type, cand_idx, clean_text)
-        
+        pair_map = []  # stores (sku_index, q_type, cand_idx, clean_text)
+
         for i in ai_indices:
             clean_in_no_w = input_no_weights_list[i]
-            
+
             # Combine all candidates for this SKU and sort by Qdrant score
             all_cands_list = []
-            for q_type in ['filtered', 'unfiltered', 'stripped']:
+            for q_type in ["filtered", "unfiltered", "stripped"]:
                 df_cands = sku_candidates[i][q_type]
                 if not df_cands.empty:
                     for cand_idx, cand_row in enumerate(df_cands.to_dict(orient="records")):
                         all_cands_list.append((q_type, cand_idx, cand_row))
-            
-            all_cands_list.sort(key=lambda x: (-x[2].get("_qdrant_score_", 0.0), x[2].get("clean_text", "")))
-            
+
+            all_cands_list.sort(
+                key=lambda x: (-x[2].get("_qdrant_score_", 0.0), x[2].get("clean_text", ""))
+            )
+
             seen_texts = set()
             for q_type, cand_idx, cand_row in all_cands_list:
                 txt = cand_row.get("clean_text", "")
                 if txt not in seen_texts:
                     seen_texts.add(txt)
-                    txt_no_w = str(cand_row.get("clean_no_weights") or TextPipeline.strip_weights(txt)).strip()
+                    txt_no_w = str(
+                        cand_row.get("clean_no_weights") or TextPipeline.strip_weights(txt)
+                    ).strip()
                     cross_pairs.append([clean_in_no_w, txt_no_w])
                     pair_map.append((i, q_type, cand_idx, txt))
-                        
+
         cross_scores_list = []
         if cross_pairs:
             cross_scores_list = self.embedder.score_cross_encoder(cross_pairs)
 
         if progress_callback:
             progress_callback(75.0)
-            
+
         # Map scores back to candidate dataframes
         # We will add a 'cross_score' column to the candidate dataframes
         sku_scored_cands = {i: {} for i in ai_indices}
-        for pair_idx, (sku_idx, q_type, cand_idx, txt) in enumerate(pair_map):
+        for pair_idx, (sku_idx, _, _, txt) in enumerate(pair_map):
             sku_scored_cands[sku_idx][txt] = cross_scores_list[pair_idx]
-            
+
         # Helper to score a candidate dataframe
-        def score_candidate_df(df_cands: pd.DataFrame, sku_idx: int, clean_in: str, ents: dict) -> pd.DataFrame:
+        def score_candidate_df(
+            df_cands: pd.DataFrame, sku_idx: int, clean_in: str, ents: dict
+        ) -> pd.DataFrame:
             if df_cands.empty:
                 return df_cands
-            
-            c_scores = np.array([sku_scored_cands[sku_idx].get(txt, -10.0) for txt in df_cands["clean_text"]])
-            in_toks = len(clean_in.split())
-            cat_toks = df_cands["token_count"].values if "token_count" in df_cands else np.zeros(len(df_cands))
+
+            c_scores = np.array(
+                [sku_scored_cands[sku_idx].get(txt, -10.0) for txt in df_cands["clean_text"]]
+            )
             df_cands = df_cands.copy()
-            df_cands['cross_score'] = c_scores
-            df_cands['cross_score_rounded'] = np.round(c_scores, 3)
-            return df_cands.sort_values(by=['cross_score_rounded', 'clean_text'], ascending=[False, True])
-            
+            df_cands["cross_score"] = c_scores
+            df_cands["cross_score_rounded"] = np.round(c_scores, 3)
+            return df_cands.sort_values(
+                by=["cross_score_rounded", "clean_text"], ascending=[False, True]
+            )
+
         # 3D. Final Evaluation Loop
-        logger.info(f"[MATCH] Executing final business rules evaluation for {len(raw_names)} SKUs...")
+        logger.info(
+            f"[MATCH] Executing final business rules evaluation for {len(raw_names)} SKUs..."
+        )
         for i in range(len(raw_names)):
             if progress_callback:
-                progress_callback(75.0 + (((i + 1) / len(raw_names)) * 25.0), f"Matching {i + 1} of {len(raw_names)}...")
+                progress_callback(
+                    75.0 + (((i + 1) / len(raw_names)) * 25.0),
+                    f"Matching {i + 1} of {len(raw_names)}...",
+                )
 
             best_match_row_fallback = None
             final_score_fallback = -10.0
             status_fallback = "Rejected"
             reasons_fallback = ""
 
-            raw_input, clean_input, input_no_weights = raw_names[i], clean_inputs[i], input_no_weights_list[i]
+            raw_input, clean_input, input_no_weights = (
+                raw_names[i],
+                clean_inputs[i],
+                input_no_weights_list[i],
+            )
             row_data = input_df.iloc[i]
             current_input_price = prices[i]
             input_description = str(row_data.get("Description", row_data.get("description", "")))
@@ -479,22 +620,33 @@ class SKUMatcher:
 
                 # 1. Attempt BT-filtered search
                 if bt_filter:
-                    candidates_filtered = score_candidate_df(sku_candidates[i]['filtered'], i, clean_input, input_entities)
+                    candidates_filtered = score_candidate_df(
+                        sku_candidates[i]["filtered"], i, clean_input, input_entities
+                    )
                     if not candidates_filtered.empty:
                         best_match_row_f = None
                         final_score_f = -10.0
                         status_f = "Rejected"
                         reasons_f = ""
                         best_cand_score_f = -100.0
-                        for idx, cand_row in candidates_filtered.head(config.MATCHER_LOGIC_GATE_CANDIDATES).iterrows():
-                            cand_score = cand_row['cross_score']
-                            cand_row_copy = cand_row.drop('cross_score').copy()
+                        for _, cand_row in candidates_filtered.head(
+                            config.MATCHER_LOGIC_GATE_CANDIDATES
+                        ).iterrows():
+                            cand_score = cand_row["cross_score"]
+                            cand_row_copy = cand_row.drop("cross_score").copy()
 
                             f_score, f_status, f_reasons = self.rules.apply_logic_gates(
-                                clean_input, input_entities, cand_row_copy, cand_score,
-                                current_input_price, input_w_data, input_no_weights,
-                                domain=self.domain, input_description=input_description,
-                                input_category=input_category, predicted_bt=bt_filter
+                                clean_input,
+                                input_entities,
+                                cand_row_copy,
+                                cand_score,
+                                current_input_price,
+                                input_w_data,
+                                input_no_weights,
+                                domain=self.domain,
+                                input_description=input_description,
+                                input_category=input_category,
+                                predicted_bt=bt_filter,
                             )
 
                             is_better = False
@@ -506,8 +658,16 @@ class SKUMatcher:
                                 if cand_score > best_cand_score_f + 1e-3:
                                     is_better = True
                                 elif abs(cand_score - best_cand_score_f) <= 1e-3:
-                                    curr_text = str(cand_row_copy.get("clean_text", cand_row_copy.get("Name", "")))
-                                    best_text = str(best_match_row_f.get("clean_text", best_match_row_f.get("Name", "")))
+                                    curr_text = str(
+                                        cand_row_copy.get(
+                                            "clean_text", cand_row_copy.get("Name", "")
+                                        )
+                                    )
+                                    best_text = str(
+                                        best_match_row_f.get(
+                                            "clean_text", best_match_row_f.get("Name", "")
+                                        )
+                                    )
                                     if curr_text < best_text:
                                         is_better = True
 
@@ -528,17 +688,25 @@ class SKUMatcher:
                             best_match_row_fallback = best_match_row_f
                             final_score_fallback = final_score_f
                             status_fallback = status_f
-                            reasons_fallback = f"BT-Filtered ({bt_filter}) [Low Confidence Fallback] | {reasons_f}"
+                            reasons_fallback = (
+                                f"BT-Filtered ({bt_filter}) [Low Confidence Fallback] | {reasons_f}"
+                            )
 
                 # 2. Fallback to Full-Catalog Search
                 if not bt_used:
-                    cands_unf = sku_candidates[i]['unfiltered']
-                    cands_str = sku_candidates[i]['stripped']
-                    candidates_unfiltered = pd.concat([cands_unf, cands_str], ignore_index=True) if not cands_str.empty else cands_unf
-                    
+                    cands_unf = sku_candidates[i]["unfiltered"]
+                    cands_str = sku_candidates[i]["stripped"]
+                    candidates_unfiltered = (
+                        pd.concat([cands_unf, cands_str], ignore_index=True)
+                        if not cands_str.empty
+                        else cands_unf
+                    )
+
                     if not candidates_unfiltered.empty:
-                        candidates_unfiltered = candidates_unfiltered.drop_duplicates(subset=["clean_text"])
-                    
+                        candidates_unfiltered = candidates_unfiltered.drop_duplicates(
+                            subset=["clean_text"]
+                        )
+
                     if candidates_unfiltered.empty:
                         if best_match_row_fallback is not None:
                             best_match_row = best_match_row_fallback
@@ -546,33 +714,50 @@ class SKUMatcher:
                             status = status_fallback
                             reasons = reasons_fallback
                         else:
-                            results.append({
-                                "Input Raw": raw_input, "Matched Catalog Name": "",
-                                "Final Score": 0.0, "Status": "Low / Rejected", "Logic Notes": "No candidates found",
-                                "BasicType": "",
-                                "GenericKeywords": "",
-                                "Categories": "",
-                                "Region": "",
-                                "Input Entities": input_entities, "Catalog Entities": {}
-                            })
+                            results.append(
+                                {
+                                    "Input Raw": raw_input,
+                                    "Matched Catalog Name": "",
+                                    "Final Score": 0.0,
+                                    "Status": "Low / Rejected",
+                                    "Logic Notes": "No candidates found",
+                                    "BasicType": "",
+                                    "GenericKeywords": "",
+                                    "Categories": "",
+                                    "Region": "",
+                                    "Input Entities": input_entities,
+                                    "Catalog Entities": {},
+                                }
+                            )
                             continue
                     else:
-                        candidates_unfiltered = score_candidate_df(candidates_unfiltered, i, clean_input, input_entities)
+                        candidates_unfiltered = score_candidate_df(
+                            candidates_unfiltered, i, clean_input, input_entities
+                        )
                         best_match_row_uf = None
                         final_score_uf = -10.0
                         status_uf = "Rejected"
                         reasons_uf = ""
                         best_cand_score_uf = -100.0
 
-                        for idx, cand_row in candidates_unfiltered.head(config.MATCHER_LOGIC_GATE_CANDIDATES).iterrows():
-                            cand_score = cand_row['cross_score']
-                            cand_row_copy = cand_row.drop('cross_score').copy()
+                        for _, cand_row in candidates_unfiltered.head(
+                            config.MATCHER_LOGIC_GATE_CANDIDATES
+                        ).iterrows():
+                            cand_score = cand_row["cross_score"]
+                            cand_row_copy = cand_row.drop("cross_score").copy()
 
                             uf_score, uf_status, uf_reasons = self.rules.apply_logic_gates(
-                                clean_input, input_entities, cand_row_copy, cand_score,
-                                current_input_price, input_w_data, input_no_weights,
-                                domain=self.domain, input_description=input_description,
-                                input_category=input_category, predicted_bt=bt_filter
+                                clean_input,
+                                input_entities,
+                                cand_row_copy,
+                                cand_score,
+                                current_input_price,
+                                input_w_data,
+                                input_no_weights,
+                                domain=self.domain,
+                                input_description=input_description,
+                                input_category=input_category,
+                                predicted_bt=bt_filter,
                             )
 
                             is_better = False
@@ -584,8 +769,16 @@ class SKUMatcher:
                                 if cand_score > best_cand_score_uf + 1e-3:
                                     is_better = True
                                 elif abs(cand_score - best_cand_score_uf) <= 1e-3:
-                                    curr_text = str(cand_row_copy.get("clean_text", cand_row_copy.get("Name", "")))
-                                    best_text = str(best_match_row_uf.get("clean_text", best_match_row_uf.get("Name", "")))
+                                    curr_text = str(
+                                        cand_row_copy.get(
+                                            "clean_text", cand_row_copy.get("Name", "")
+                                        )
+                                    )
+                                    best_text = str(
+                                        best_match_row_uf.get(
+                                            "clean_text", best_match_row_uf.get("Name", "")
+                                        )
+                                    )
                                     if curr_text < best_text:
                                         is_better = True
 
@@ -596,7 +789,10 @@ class SKUMatcher:
                                 reasons_uf = uf_reasons
                                 best_cand_score_uf = cand_score
 
-                        if best_match_row_fallback is not None and final_score_fallback > final_score_uf:
+                        if (
+                            best_match_row_fallback is not None
+                            and final_score_fallback > final_score_uf
+                        ):
                             best_match_row = best_match_row_fallback
                             final_score = final_score_fallback
                             status = status_fallback
@@ -623,35 +819,41 @@ class SKUMatcher:
                     filtered_kws = []
                     for kw in kws:
                         kw_lower = kw.lower()
-                        
+
                         # A. Check generic/literal keywords using dynamic term sets
                         # Seafood literal check: allowed if input name has a seafood term OR input has at least one seafood flavor
                         if self._seafood_pattern and self._seafood_pattern.search(kw_lower):
                             has_input_seafood_term = bool(self._seafood_pattern.search(clean_input))
                             if not (has_input_seafood_term or input_seafoods):
                                 continue
-                        
+
                         # Mixed literal check: allowed only if input name has a mixed term OR multiple meat/seafood flavors, with at least one non-seafood meat
                         elif self._mixed_pattern and self._mixed_pattern.search(kw_lower):
                             has_input_mixed_term = bool(self._mixed_pattern.search(clean_input))
                             total_unique_items = len(input_meats) + len(input_seafoods)
-                            is_mixed_by_flavors = (total_unique_items >= 2 and len(input_meats) >= 1)
+                            is_mixed_by_flavors = total_unique_items >= 2 and len(input_meats) >= 1
                             if not (has_input_mixed_term or is_mixed_by_flavors):
                                 continue
-                        
+
                         # Vegetable literal check: allowed if input name has a veg term OR input has at least one vegetable flavor
                         elif self._veg_pattern and self._veg_pattern.search(kw_lower):
                             has_input_veg_term = bool(self._veg_pattern.search(clean_input))
                             if not (has_input_veg_term or input_vegs):
                                 continue
-                                
+
                         # B. Specific flavor terms check
                         keep_kw = True
                         if self._specific_flavor_pattern:
                             for match in self._specific_flavor_pattern.finditer(kw_lower):
                                 term = match.group(1).lower()
-                                is_meat, is_veg, is_seafood = self.flavor_categories.get(term, (False, False, False))
-                                canonical = self.rules.food_flavors_dict.get(term, term) if hasattr(self.rules, "food_flavors_dict") else term
+                                is_meat, is_veg, is_seafood = self.flavor_categories.get(
+                                    term, (False, False, False)
+                                )
+                                canonical = (
+                                    self.rules.food_flavors_dict.get(term, term)
+                                    if hasattr(self.rules, "food_flavors_dict")
+                                    else term
+                                )
                                 if is_seafood:
                                     if canonical not in input_seafoods:
                                         keep_kw = False
@@ -664,7 +866,7 @@ class SKUMatcher:
                                     if canonical not in input_vegs:
                                         keep_kw = False
                                         break
-                        
+
                         if keep_kw:
                             filtered_kws.append(kw)
                     match_gk = ", ".join(filtered_kws)
@@ -676,7 +878,7 @@ class SKUMatcher:
                 cat_ents = best_match_row.get("entities")
                 if isinstance(cat_ents, dict):
                     flavors.update(x.lower() for x in cat_ents.get("flavor", set()) if x)
-                
+
                 if flavors and match_gk:
                     kws = [k.strip() for k in str(match_gk).split(",") if k.strip()]
                     filtered_kws = []
@@ -687,15 +889,21 @@ class SKUMatcher:
                         filtered_kws.append(kw)
                     match_gk = ", ".join(filtered_kws)
 
-            results.append({
-                "Input Raw": raw_input, "Matched Catalog Name": best_match_row.get("Name", ""),
-                "Final Score": round(float(final_score), 4), "Status": status, "Logic Notes": reasons,
-                "BasicType": best_match_row.get("basictype", ""),
-                "GenericKeywords": match_gk,
-                "Categories": best_match_row.get("category", ""),
-                "Region": best_match_row.get("region", ""),
-                "Input Entities": input_entities, "Catalog Entities": best_match_row.get("entities")
-            })
+            results.append(
+                {
+                    "Input Raw": raw_input,
+                    "Matched Catalog Name": best_match_row.get("Name", ""),
+                    "Final Score": round(float(final_score), 4),
+                    "Status": status,
+                    "Logic Notes": reasons,
+                    "BasicType": best_match_row.get("basictype", ""),
+                    "GenericKeywords": match_gk,
+                    "Categories": best_match_row.get("category", ""),
+                    "Region": best_match_row.get("region", ""),
+                    "Input Entities": input_entities,
+                    "Catalog Entities": best_match_row.get("entities"),
+                }
+            )
 
         if progress_callback:
             progress_callback(100.0)

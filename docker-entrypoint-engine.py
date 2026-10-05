@@ -1,8 +1,9 @@
 import os
-import sys
-import subprocess
-import time
 import socket
+import subprocess
+import sys
+import time
+
 
 def wait_for_service(host: str, port: int, timeout: float = 60.0):
     """Waits for a service to become available on host:port."""
@@ -13,19 +14,23 @@ def wait_for_service(host: str, port: int, timeout: float = 60.0):
             with socket.create_connection((host, port), timeout=1.0):
                 print(f"Service {host}:{port} is online!", flush=True)
                 return True
-        except (socket.timeout, ConnectionRefusedError):
+        except (TimeoutError, ConnectionRefusedError):
             if time.time() - start_time > timeout:
-                print(f"WARNING: Timeout waiting for service {host}:{port}. Attempting to proceed anyway...", flush=True)
+                print(
+                    f"WARNING: Timeout waiting for service {host}:{port}. Attempting to proceed anyway...",
+                    flush=True,
+                )
                 return False
             time.sleep(1.0)
+
 
 def main():
     print("=" * 60, flush=True)
     print("SKU MatchOps ML Engine Container starting...", flush=True)
     print("=" * 60, flush=True)
-    
+
     qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
-    
+
     def parse_url(url):
         parts = url.replace("http://", "").replace("https://", "").split("/")
         host_port = parts[0].split(":")
@@ -43,18 +48,18 @@ def main():
     sys.path.insert(0, "/app")
     try:
         from engine import config
-        
+
         bge_int8 = os.path.join(config.ONNX_DIR, "bge_m3", "model_int8.onnx")
         bge_fp32 = os.path.join(config.ONNX_DIR, "bge_m3", "model.onnx")
         rerank_int8 = os.path.join(config.ONNX_DIR, "reranker", "model_int8.onnx")
         rerank_fp32 = os.path.join(config.ONNX_DIR, "reranker", "model.onnx")
         gliner_onnx = os.path.join(config.ONNX_DIR, "gliner", "model.onnx")
-        
+
         use_int8 = config.USE_INT8_MODELS
-        
+
         needs_export = False
         needs_quantization = False
-        
+
         # Check BGE-M3
         if use_int8:
             if not os.path.exists(bge_int8):
@@ -82,14 +87,23 @@ def main():
             needs_export = True
 
         if needs_export:
-            print("[SETUP] Required models are missing. Initiating one-time download, ONNX export & INT8 quantization...", flush=True)
+            print(
+                "[SETUP] Required models are missing. Initiating one-time download, ONNX export & INT8 quantization...",
+                flush=True,
+            )
             env = os.environ.copy()
             env["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
             subprocess.run([sys.executable, "scripts/ml/export_onnx.py"], check=True, env=env)
             print("[SETUP] Models exported and quantized successfully!", flush=True)
 
-        if needs_quantization and use_int8 and (not os.path.exists(bge_int8) or not os.path.exists(rerank_int8)):
-            print("[SETUP] Running INT8 dynamic quantization for memory optimization...", flush=True)
+        if (
+            needs_quantization
+            and use_int8
+            and (not os.path.exists(bge_int8) or not os.path.exists(rerank_int8))
+        ):
+            print(
+                "[SETUP] Running INT8 dynamic quantization for memory optimization...", flush=True
+            )
             subprocess.run([sys.executable, "scripts/ml/quantize.py"], check=True)
             print("[SETUP] INT8 quantization complete!", flush=True)
 
@@ -107,8 +121,9 @@ def main():
     print("=" * 60, flush=True)
     sys.stdout.flush()
     sys.stderr.flush()
-    
+
     os.execvp("uvicorn", ["uvicorn", "engine.server:app", "--host", "0.0.0.0", "--port", port])
+
 
 if __name__ == "__main__":
     main()

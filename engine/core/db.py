@@ -3,6 +3,7 @@ import logging
 import os
 import sqlite3
 import uuid
+
 from engine import config
 
 logger = logging.getLogger("matchops.db")
@@ -196,13 +197,14 @@ CREATE INDEX IF NOT EXISTS idx_processed_skus_domain_created ON processed_skus(d
 
 _initialized_databases = set()
 
+
 def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Connection:
     """
     Ensures that the SQLite database directory exists, WAL mode is active,
     and all required tables and indexes are created.
     """
     is_provided_conn = hasattr(conn_or_path, "cursor")
-    
+
     if is_provided_conn:
         conn = conn_or_path
         db_path = None
@@ -218,7 +220,9 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
 
         # If already initialized in this process, skip expensive DDL and migration writes only if tables exist
         if db_path and db_path in _initialized_databases and not force:
-            tbl_check = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_items'").fetchone()
+            tbl_check = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='catalog_items'"
+            ).fetchone()
             if tbl_check:
                 return conn
 
@@ -253,7 +257,9 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
             """)
             conn.execute("DROP TABLE rules;")
             conn.execute("ALTER TABLE rules_new RENAME TO rules;")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_rules_domain_priority ON rules(domain, priority);")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rules_domain_priority ON rules(domain, priority);"
+            )
             logger.info("[DB] Migrated 'rules' table: dropped legacy 'module' column.")
 
         # api_requests columns
@@ -262,7 +268,7 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
         for col_name in ("ip_address", "headers_json", "query_params_json"):
             if col_name not in api_cols:
                 conn.execute(f"ALTER TABLE api_requests ADD COLUMN {col_name} TEXT;")
-                
+
         # jobs columns
         cursor.execute("PRAGMA table_info(jobs);")
         jobs_cols = [row[1] for row in cursor.fetchall()]
@@ -275,7 +281,7 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
             "med_conf": "INTEGER DEFAULT 0",
             "low_conf": "INTEGER DEFAULT 0",
             "match_rate": "REAL DEFAULT 0.0",
-            "input_skus_json": "TEXT"
+            "input_skus_json": "TEXT",
         }
         for col_name, col_type in new_cols_jobs.items():
             if col_name not in jobs_cols:
@@ -295,7 +301,7 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
             "input_description": "TEXT",
             "input_category": "TEXT",
             "upload_job_id": "TEXT",
-            "upload_status": "TEXT"
+            "upload_status": "TEXT",
         }
         for col_name, col_type in new_cols_skus.items():
             if col_name not in sku_cols:
@@ -305,7 +311,9 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
         cursor.execute("PRAGMA table_info(classifier_dictionaries);")
         dict_cols = [row[1] for row in cursor.fetchall()]
         if "catalog_count" not in dict_cols:
-            conn.execute("ALTER TABLE classifier_dictionaries ADD COLUMN catalog_count INTEGER DEFAULT 0;")
+            conn.execute(
+                "ALTER TABLE classifier_dictionaries ADD COLUMN catalog_count INTEGER DEFAULT 0;"
+            )
         if "metadata_json" not in dict_cols:
             conn.execute("ALTER TABLE classifier_dictionaries ADD COLUMN metadata_json TEXT;")
 
@@ -324,13 +332,23 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
             conn.execute("ALTER TABLE bt_gk_map ADD COLUMN catalog_count INTEGER DEFAULT 0;")
 
         # Ensure performance indexes for dictionary catalog counts
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_classifier_dict_lookup ON classifier_dictionaries(domain, tag_type, catalog_count DESC);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_brand_flavors_count ON brand_flavors(domain, catalog_count DESC);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_bt_gk_map_count ON bt_gk_map(domain, catalog_count DESC);")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_classifier_dict_lookup ON classifier_dictionaries(domain, tag_type, catalog_count DESC);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_brand_flavors_count ON brand_flavors(domain, catalog_count DESC);"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bt_gk_map_count ON bt_gk_map(domain, catalog_count DESC);"
+        )
 
         # Data scale migration: normalize legacy 100.0 scale down to 1.0 in processed_skus
-        conn.execute("UPDATE processed_skus SET confidence = confidence / 100.0 WHERE confidence > 1.0;")
-        conn.execute("UPDATE processed_skus SET match_score = match_score / 100.0 WHERE match_score > 1.0;")
+        conn.execute(
+            "UPDATE processed_skus SET confidence = confidence / 100.0 WHERE confidence > 1.0;"
+        )
+        conn.execute(
+            "UPDATE processed_skus SET match_score = match_score / 100.0 WHERE match_score > 1.0;"
+        )
 
         conn.commit()
         if db_path:
@@ -343,12 +361,14 @@ def ensure_db_initialized(conn_or_path=None, force: bool = False) -> sqlite3.Con
 
     return conn
 
+
 def clear_db_cache(db_path: str = None) -> None:
     """Clears the cached initialization flag for a database path."""
     if db_path:
         _initialized_databases.discard(os.path.abspath(db_path))
     else:
         _initialized_databases.clear()
+
 
 def init_db(db_path: str = None, force: bool = True) -> None:
     """Public helper to initialize the SQLite database."""
@@ -363,7 +383,7 @@ def log_outbound_request(
     response_status: int,
     response_text: str,
     duration_ms: int,
-    path: str = "/doPost"
+    path: str = "/doPost",
 ) -> None:
     """Logs outbound HTTP requests (e.g. Google Sheets webhooks) to SQLite."""
     try:
@@ -390,12 +410,13 @@ def log_outbound_request(
                 duration_ms,
                 "outbound",
                 json.dumps({"Content-Type": "application/json"}),
-                json.dumps({"callback_url": url})
-            )
+                json.dumps({"callback_url": url}),
+            ),
         )
         conn.commit()
         conn.close()
-        logger.info(f"[DB] Logged outbound {method} request to {path} (status {response_status}) in api_requests.")
+        logger.info(
+            f"[DB] Logged outbound {method} request to {path} (status {response_status}) in api_requests."
+        )
     except Exception as e:
         logger.error(f"[DB] Failed to log outbound request to DB: {e}")
-

@@ -6,7 +6,8 @@ Dispatches inference and batch processing workloads to the dedicated ML Engine m
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -31,7 +32,7 @@ _retries = Retry(
 _session.mount("http://", HTTPAdapter(max_retries=_retries))
 _session.mount("https://", HTTPAdapter(max_retries=_retries))
 
-_models_status_cache: Dict[str, Any] = {}
+_models_status_cache: dict[str, Any] = {}
 _models_status_cache_time: float = 0.0
 
 
@@ -44,7 +45,7 @@ def is_engine_reachable() -> bool:
         return False
 
 
-def get_engine_health() -> Dict[str, Any]:
+def get_engine_health() -> dict[str, Any]:
     """Fetches health and loaded model status from the ML Engine."""
     try:
         resp = _session.get(f"{ENGINE_URL}/health", timeout=10.0)
@@ -56,7 +57,7 @@ def get_engine_health() -> Dict[str, Any]:
         return {"status": "offline", "error": str(e), "engine_url": ENGINE_URL}
 
 
-def get_models_status() -> Dict[str, Any]:
+def get_models_status() -> dict[str, Any]:
     """Fetches detailed model statuses from the ML Engine with short TTL cache."""
     global _models_status_cache, _models_status_cache_time
     now = time.time()
@@ -75,7 +76,7 @@ def get_models_status() -> Dict[str, Any]:
         return {"status": "offline", "error": str(e)}
 
 
-def trigger_load_models() -> Dict[str, Any]:
+def trigger_load_models() -> dict[str, Any]:
     """Triggers background model pre-loading on the ML Engine."""
     global _models_status_cache_time
     _models_status_cache_time = 0.0  # Invalidate cache immediately on load trigger
@@ -88,7 +89,7 @@ def trigger_load_models() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-def reload_engine_models() -> Dict[str, Any]:
+def reload_engine_models() -> dict[str, Any]:
     """Forces cache clearing and model reload on the ML Engine."""
     global _models_status_cache_time
     _models_status_cache_time = 0.0
@@ -101,7 +102,7 @@ def reload_engine_models() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-def refresh_engine_rules() -> Dict[str, Any]:
+def refresh_engine_rules() -> dict[str, Any]:
     """Tells the ML Engine to reload its rules-engine cache from SQLite (no model reload)."""
     try:
         resp = _session.post(f"{ENGINE_URL}/engine/refresh-rules", timeout=5.0)
@@ -113,7 +114,7 @@ def refresh_engine_rules() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> Dict[str, Any]:
+def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> dict[str, Any]:
     """
     Dispatches a batch job to the dedicated ML Engine microservice for async execution.
     """
@@ -122,7 +123,7 @@ def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> Dict[str
             "name": sku.name,
             "price": sku.price or 0.0,
             "description": sku.description or "",
-            "category": sku.category or ""
+            "category": sku.category or "",
         }
         for sku in request.skus
     ]
@@ -135,11 +136,13 @@ def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> Dict[str
         "backend_url": BACKEND_INTERNAL_URL,
         "callback_url": request.callback_url,
         "sheet_name": request.sheet_name,
-        "spreadsheet_id": request.spreadsheet_id
+        "spreadsheet_id": request.spreadsheet_id,
     }
 
     try:
-        logger.info(f"Dispatching job {job_id} ({len(skus_payload)} SKUs) to Engine at {ENGINE_URL}/engine/process-batch")
+        logger.info(
+            f"Dispatching job {job_id} ({len(skus_payload)} SKUs) to Engine at {ENGINE_URL}/engine/process-batch"
+        )
         resp = _session.post(f"{ENGINE_URL}/engine/process-batch", json=payload, timeout=10.0)
         if resp.status_code in (200, 202):
             return resp.json()
@@ -152,18 +155,32 @@ def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> Dict[str
         raise RuntimeError(error_msg)
 
 
-def dispatch_upload_job(job_id: str, request: Any, task: str) -> Dict[str, Any]:
+def dispatch_upload_job(job_id: str, request: Any, task: str) -> dict[str, Any]:
     """
     Dispatches an upload job to the ML Engine microservice for async execution.
     Filters the SKU dict to only include specific columns.
     """
     allowed_columns = [
-        "Name", "RefID", "Description", "Price", "Category", 
-        "Individually Sellable", "Brands", "Categories", "Generic keywords", 
-        "Promotions", "Special Properties and Ingredients", "Uncategrized", 
-        "basictype", "dietarypreference", "foodstate", "mealtime", "other", "region"
+        "Name",
+        "RefID",
+        "Description",
+        "Price",
+        "Category",
+        "Individually Sellable",
+        "Brands",
+        "Categories",
+        "Generic keywords",
+        "Promotions",
+        "Special Properties and Ingredients",
+        "Uncategrized",
+        "basictype",
+        "dietarypreference",
+        "foodstate",
+        "mealtime",
+        "other",
+        "region",
     ]
-    
+
     filtered_skus = []
     for sku in request.skus:
         filtered_sku = {col: sku.get(col, "") for col in allowed_columns}
@@ -177,15 +194,19 @@ def dispatch_upload_job(job_id: str, request: Any, task: str) -> Dict[str, Any]:
         "backend_url": BACKEND_INTERNAL_URL,
         "sheet_name": request.outlet_id_or_name,
         "callback_url": None,
-        "spreadsheet_id": None
+        "spreadsheet_id": None,
     }
 
     try:
-        logger.info(f"Dispatching upload job {job_id} ({len(request.skus)} SKUs) to Engine at {ENGINE_URL}/engine/process-batch")
+        logger.info(
+            f"Dispatching upload job {job_id} ({len(request.skus)} SKUs) to Engine at {ENGINE_URL}/engine/process-batch"
+        )
         resp = _session.post(f"{ENGINE_URL}/engine/process-batch", json=payload, timeout=10.0)
         if resp.status_code in (200, 202):
             return resp.json()
-        error_msg = f"ML Engine rejected upload job {job_id} with status {resp.status_code}: {resp.text}"
+        error_msg = (
+            f"ML Engine rejected upload job {job_id} with status {resp.status_code}: {resp.text}"
+        )
         logger.error(error_msg)
         raise RuntimeError(error_msg)
     except requests.RequestException as re:
@@ -200,8 +221,8 @@ def run_single(
     task: str = "pipeline",
     price: float = 0.0,
     description: str = "",
-    category: str = ""
-) -> Dict[str, Any]:
+    category: str = "",
+) -> dict[str, Any]:
     """Runs synchronous single-SKU inference on the ML Engine."""
     payload = {
         "sku_name": sku_name,
@@ -209,7 +230,7 @@ def run_single(
         "task": task,
         "price": price,
         "description": description,
-        "category": category
+        "category": category,
     }
 
     try:
@@ -226,15 +247,15 @@ def suggest_tags(
     domain: str = "market",
     current_bt: str = "",
     exclude_bt: str = "",
-    exclude_gk: str = ""
-) -> Dict[str, Any]:
+    exclude_gk: str = "",
+) -> dict[str, Any]:
     """Requests template-aware tag suggestions from the ML Engine."""
     payload = {
         "sku_name": sku_name,
         "domain": domain,
         "current_bt": current_bt,
         "exclude_bt": exclude_bt,
-        "exclude_gk": exclude_gk
+        "exclude_gk": exclude_gk,
     }
 
     try:
@@ -256,7 +277,7 @@ def cancel_engine_job(job_id: str) -> bool:
         return False
 
 
-def list_vector_collections() -> Dict[str, Any]:
+def list_vector_collections() -> dict[str, Any]:
     """Fetches vector database collection names from the ML Engine."""
     try:
         resp = _session.get(f"{ENGINE_URL}/engine/vector-db/collections", timeout=5.0)
@@ -267,7 +288,7 @@ def list_vector_collections() -> Dict[str, Any]:
         raise RuntimeError(f"Could not reach ML Engine at {ENGINE_URL}: {re}")
 
 
-def get_vector_collection(name: str) -> Dict[str, Any]:
+def get_vector_collection(name: str) -> dict[str, Any]:
     """Fetches info for a specific vector collection from the ML Engine."""
     try:
         resp = _session.get(f"{ENGINE_URL}/engine/vector-db/collections/{name}", timeout=5.0)
@@ -278,10 +299,12 @@ def get_vector_collection(name: str) -> Dict[str, Any]:
         raise RuntimeError(f"Could not reach ML Engine at {ENGINE_URL}: {re}")
 
 
-def search_vector_collection(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def search_vector_collection(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Dispatches vector search request to the ML Engine."""
     try:
-        resp = _session.post(f"{ENGINE_URL}/engine/vector-db/collections/{name}/search", json=payload, timeout=15.0)
+        resp = _session.post(
+            f"{ENGINE_URL}/engine/vector-db/collections/{name}/search", json=payload, timeout=15.0
+        )
         if resp.status_code == 200:
             return resp.json()
         raise RuntimeError(f"Engine vector search returned {resp.status_code}: {resp.text}")
@@ -295,8 +318,8 @@ def run_sku_audit(
     task: str = "pipeline",
     price: float = 0.0,
     description: str = "",
-    category: str = ""
-) -> Dict[str, Any]:
+    category: str = "",
+) -> dict[str, Any]:
     """Runs single-SKU diagnostic audit on the ML Engine."""
     payload = {
         "sku_name": sku_name,
@@ -304,7 +327,7 @@ def run_sku_audit(
         "task": task,
         "price": price,
         "description": description,
-        "category": category
+        "category": category,
     }
 
     try:
@@ -314,4 +337,3 @@ def run_sku_audit(
         raise RuntimeError(f"Engine audit returned {resp.status_code}: {resp.text}")
     except requests.RequestException as re:
         raise RuntimeError(f"Could not reach ML Engine at {ENGINE_URL}: {re}")
-

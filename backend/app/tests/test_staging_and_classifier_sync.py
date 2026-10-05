@@ -1,20 +1,20 @@
-import os
-import unittest
-from unittest.mock import patch, MagicMock
-import tempfile
 import json
+import os
 import shutil
-import pandas as pd
-import numpy as np
+import tempfile
+import unittest
+from unittest.mock import MagicMock, patch
+
 import joblib
+import numpy as np
+import pandas as pd
 
 from engine import config
-from engine.data_pipeline.ingestion import DataIngestion
 from engine.classification.classifier import ZeroShotClassifier
+from engine.data_pipeline.ingestion import DataIngestion
 
 
 class TestStagingAndClassifierSync(unittest.TestCase):
-
     def setUp(self):
         # Create a temporary directory for tests
         self.test_dir = tempfile.mkdtemp()
@@ -53,7 +53,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         # Stage sheets for market domain
         staged = DataIngestion.stage_all_sheets("test_sheet_id", domains=[config.DOMAIN_MARKET])
         self.assertTrue(len(staged) > 0)
-        
+
         # Verify files exist in STAGING_DIR
         for sheet_name, path in staged.items():
             self.assertTrue(os.path.exists(path))
@@ -72,7 +72,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
 
         # Test cleanup
         DataIngestion.cleanup_staged_sheets()
-        for sheet_name, path in staged.items():
+        for path in staged.values():
             self.assertFalse(os.path.exists(path))
         self.assertFalse(os.path.exists(manifest_path))
 
@@ -92,6 +92,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
             )
             self.assertEqual(text, "col1,col2\nval1,val2\n")
             self.assertEqual(mock_get.call_count, 3)
+            self.assertEqual(mock_sleep.call_count, 2)
 
     def test_classifier_stored_hashes_no_name_error(self):
         # Create a sample cat_df with all required columns
@@ -107,8 +108,12 @@ class TestStagingAndClassifierSync(unittest.TestCase):
 
         # Mock embedding model
         mock_model = MagicMock()
-        mock_model.encode.return_value = {"dense": np.random.randn(len(df), 1024).astype(np.float32)}
-        mock_model.embed_weighted_sku.return_value = {"dense": np.random.randn(len(df), 1024).astype(np.float32)}
+        mock_model.encode.return_value = {
+            "dense": np.random.randn(len(df), 1024).astype(np.float32)
+        }
+        mock_model.embed_weighted_sku.return_value = {
+            "dense": np.random.randn(len(df), 1024).astype(np.float32)
+        }
 
         # Initialize classifier with mock model
         clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
@@ -128,7 +133,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         # Verify training succeeded and stored_hashes file was written without NameError
         hash_file = os.path.join(config.CACHE_DIR, "model_hashes.json")
         self.assertTrue(os.path.exists(hash_file))
-        with open(hash_file, "r") as f:
+        with open(hash_file) as f:
             hashes = json.load(f)
         self.assertIn("market_training_state", hashes)
         self.assertTrue(len(hashes["market_training_state"]) > 0)
@@ -140,11 +145,13 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         from scripts.catalog.sync import sync_cache
 
         # Test catalog with None/float/missing clean_text
-        sample_df = pd.DataFrame({
-            "Name": ["Coca Cola 250ml", "Pepsi Max 500ml", "Sprite 1l"],
-            "Price": [10.0, 15.0, 20.0],
-            "clean_text": [None, np.nan, "sprite 1l"]
-        })
+        sample_df = pd.DataFrame(
+            {
+                "Name": ["Coca Cola 250ml", "Pepsi Max 500ml", "Sprite 1l"],
+                "Price": [10.0, 15.0, 20.0],
+                "clean_text": [None, np.nan, "sprite 1l"],
+            }
+        )
         brands_df = pd.DataFrame({"Brand Name": ["coca cola", "pepsi"], "Aliases": ["", ""]})
 
         mock_load_cat.return_value = (sample_df, brands_df)
@@ -152,7 +159,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
 
         # Should not raise AttributeError: Can only use .str accessor with string values, not floating
         sync_cache("market", "test_sheet_id", "rebuild")
-        
+
         metadata_path = os.path.join(config.CACHE_DIR, "market_catalog_metadata.pkl")
         self.assertTrue(os.path.exists(metadata_path))
         meta_df = joblib.load(metadata_path)
@@ -162,4 +169,3 @@ class TestStagingAndClassifierSync(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

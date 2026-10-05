@@ -2,26 +2,24 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
 
 from engine import config
+from engine.classification.classifier import ZeroShotClassifier
 from engine.classification.cold_start_router import (
     ClassLifecycleTier,
-    ColdStartRouter,
     TaxonomyLifecycleRegistry,
     Tier1ZeroShotClassifier,
     Tier2FewShotClassifier,
     Tier3CentroidClassifier,
 )
-from engine.classification.classifier import ZeroShotClassifier
 from engine.nlp.embedding_engine import EmbeddingEngine
 
 
 class TestColdStartRouter(unittest.TestCase):
-
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
         self.orig_cache_dir = config.CACHE_DIR
@@ -34,16 +32,20 @@ class TestColdStartRouter(unittest.TestCase):
 
     def test_taxonomy_lifecycle_registry_partitioning(self):
         """Tests that TaxonomyLifecycleRegistry partitions classes accurately based on N_c."""
-        registry = TaxonomyLifecycleRegistry(domain="market", cache_dir=self.test_dir, few_shot_threshold=15)
+        registry = TaxonomyLifecycleRegistry(
+            domain="market", cache_dir=self.test_dir, few_shot_threshold=15
+        )
 
         # Create synthetic catalog counts:
         # 'Novel Tag A': 0 examples (Tier 1 Zero-Shot)
         # 'Emerging Tag B': 5 examples (Tier 2 Few-Shot)
         # 'Mature Tag C': 25 examples (Tier 3 Warm Centroid)
-        cat_df = pd.DataFrame({
-            "Name": ["item"] * 30,
-            "basictype": (["Emerging Tag B"] * 5) + (["Mature Tag C"] * 25),
-        })
+        cat_df = pd.DataFrame(
+            {
+                "Name": ["item"] * 30,
+                "basictype": (["Emerging Tag B"] * 5) + (["Mature Tag C"] * 25),
+            }
+        )
 
         registered_bts = ["Novel Tag A", "Emerging Tag B", "Mature Tag C"]
         descriptions = {
@@ -74,9 +76,13 @@ class TestColdStartRouter(unittest.TestCase):
     def test_dynamic_tag_registration(self):
         """Tests runtime dynamic tag registration for newly introduced tags without historical data."""
         registry = TaxonomyLifecycleRegistry(domain="food", cache_dir=self.test_dir)
-        registry.register_tag("Artisanal Kombucha", "Fermented effervescent sweetened tea drink", sample_count=0)
+        registry.register_tag(
+            "Artisanal Kombucha", "Fermented effervescent sweetened tea drink", sample_count=0
+        )
 
-        self.assertEqual(registry.get_tier("Artisanal Kombucha"), ClassLifecycleTier.TIER_1_ZERO_SHOT)
+        self.assertEqual(
+            registry.get_tier("Artisanal Kombucha"), ClassLifecycleTier.TIER_1_ZERO_SHOT
+        )
         self.assertEqual(registry.get_count("Artisanal Kombucha"), 0)
         self.assertIn("Artisanal Kombucha", registry.zero_shot_classes)
         self.assertEqual(
@@ -137,10 +143,26 @@ class TestColdStartRouter(unittest.TestCase):
 
         # Synthetic top-k retrieved catalog items with similarities, BTs, and GKs
         neighbor_hits = [
-            {"basictype": "Oat Milk Barista", "Generic keywords": "oat milk, barista, plant milk", "_qdrant_score_": 0.90},
-            {"basictype": "Oat Milk Barista", "Generic keywords": "oat milk, plant milk", "_qdrant_score_": 0.85},
-            {"basictype": "Oat Milk Barista", "Generic keywords": "oat milk, barista", "_qdrant_score_": 0.80},
-            {"basictype": "Almond Milk", "Generic keywords": "almond milk, nut milk", "_qdrant_score_": 0.60},
+            {
+                "basictype": "Oat Milk Barista",
+                "Generic keywords": "oat milk, barista, plant milk",
+                "_qdrant_score_": 0.90,
+            },
+            {
+                "basictype": "Oat Milk Barista",
+                "Generic keywords": "oat milk, plant milk",
+                "_qdrant_score_": 0.85,
+            },
+            {
+                "basictype": "Oat Milk Barista",
+                "Generic keywords": "oat milk, barista",
+                "_qdrant_score_": 0.80,
+            },
+            {
+                "basictype": "Almond Milk",
+                "Generic keywords": "almond milk, nut milk",
+                "_qdrant_score_": 0.60,
+            },
             {"basictype": "Almond Milk", "Generic keywords": "almond milk", "_qdrant_score_": 0.50},
         ]
         # Total similarity = 0.90 + 0.85 + 0.80 + 0.60 + 0.50 = 3.65

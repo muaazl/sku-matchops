@@ -1,12 +1,11 @@
 import json
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.app.services.engine_client import (
-    run_single as engine_run_single,
-    suggest_tags as engine_suggest_tags,
-    run_sku_audit as engine_run_sku_audit
-)
+from backend.app.services.engine_client import run_single as engine_run_single
+from backend.app.services.engine_client import run_sku_audit as engine_run_sku_audit
+from backend.app.services.engine_client import suggest_tags as engine_suggest_tags
 from engine.rules_engine import run_rules_engine
 
 router = APIRouter(prefix="/interactive")
@@ -44,7 +43,7 @@ def run_single(request: RunSingleRequest):
             task=request.task,
             price=request.price or 0.0,
             description=request.description or "",
-            category=request.category or ""
+            category=request.category or "",
         )
         return res
     except ValueError as e:
@@ -59,7 +58,7 @@ def run_single(request: RunSingleRequest):
 def rerun_rules(request: RerunRulesRequest):
     try:
         gk_list = [x.strip() for x in request.gk.split(",") if x.strip()]
-        
+
         # Prepare record for rules engine
         record = {
             "sku_name": request.sku_name,
@@ -73,19 +72,19 @@ def rerun_rules(request: RerunRulesRequest):
             "match_source": request.match_source,
             "matched_sku": request.matched_sku,
             "reasoning": request.reasoning,
-            "rules_applied": []
+            "rules_applied": [],
         }
-        
+
         aug_record = run_rules_engine(record)
-        
+
         rules_applied = aug_record.get("rules_applied", [])
         rules_applied_str = json.dumps(rules_applied) if rules_applied else ""
-        
+
         return {
             "suggested_bt": aug_record.get("bt") or "",
             "suggested_gk": ", ".join(aug_record.get("gk", [])),
             "suggested_region": (aug_record.get("region") or aug_record.get("category") or ""),
-            "rules_applied": rules_applied_str
+            "rules_applied": rules_applied_str,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -111,7 +110,7 @@ def suggest_tags(request: SuggestRequest):
             domain=request.domain,
             current_bt=request.current_bt or "",
             exclude_bt=request.exclude_bt or "",
-            exclude_gk=request.exclude_gk or ""
+            exclude_gk=request.exclude_gk or "",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -130,7 +129,7 @@ def run_audit(request: RunSingleRequest):
             task=request.task,
             price=request.price or 0.0,
             description=request.description or "",
-            category=request.category or ""
+            category=request.category or "",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

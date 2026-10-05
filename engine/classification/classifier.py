@@ -2,15 +2,17 @@ import hashlib
 import json
 import logging
 import os
-from typing import Dict, List, Optional, Tuple, Union
+
 import joblib
 import numpy as np
 import pandas as pd
+
 from engine import config
 from engine.data_pipeline.cache_manager import calculate_df_hash
 from engine.utils.flavor_utils import build_food_flavors_info
 
 logger = logging.getLogger("matchops.classifier")
+
 
 class ZeroShotClassifier:
     """
@@ -26,16 +28,25 @@ class ZeroShotClassifier:
     dataset-specific quirks that the model cannot know from food names alone.
     """
 
-    def __init__(self, model, domain: str, descriptions: dict, cache_dir: str | None = None, cat_df: pd.DataFrame = None, brands_df: pd.DataFrame = None, force_retrain: bool = False):
-        self.model     = model
-        self.domain    = domain
+    def __init__(
+        self,
+        model,
+        domain: str,
+        descriptions: dict,
+        cache_dir: str | None = None,
+        cat_df: pd.DataFrame = None,
+        brands_df: pd.DataFrame = None,
+        force_retrain: bool = False,
+    ):
+        self.model = model
+        self.domain = domain
         self.cache_dir = cache_dir or config.CACHE_DIR
-        self._trained  = False
+        self._trained = False
         self._price_scaler = None
         self.cat_df = cat_df if cat_df is not None else pd.DataFrame()
         self.brands_df = brands_df if brands_df is not None else pd.DataFrame()
         self.food_flavors_dict, _, _, _, _ = build_food_flavors_info(brands_df)
-        
+
         # Always use this for SKU query embedding so training and inference are consistent.
         self._active_model = model
 
@@ -77,13 +88,16 @@ class ZeroShotClassifier:
         # Multi-Tier Cold-Start to Warm-Start Router (Tier 1 Zero-Shot, Tier 2 Few-Shot, Tier 3 Centroids)
         self.cold_start_router = None
         try:
-            from engine.data_pipeline.vector_store import VectorStore
             from engine.classification.cold_start_router import ColdStartRouter
+            from engine.data_pipeline.vector_store import VectorStore
+
             vs = None
             try:
                 vs = VectorStore()
             except Exception as vs_err:
-                logger.debug(f"[{domain}] VectorStore connection notice for ColdStartRouter: {vs_err}")
+                logger.debug(
+                    f"[{domain}] VectorStore connection notice for ColdStartRouter: {vs_err}"
+                )
 
             self.cold_start_router = ColdStartRouter(
                 domain=domain,
@@ -93,9 +107,13 @@ class ZeroShotClassifier:
                 cat_df=self.cat_df,
                 cache_dir=self.cache_dir,
             )
-            logger.info(f"[{domain.upper()}] ColdStartRouter initialized successfully as classifier fallback.")
+            logger.info(
+                f"[{domain.upper()}] ColdStartRouter initialized successfully as classifier fallback."
+            )
         except Exception as router_err:
-            logger.warning(f"[{domain.upper()}] ColdStartRouter initialization failed: {router_err}")
+            logger.warning(
+                f"[{domain.upper()}] ColdStartRouter initialization failed: {router_err}"
+            )
 
     def _load_arcface_model(self):
         """
@@ -116,11 +134,12 @@ class ZeroShotClassifier:
             )
 
         try:
-            with open(labels_path, "r", encoding="utf-8") as f:
+            with open(labels_path, encoding="utf-8") as f:
                 meta = json.load(f)
             self._arcface_classes = meta["classes"]
             scaler_info = meta.get("price_scaler", {})
             from sklearn.preprocessing import StandardScaler
+
             scaler = StandardScaler()
             scaler.mean_ = np.array([scaler_info.get("mean", 0.0)], dtype=np.float32)
             scaler.scale_ = np.array([scaler_info.get("scale", 1.0)], dtype=np.float32)
@@ -176,7 +195,7 @@ class ZeroShotClassifier:
                 pass
 
         out = self.model.encode(texts)
-        embs = out['dense']
+        embs = out["dense"]
         joblib.dump({"fingerprint": fingerprint, "embeddings": embs}, cache_file)
         return embs
 
@@ -206,7 +225,10 @@ class ZeroShotClassifier:
                 sku_cache = {}
 
         # Construct lookup keys for current training set
-        keys = [f"{n.strip()}||{d.strip()}||{c.strip()}" for n, d, c in zip(names_list, descs_list, cats_list)]
+        keys = [
+            f"{n.strip()}||{d.strip()}||{c.strip()}"
+            for n, d, c in zip(names_list, descs_list, cats_list)
+        ]
 
         # Find which items are missing from cache
         missing_indices = [i for i, key in enumerate(keys) if key not in sku_cache]
@@ -236,7 +258,9 @@ class ZeroShotClassifier:
             joblib.dump(sku_cache, cache_file)
             logger.info(f"[EMBED] {self.domain} classifier training: cache updated.")
         else:
-            logger.info(f"[EMBED] {self.domain} classifier training: all {len(keys)} training embeddings served from cache.")
+            logger.info(
+                f"[EMBED] {self.domain} classifier training: all {len(keys)} training embeddings served from cache."
+            )
 
         # Reassemble the training matrix X
         X = np.vstack([sku_cache[key] for key in keys])
@@ -247,9 +271,10 @@ class ZeroShotClassifier:
         prices = np.array(prices_list, dtype=np.float32).reshape(-1, 1)
         prices = np.clip(prices, 0.0, None)
         log_prices = np.log1p(prices)
-        
+
         if is_training:
             from sklearn.preprocessing import StandardScaler
+
             self._price_scaler = StandardScaler()
             scaled_prices = self._price_scaler.fit_transform(log_prices)
         else:
@@ -271,8 +296,8 @@ class ZeroShotClassifier:
 
         try:
             from sklearn.linear_model import LogisticRegression
-            from sklearn.preprocessing import LabelEncoder, MultiLabelBinarizer
             from sklearn.multiclass import OneVsRestClassifier
+            from sklearn.preprocessing import LabelEncoder, MultiLabelBinarizer
 
             cache_file = os.path.join(self.cache_dir, f"{self.domain}_classifier_model.pkl")
             HASH_STORAGE_PATH = os.path.join(config.CACHE_DIR, "model_hashes.json")
@@ -287,13 +312,13 @@ class ZeroShotClassifier:
                 try:
                     cached = joblib.load(cache_file)
                     if not force_retrain:
-                        self._bt_enc        = cached["bt_enc"]
-                        self._bt_clf        = cached["bt_clf"]
+                        self._bt_enc = cached["bt_enc"]
+                        self._bt_clf = cached["bt_clf"]
                         self._third_tag_enc = cached["third_tag_enc"]
                         self._third_tag_clf = cached["third_tag_clf"]
-                        self._gk_enc        = cached.get("gk_enc")
-                        self._gk_clf        = cached.get("gk_clf")
-                        self._price_scaler  = cached.get("price_scaler")
+                        self._gk_enc = cached.get("gk_enc")
+                        self._gk_clf = cached.get("gk_clf")
+                        self._price_scaler = cached.get("price_scaler")
                         self._trained = True
                         logger.info(f"[TRAIN] Loaded classifier model from cache ({self.domain}).")
                         return
@@ -310,8 +335,14 @@ class ZeroShotClassifier:
             df = self.cat_df.fillna("")
 
             # Drop rows with no BT or Third Tag label
-            from engine.config import get_third_tag_col, COL_GK, COL_NAME, COL_DESCRIPTION, COL_INPUT_CATEGORY
-            
+            from engine.config import (
+                COL_DESCRIPTION,
+                COL_GK,
+                COL_INPUT_CATEGORY,
+                COL_NAME,
+                get_third_tag_col,
+            )
+
             target_col = get_third_tag_col(self.domain)
             missing = {"Name", "basictype", target_col, COL_GK} - set(df.columns)
             if missing:
@@ -323,18 +354,27 @@ class ZeroShotClassifier:
             df = df[df[COL_GK].str.strip() != ""]
 
             if len(df) < 10:
-                logger.warning(f"[TRAIN] ⚠ Only {len(df)} labeled rows — need ≥10. Using zero-shot.")
+                logger.warning(
+                    f"[TRAIN] ⚠ Only {len(df)} labeled rows — need ≥10. Using zero-shot."
+                )
                 return
 
             # Build query strings exactly matching inference (weighted multi-field embedding)
-            from engine.config import CLASSIFIER_WEIGHTS
             names_list = df[COL_NAME].astype(str).str.strip().tolist()
-            descs_list = df[COL_DESCRIPTION].astype(str).str.strip().tolist() if COL_DESCRIPTION in df.columns else [""] * len(df)
-            col_cat = COL_INPUT_CATEGORY if COL_INPUT_CATEGORY in df.columns else ("category" if "category" in df.columns else "")
+            descs_list = (
+                df[COL_DESCRIPTION].astype(str).str.strip().tolist()
+                if COL_DESCRIPTION in df.columns
+                else [""] * len(df)
+            )
+            col_cat = (
+                COL_INPUT_CATEGORY
+                if COL_INPUT_CATEGORY in df.columns
+                else ("category" if "category" in df.columns else "")
+            )
             cats_list = df[col_cat].astype(str).str.strip().tolist() if col_cat else [""] * len(df)
 
             logger.info(f"[TRAIN] Training on {len(df)} labeled SKUs...")
-            
+
             # Retrieve embeddings using the incremental disk cache helper
             X = self._embed_weighted_sku_incremental(names_list, descs_list, cats_list)
 
@@ -367,9 +407,7 @@ class ZeroShotClassifier:
                 self._bt_clf.warm_start = True
                 self._bt_clf.fit(X, y_bt)
             else:
-                self._bt_clf = LogisticRegression(
-                    max_iter=1000, C=5.0
-                ).fit(X, y_bt)
+                self._bt_clf = LogisticRegression(max_iter=1000, C=5.0).fit(X, y_bt)
 
             # ── Third Tag classifier ──────────────────────────────
             third_tag_raw = df[target_col].str.strip().tolist()
@@ -396,13 +434,15 @@ class ZeroShotClassifier:
                 ).fit(X, y_third_tag)
 
             # ── GK classifier (Multi-label) ───────────────────────
-            gk_raw = [[tag.strip() for tag in tags.split(",") if tag.strip()] for tags in df[COL_GK]]
+            gk_raw = [
+                [tag.strip() for tag in tags.split(",") if tag.strip()] for tags in df[COL_GK]
+            ]
             self._gk_enc = MultiLabelBinarizer()
             y_gk = self._gk_enc.fit_transform(gk_raw)
             base_clf = LogisticRegression(max_iter=250, C=5.0, class_weight="balanced")
             self._gk_clf = OneVsRestClassifier(base_clf).fit(X, y_gk)
 
-            n_bt     = len(set(bt_raw))
+            n_bt = len(set(bt_raw))
             n_third_tag = len(set(third_tag_raw))
             n_gk_tags = len(self._gk_enc.classes_)
             self._trained = True
@@ -413,22 +453,25 @@ class ZeroShotClassifier:
 
             # Save to cache
             os.makedirs(self.cache_dir, exist_ok=True)
-            joblib.dump({
-                "bt_enc": self._bt_enc,
-                "bt_clf": self._bt_clf,
-                "third_tag_enc": self._third_tag_enc,
-                "third_tag_clf": self._third_tag_clf,
-                "gk_enc": self._gk_enc,
-                "gk_clf": self._gk_clf,
-                "price_scaler": self._price_scaler
-            }, cache_file)
-            
+            joblib.dump(
+                {
+                    "bt_enc": self._bt_enc,
+                    "bt_clf": self._bt_clf,
+                    "third_tag_enc": self._third_tag_enc,
+                    "third_tag_clf": self._third_tag_clf,
+                    "gk_enc": self._gk_enc,
+                    "gk_clf": self._gk_clf,
+                    "price_scaler": self._price_scaler,
+                },
+                cache_file,
+            )
+
             if current_hash:
                 try:
                     stored_hashes = {}
                     if os.path.exists(HASH_STORAGE_PATH):
                         try:
-                            with open(HASH_STORAGE_PATH, "r", encoding="utf-8") as f:
+                            with open(HASH_STORAGE_PATH, encoding="utf-8") as f:
                                 stored_hashes = json.load(f)
                         except Exception:
                             stored_hashes = {}
@@ -439,7 +482,9 @@ class ZeroShotClassifier:
                     logger.warning(f"[TRAIN] Failed to write model hash: {hash_err}")
 
         except Exception as e:
-            logger.error(f"[TRAIN] ⚠ Classifier training failed: {e} — using zero-shot", exc_info=True)
+            logger.error(
+                f"[TRAIN] ⚠ Classifier training failed: {e} — using zero-shot", exc_info=True
+            )
 
     # ── Public API ────────────────────────────────────────────
 
@@ -462,7 +507,7 @@ class ZeroShotClassifier:
     def predict_bt(
         self,
         vec: np.ndarray,
-        price: Optional[float] = None,
+        price: float | None = None,
         sku_name: str = "",
         sku_description: str = "",
     ) -> tuple[str, float, str, list[str]]:
@@ -475,11 +520,7 @@ class ZeroShotClassifier:
 
         # Check for dynamic zero-shot classes that may match with high cross-encoder confidence
         cold_router = getattr(self, "cold_start_router", None)
-        if (
-            cold_router is not None
-            and cold_router.registry.zero_shot_classes
-            and sku_name
-        ):
+        if cold_router is not None and cold_router.registry.zero_shot_classes and sku_name:
             zs_tag, zs_conf, zs_src = cold_router.tier1_zero_shot.predict(
                 sku_name, sku_description, query_dense=vec_2d[0]
             )
@@ -500,12 +541,16 @@ class ZeroShotClassifier:
                 return self._arcface_classes[best], conf, "trained", []
 
         # 2. Logistic Regression Model Path
-        elif self.bt_model == "logreg" and getattr(self, "_trained", False) and getattr(self, "_bt_clf", None) is not None:
+        elif (
+            self.bt_model == "logreg"
+            and getattr(self, "_trained", False)
+            and getattr(self, "_bt_clf", None) is not None
+        ):
             scaled_p = self._preprocess_prices([p_val], is_training=False)
             vec_with_price = np.hstack([vec_2d, scaled_p])
             proba = self._bt_clf.predict_proba(vec_with_price)[0]
-            best  = int(np.argmax(proba))
-            conf  = float(proba[best])
+            best = int(np.argmax(proba))
+            conf = float(proba[best])
             if conf >= 0.4:
                 return self._bt_enc.classes_[best], conf, "trained", []
 
@@ -521,27 +566,27 @@ class ZeroShotClassifier:
         bt_labels = getattr(self, "bt_labels", [])
         if not bt_labels or not hasattr(self, "bt_embs_pure") or not hasattr(self, "bt_embs_desc"):
             return "", 0.0, "zero-shot", []
-            
+
         scores_pure = (vec_2d @ self.bt_embs_pure.T)[0]
         scores_desc = (vec_2d @ self.bt_embs_desc.T)[0]
         scores = np.maximum(scores_pure, scores_desc)
-        best   = int(np.argmax(scores))
+        best = int(np.argmax(scores))
         return bt_labels[best], float(scores[best]), "zero-shot", []
 
     def batch_predict_bt(
         self,
         vecs: np.ndarray,
-        prices: List[float],
-        sku_names: Optional[List[str]] = None,
-        sku_descriptions: Optional[List[str]] = None,
-    ) -> List[tuple[str, float, str, list[str]]]:
+        prices: list[float],
+        sku_names: list[str] | None = None,
+        sku_descriptions: list[str] | None = None,
+    ) -> list[tuple[str, float, str, list[str]]]:
         """
         Batch version of predict_bt.
         Returns a list of (bt_label, confidence, source, propagated_gks) tuples.
         """
         if vecs.shape[0] == 0:
             return []
-            
+
         n = len(vecs)
         results = [None] * n
 
@@ -569,7 +614,11 @@ class ZeroShotClassifier:
                     zero_shot_indices.append(i)
 
         # 2. Logistic Regression Model Path
-        elif self.bt_model == "logreg" and getattr(self, "_trained", False) and getattr(self, "_bt_clf", None) is not None:
+        elif (
+            self.bt_model == "logreg"
+            and getattr(self, "_trained", False)
+            and getattr(self, "_bt_clf", None) is not None
+        ):
             scaled_p = self._preprocess_prices(prices, is_training=False)
             vec_with_price = np.hstack([vecs, scaled_p])
             probas = self._bt_clf.predict_proba(vec_with_price)
@@ -609,7 +658,11 @@ class ZeroShotClassifier:
             # 4. Final static description cosine fallback for any still-unresolved predictions
             if unresolved_zs:
                 bt_labels = getattr(self, "bt_labels", [])
-                if not bt_labels or not hasattr(self, "bt_embs_pure") or not hasattr(self, "bt_embs_desc"):
+                if (
+                    not bt_labels
+                    or not hasattr(self, "bt_embs_pure")
+                    or not hasattr(self, "bt_embs_desc")
+                ):
                     for i in unresolved_zs:
                         results[i] = ("", 0.0, "zero-shot", [])
                 else:
@@ -620,11 +673,18 @@ class ZeroShotClassifier:
                     bests = np.argmax(scores, axis=1)
                     confs = np.max(scores, axis=1)
                     for idx_in_fb, orig_idx in enumerate(unresolved_zs):
-                        results[orig_idx] = (bt_labels[bests[idx_in_fb]], float(confs[idx_in_fb]), "zero-shot", [])
+                        results[orig_idx] = (
+                            bt_labels[bests[idx_in_fb]],
+                            float(confs[idx_in_fb]),
+                            "zero-shot",
+                            [],
+                        )
 
         return results
 
-    def predict_gk(self, vec: np.ndarray, price: Optional[float] = None) -> tuple[list[str], float, str]:
+    def predict_gk(
+        self, vec: np.ndarray, price: float | None = None
+    ) -> tuple[list[str], float, str]:
         """
         Returns (list_of_gk_tags, confidence, source).
         Confidence is the average probability of the predicted tags.
@@ -632,24 +692,26 @@ class ZeroShotClassifier:
         """
         if not self._trained or getattr(self, "_gk_clf", None) is None:
             return [], 0.0, "zero-shot"
-            
+
         vec_2d = vec.reshape(1, -1) if vec.ndim == 1 else vec
         p_val = float(price) if price is not None else 0.0
         scaled_p = self._preprocess_prices([p_val], is_training=False)
         vec_with_price = np.hstack([vec_2d, scaled_p])
-        
+
         proba = self._gk_clf.predict_proba(vec_with_price)[0]
         threshold = config.GK_TRAINED_CONFIDENCE_THRESHOLD
         predicted_indices = np.where(proba >= threshold)[0]
-        
+
         if len(predicted_indices) == 0:
             return [], 0.0, "zero-shot"
-            
+
         tags = self._gk_enc.classes_[predicted_indices].tolist()
         conf = float(np.mean(proba[predicted_indices]))
         return tags, conf, "trained"
 
-    def batch_predict_gk(self, vecs: np.ndarray, prices: List[float]) -> List[tuple[list[str], float, str]]:
+    def batch_predict_gk(
+        self, vecs: np.ndarray, prices: list[float]
+    ) -> list[tuple[list[str], float, str]]:
         """
         Batch version of predict_gk.
         Returns a list of (list_of_gk_tags, confidence, source) tuples.
@@ -678,7 +740,12 @@ class ZeroShotClassifier:
         return results
 
     def predict_third_tag(
-        self, vec: np.ndarray, name: str, description: str = "", predicted_bt: str = "", price: Optional[float] = None
+        self,
+        vec: np.ndarray,
+        name: str,
+        description: str = "",
+        predicted_bt: str = "",
+        price: float | None = None,
     ) -> tuple[str, float, str]:
         """
         Returns (third_tag_label, confidence, source).
@@ -701,8 +768,8 @@ class ZeroShotClassifier:
             scaled_p = self._preprocess_prices([p_val], is_training=False)
             vec_with_price = np.hstack([vec_2d, scaled_p])
             proba = self._third_tag_clf.predict_proba(vec_with_price)[0]
-            best  = int(np.argmax(proba))
-            conf  = float(proba[best])
+            best = int(np.argmax(proba))
+            conf = float(proba[best])
             if conf >= 0.4:
                 return self._third_tag_enc.classes_[best], conf, "trained"
 
@@ -713,17 +780,17 @@ class ZeroShotClassifier:
         scores_pure = (vec_2d @ self.third_tag_embs_pure.T)[0]
         scores_desc = (vec_2d @ self.third_tag_embs_desc.T)[0]
         scores = np.maximum(scores_pure, scores_desc)
-        best   = int(np.argmax(scores))
+        best = int(np.argmax(scores))
         return self.third_tag_labels[best], float(scores[best]), "zero-shot"
 
     def batch_predict_third_tag(
         self,
         vecs: np.ndarray,
-        names: List[str] = None,
-        descriptions: List[str] = None,
-        predicted_bts: List[str] = None,
-        prices: List[float] = None,
-    ) -> List[tuple[str, float, str]]:
+        names: list[str] = None,
+        descriptions: list[str] = None,
+        predicted_bts: list[str] = None,
+        prices: list[float] = None,
+    ) -> list[tuple[str, float, str]]:
         """
         Batch version of predict_third_tag.
         Returns a list of (third_tag_label, confidence, source) tuples.
@@ -737,7 +804,7 @@ class ZeroShotClassifier:
         if prices is None:
             prices = [0.0] * n
 
-        results: List[Optional[Tuple[str, float, str]]] = [None] * n
+        results: list[tuple[str, float, str] | None] = [None] * n
         remaining_indices = []
 
         # 1. BT-keyed override (O(1) dict lookup)
@@ -764,7 +831,11 @@ class ZeroShotClassifier:
 
             for list_idx, orig_idx in enumerate(remaining_indices):
                 if confs[list_idx] >= 0.4:
-                    results[orig_idx] = (self._third_tag_enc.classes_[bests[list_idx]], float(confs[list_idx]), "trained")
+                    results[orig_idx] = (
+                        self._third_tag_enc.classes_[bests[list_idx]],
+                        float(confs[list_idx]),
+                        "trained",
+                    )
                 else:
                     zero_shot_indices.append(orig_idx)
         else:
@@ -783,7 +854,11 @@ class ZeroShotClassifier:
                 bests = np.argmax(scores, axis=1)
                 confs = np.max(scores, axis=1)
                 for list_idx, orig_idx in enumerate(zero_shot_indices):
-                    results[orig_idx] = (self.third_tag_labels[bests[list_idx]], float(confs[list_idx]), "zero-shot")
+                    results[orig_idx] = (
+                        self.third_tag_labels[bests[list_idx]],
+                        float(confs[list_idx]),
+                        "zero-shot",
+                    )
 
         return results
 

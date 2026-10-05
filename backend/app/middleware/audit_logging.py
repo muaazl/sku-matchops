@@ -3,13 +3,16 @@ import logging
 import sqlite3
 import time
 import uuid
+
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
+
 from backend.app.core.db import DB_PATH
 
 logger = logging.getLogger("matchops.middleware")
 
-SENSITIVE_SUBSTRINGS = ('token', 'auth', 'bearer', 'password', 'secret', 'key', 'x-api-key')
+SENSITIVE_SUBSTRINGS = ("token", "auth", "bearer", "password", "secret", "key", "x-api-key")
+
 
 def _redact_sensitive_data(obj):
     """Recursively redacts sensitive keys in dictionaries and lists."""
@@ -20,7 +23,7 @@ def _redact_sensitive_data(obj):
             else:
                 key_lower = k.lower()
                 if any(sub in key_lower for sub in SENSITIVE_SUBSTRINGS):
-                    obj[k] = '***REDACTED***'
+                    obj[k] = "***REDACTED***"
     elif isinstance(obj, list):
         for item in obj:
             if isinstance(item, (dict, list)):
@@ -32,30 +35,31 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
         # Determine if we should log this request
         path = request.url.path
         method = request.method
-        
+
         # Only log matcher, classify, and pipeline calls, exclude GETs (polling)
-        log_paths = ('/match', '/classify', '/pipeline', '/upload')
+        log_paths = ("/match", "/classify", "/pipeline", "/upload")
         should_log = path.startswith(log_paths) and method != "GET"
-        
+
         if not should_log:
             return await call_next(request)
 
         start_time = time.time()
         req_id = str(uuid.uuid4())
-        
+
         # Read body only for logged requests.
         body = await request.body()
-        
+
         # Restore body for the next handlers
         async def receive():
             return {"type": "http.request", "body": body}
+
         request._receive = receive
-        
+
         payload_redacted = ""
         ip_address = ""
         headers_json = ""
         query_params_json = ""
-        
+
         # 1. Get client IP (support proxies/cloudflare tunnel)
         ip_address = request.headers.get("x-forwarded-for")
         if not ip_address:
@@ -86,32 +90,34 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
         # 4. Redact payload/body
         try:
             if body:
-                payload_json = json.loads(body.decode('utf-8'))
+                payload_json = json.loads(body.decode("utf-8"))
                 _redact_sensitive_data(payload_json)
                 payload_redacted = json.dumps(payload_json)
         except Exception:
             payload_redacted = "<non-json body or decode error>"
-            
+
         # Process the request
         response = await call_next(request)
-            
+
         duration_ms = int((time.time() - start_time) * 1000)
         status_code = response.status_code
-        
+
         # 5. Capture response body safely
         response_json = ""
         try:
             if hasattr(response, "body_iterator"):
                 response_body = [section async for section in response.body_iterator]
+
                 async def async_iter():
                     for chunk in response_body:
                         yield chunk
+
                 response.body_iterator = async_iter()
                 body_bytes = b"".join(response_body)
-                response_json = body_bytes.decode('utf-8', errors='replace')
+                response_json = body_bytes.decode("utf-8", errors="replace")
             elif hasattr(response, "body"):
-                response_json = response.body.decode('utf-8', errors='replace')
-                
+                response_json = response.body.decode("utf-8", errors="replace")
+
             # Safely redact response JSON
             if response_json:
                 try:
@@ -122,7 +128,7 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
                     pass
         except Exception as e:
             logger.error(f"Failed to capture response body: {e}")
-        
+
         # Write to DB
         try:
             conn = sqlite3.connect(DB_PATH, timeout=60.0)
@@ -133,12 +139,23 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
                 INSERT INTO api_requests (id, method, path, payload_json_redacted, response_json, status_code, duration_ms, ip_address, headers_json, query_params_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (req_id, method, path, payload_redacted, response_json, status_code, duration_ms, ip_address, headers_json, query_params_json)
+                (
+                    req_id,
+                    method,
+                    path,
+                    payload_redacted,
+                    response_json,
+                    status_code,
+                    duration_ms,
+                    ip_address,
+                    headers_json,
+                    query_params_json,
+                ),
             )
             conn.commit()
             conn.close()
         except Exception as e:
             logger.error(f"Failed to log API request: {e}")
-            
+
         logger.info(f"API {method} {path} - {status_code} - {duration_ms}ms")
         return response

@@ -7,7 +7,8 @@ import json
 import logging
 import sqlite3
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -17,15 +18,15 @@ logger = logging.getLogger("matchops.engine_callbacks")
 router = APIRouter(prefix="/api/internal/jobs", tags=["engine_internal"])
 
 # In-memory store for quick polling access
-_job_progress: Dict[str, float] = {}
-_job_eta: Dict[str, Optional[int]] = {}
-_job_stage: Dict[str, str] = {}
+_job_progress: dict[str, float] = {}
+_job_eta: dict[str, int | None] = {}
+_job_stage: dict[str, str] = {}
 
 
 class JobProgressPayload(BaseModel):
     current_stage: str
     progress_pct: float
-    eta_seconds: Optional[int] = None
+    eta_seconds: int | None = None
 
 
 class JobCompletePayload(BaseModel):
@@ -35,16 +36,16 @@ class JobCompletePayload(BaseModel):
     med_conf: int
     low_conf: int
     match_rate: float
-    results: List[Dict[str, Any]]
-    raw_payload: Optional[Dict[str, Any]] = None
-    callback_url: Optional[str] = None
+    results: list[dict[str, Any]]
+    raw_payload: dict[str, Any] | None = None
+    callback_url: str | None = None
 
 
 class JobFailPayload(BaseModel):
     status: str = "failed"
     error_message: str
     duration_minutes: float
-    callback_url: Optional[str] = None
+    callback_url: str | None = None
 
 
 @router.post("/{job_id}/progress")
@@ -64,7 +65,7 @@ def update_progress(job_id: str, payload: JobProgressPayload):
             conn.execute("PRAGMA busy_timeout=60000;")
             conn.execute(
                 "UPDATE jobs SET status = 'running', current_stage = ?, updated_at = datetime('now') WHERE id = ?",
-                (payload.current_stage, j_id)
+                (payload.current_stage, j_id),
             )
             conn.commit()
             conn.close()
@@ -92,7 +93,9 @@ def complete_job(job_id: str, payload: JobCompletePayload):
         task_lower = (job_row[1] if job_row else "pipeline").lower()
 
         # Fetch input SKUs from job record to associate names
-        input_row = conn.execute("SELECT input_skus_json FROM jobs WHERE id = ?", (j_id,)).fetchone()
+        input_row = conn.execute(
+            "SELECT input_skus_json FROM jobs WHERE id = ?", (j_id,)
+        ).fetchone()
         input_skus = []
         if input_row and input_row[0]:
             try:
@@ -105,11 +108,21 @@ def complete_job(job_id: str, payload: JobCompletePayload):
 
         for i, res in enumerate(res_list):
             input_sku = input_skus[i] if i < len(input_skus) else {}
-            
-            sku_name = input_sku.get("name", input_sku.get("Name", input_sku.get("sku_name", res.get("sku_name", ""))))
+
+            sku_name = input_sku.get(
+                "name", input_sku.get("Name", input_sku.get("sku_name", res.get("sku_name", "")))
+            )
             input_price = input_sku.get("price", input_sku.get("Price", res.get("price")))
-            input_description = input_sku.get("description", input_sku.get("Description", res.get("input_description", ""))) or ""
-            input_category = input_sku.get("category", input_sku.get("Category", res.get("input_category", ""))) or ""
+            input_description = (
+                input_sku.get(
+                    "description", input_sku.get("Description", res.get("input_description", ""))
+                )
+                or ""
+            )
+            input_category = (
+                input_sku.get("category", input_sku.get("Category", res.get("input_category", "")))
+                or ""
+            )
             logic_notes = res.get("logic_notes", "")
             matched_catalog_name = res.get("matched_catalog_name", "")
             match_score = res.get("score", 0.0)
@@ -135,7 +148,7 @@ def complete_job(job_id: str, payload: JobCompletePayload):
                 conf = res.get("bt_confidence", 0.0)
                 source = "classifier"
                 rules = res.get("rules_applied", "")
-            else: # pipeline
+            else:  # pipeline
                 bt = res.get("suggested_bt", "")
                 gk = res.get("suggested_gk", "")
                 if gk is None or gk == "None":
@@ -156,15 +169,31 @@ def complete_job(job_id: str, payload: JobCompletePayload):
             if isinstance(gk, str):
                 gk_val = [x.strip() for x in gk.split(",") if x.strip()]
 
-            sku_rows.append((
-                sku_id, j_id, sku_name, domain, bt,
-                json.dumps(gk_val) if gk_val else "[]",
-                region, conf, source, rules, logic_notes,
-                matched_catalog_name, match_score, bt_confidence,
-                gk_confidence, region_confidence,
-                input_price, input_description, input_category,
-                flavor_extraction, brand_extraction
-            ))
+            sku_rows.append(
+                (
+                    sku_id,
+                    j_id,
+                    sku_name,
+                    domain,
+                    bt,
+                    json.dumps(gk_val) if gk_val else "[]",
+                    region,
+                    conf,
+                    source,
+                    rules,
+                    logic_notes,
+                    matched_catalog_name,
+                    match_score,
+                    bt_confidence,
+                    gk_confidence,
+                    region_confidence,
+                    input_price,
+                    input_description,
+                    input_category,
+                    flavor_extraction,
+                    brand_extraction,
+                )
+            )
 
         if sku_rows:
             conn.executemany(
@@ -178,7 +207,7 @@ def complete_job(job_id: str, payload: JobCompletePayload):
                     flavor_extraction, brand_extraction
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                sku_rows
+                sku_rows,
             )
 
         conn.execute(
@@ -195,17 +224,27 @@ def complete_job(job_id: str, payload: JobCompletePayload):
                 match_rate = ?
             WHERE id = ?
             """,
-            (len(res_list), payload.duration_minutes, payload.high_conf, payload.med_conf, payload.low_conf, payload.match_rate, j_id)
+            (
+                len(res_list),
+                payload.duration_minutes,
+                payload.high_conf,
+                payload.med_conf,
+                payload.low_conf,
+                payload.match_rate,
+                j_id,
+            ),
         )
         # Mirror the terminal status onto the batches row, if this job originated from one
         # (CSV upload/merchant fetch) — a no-op UPDATE for jobs with no corresponding batch.
         conn.execute(
             "UPDATE batches SET status = 'completed', completed_at = datetime('now') WHERE id = ?",
-            (j_id,)
+            (j_id,),
         )
         conn.commit()
         conn.close()
-        logger.info(f"Successfully recorded completion for job {job_id} ({len(sku_rows)} SKUs saved).")
+        logger.info(
+            f"Successfully recorded completion for job {job_id} ({len(sku_rows)} SKUs saved)."
+        )
     except Exception as e:
         logger.error(f"Failed to record job {job_id} completion in DB: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -233,11 +272,11 @@ def fail_job(job_id: str, payload: JobFailPayload):
                 completed_at = datetime('now')
             WHERE id = ?
             """,
-            (payload.error_message, payload.duration_minutes, j_id)
+            (payload.error_message, payload.duration_minutes, j_id),
         )
         conn.execute(
             "UPDATE batches SET status = 'failed', completed_at = datetime('now') WHERE id = ?",
-            (j_id,)
+            (j_id,),
         )
         conn.commit()
         conn.close()

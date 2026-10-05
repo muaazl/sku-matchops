@@ -1,13 +1,13 @@
 import unittest
 from unittest.mock import MagicMock
-import numpy as np
-import pandas as pd
 
-from engine.nlp.text_cleaner import UnitUtils
+import numpy as np
+
 import engine.rules_engine.evaluator as eval_mod
-from engine.rules_engine.evaluator import _extract_flavors_from_sku
 from engine.classification.classifier import ZeroShotClassifier
-from engine.classification.tagger import tag_all_skus, _resolve_flavors_from_text
+from engine.classification.tagger import _resolve_flavors_from_text
+from engine.nlp.text_cleaner import UnitUtils
+from engine.rules_engine.evaluator import _extract_flavors_from_sku
 
 
 class TestPerformanceOptimizations(unittest.TestCase):
@@ -42,11 +42,11 @@ class TestPerformanceOptimizations(unittest.TestCase):
                 "pepper": "pepper",
                 "spinach": "spinach",
                 "prawn": "prawn",
-                "shrimp": "prawn"
+                "shrimp": "prawn",
             },
             "meat_flavors": {"chicken"},
             "vegetable_flavors": {"spinach"},
-            "seafood_flavors": {"prawn"}
+            "seafood_flavors": {"prawn"},
         }
         eval_mod._extract_flavors_from_sku_cached.cache_clear()
 
@@ -68,11 +68,7 @@ class TestPerformanceOptimizations(unittest.TestCase):
         self.assertEqual(len(flavors), 0)
 
     def test_tagger_resolve_flavors_from_text(self):
-        flavors_dict = {
-            "chicken": "chicken",
-            "beef": "beef",
-            "chili": "chili"
-        }
+        flavors_dict = {"chicken": "chicken", "beef": "beef", "chili": "chili"}
         res = _resolve_flavors_from_text("Spicy Chili Chicken Wings", flavors_dict)
         self.assertEqual(res, {"chili", "chicken"})
 
@@ -88,11 +84,11 @@ class TestPerformanceOptimizations(unittest.TestCase):
             "third_tag_descriptions": {"Western": "western food", "Asian": "asian cuisine"},
             "third_tag_overrides": {"Noodles": "Asian"},
             "bt_to_gk_umbrella": {"Noodles": ["Pasta", "Noodles"]},
-            "bt_gk_map": {"Noodles": ["Wheat", "Instant Noodles"]}
+            "bt_gk_map": {"Noodles": ["Wheat", "Instant Noodles"]},
         }
 
         clf = ZeroShotClassifier(mock_model, domain="food", descriptions=descriptions)
-        clf._trained = False # Zero-shot mode
+        clf._trained = False  # Zero-shot mode
 
         vecs = np.random.randn(2, 1024).astype(np.float32)
         prices = [500.0, 1200.0]
@@ -107,12 +103,12 @@ class TestPerformanceOptimizations(unittest.TestCase):
             vecs,
             names=["Mie Goreng", "Steamed Basmati"],
             predicted_bts=["Noodles", "Rice"],
-            prices=prices
+            prices=prices,
         )
         self.assertEqual(len(third_res), 2)
         self.assertEqual(third_res[0], ("Asian", 1.0, "override"))
         self.assertEqual(third_res[1][2], "zero-shot")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,7 @@
 import csv
 import io
 import sqlite3
-from typing import List, Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
@@ -23,26 +23,26 @@ def _sanitize_csv_cell(value):
     return value
 
 
-@router.get("/processed-skus", response_model=List[ProcessedSkuResponse])
+@router.get("/processed-skus", response_model=list[ProcessedSkuResponse])
 def get_history(
     response: Response,
-    batch_id: Optional[str] = None,
-    domain: Optional[str] = None,
-    min_confidence: Optional[float] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    sku_name: Optional[str] = None,
-    bt: Optional[str] = None,
-    gk: Optional[str] = None,
-    match_source: Optional[str] = None,
+    batch_id: str | None = None,
+    domain: str | None = None,
+    min_confidence: float | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    sku_name: str | None = None,
+    bt: str | None = None,
+    gk: str | None = None,
+    match_source: str | None = None,
     page: int = 1,
-    limit: Optional[int] = 50,
-    db: sqlite3.Connection = Depends(get_db_connection)
+    limit: int | None = 50,
+    db: sqlite3.Connection = Depends(get_db_connection),
 ):
     query = "SELECT * FROM processed_skus WHERE 1=1"
     count_query = "SELECT COUNT(*) FROM processed_skus WHERE 1=1"
     params = []
-    
+
     if batch_id:
         query += " AND batch_id = ?"
         count_query += " AND batch_id = ?"
@@ -79,7 +79,7 @@ def get_history(
         query += " AND match_source LIKE ?"
         count_query += " AND match_source LIKE ?"
         params.append(f"%{match_source}%")
-        
+
     total_count = db.execute(count_query, params).fetchone()[0]
     response.headers["X-Total-Count"] = str(total_count)
 
@@ -87,23 +87,24 @@ def get_history(
     if limit is not None and limit > 0:
         query += " LIMIT ? OFFSET ?"
         params.extend([limit, (page - 1) * limit])
-    
+
     rows = db.execute(query, params).fetchall()
     return [dict(row) for row in rows]
 
+
 @router.get("/processed-skus/export")
 def export_history(
-    ids: Optional[str] = None,
+    ids: str | None = None,
     format: Literal["csv", "xlsx"] = "csv",
-    db: sqlite3.Connection = Depends(get_db_connection)
+    db: sqlite3.Connection = Depends(get_db_connection),
 ):
     query = "SELECT * FROM processed_skus"
     params = []
 
     if ids:
-        id_list = [i.strip() for i in ids.split(',') if i.strip()]
+        id_list = [i.strip() for i in ids.split(",") if i.strip()]
         if id_list:
-            placeholders = ','.join('?' for _ in id_list)
+            placeholders = ",".join("?" for _ in id_list)
             query += f" WHERE id IN ({placeholders})"
             params.extend(id_list)
     else:
@@ -112,7 +113,7 @@ def export_history(
 
     rows = db.execute(query, params).fetchall()
 
-    if format == 'csv':
+    if format == "csv":
         output = io.StringIO()
         if rows:
             writer = csv.DictWriter(output, fieldnames=dict(rows[0]).keys())
@@ -123,10 +124,13 @@ def export_history(
         return Response(
             content=output.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=export.csv"}
+            headers={"Content-Disposition": "attachment; filename=export.csv"},
         )
     else:
-        raise HTTPException(status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv.")
+        raise HTTPException(
+            status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv."
+        )
+
 
 @router.get("/processed-skus/{id}", response_model=ProcessedSkuResponse)
 def get_processed_sku(id: str, db: sqlite3.Connection = Depends(get_db_connection)):

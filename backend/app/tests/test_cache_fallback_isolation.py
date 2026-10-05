@@ -1,20 +1,19 @@
 import os
-import unittest
-from unittest.mock import patch, MagicMock
-import tempfile
 import shutil
-import pandas as pd
-import sqlite3
+import tempfile
+import unittest
+from unittest.mock import MagicMock, patch
 
-from engine import config
-from engine.data_pipeline.ingestion import DataIngestion
+import pandas as pd
+
 from backend.app.services.catalog_service import (
-    get_catalog_and_brands,
-    get_classifier_dicts,
     get_bt_gk_cache,
+    get_classifier_dicts,
 )
-from engine.rules_engine.evaluator import _load_flavor_data, clear_flavor_cache
+from engine import config
 from engine.core.db import ensure_db_initialized
+from engine.data_pipeline.ingestion import DataIngestion
+from engine.rules_engine.evaluator import _load_flavor_data, clear_flavor_cache
 
 
 class TestCacheFallbackIsolation(unittest.TestCase):
@@ -88,6 +87,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         config.CACHE_DIR = self.orig_cache_dir
         config.STAGING_DIR = self.orig_staging_dir
         import gc
+
         gc.collect()
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -97,9 +97,13 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         """Verify load_catalog loads from SQLite without touching Google Sheets over network."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
-        cat_df, brands_df = DataIngestion.load_catalog("fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=False)
+        cat_df, brands_df = DataIngestion.load_catalog(
+            "fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=False
+        )
 
-        self.assertFalse(mock_get.called, "requests.get should NEVER be called when SQLite cache is hot!")
+        self.assertFalse(
+            mock_get.called, "requests.get should NEVER be called when SQLite cache is hot!"
+        )
         self.assertEqual(len(cat_df), 1)
         self.assertEqual(len(brands_df), 1)
         self.assertEqual(cat_df.iloc[0]["Name"], "Anchor Butter 200g")
@@ -121,7 +125,9 @@ class TestCacheFallbackIsolation(unittest.TestCase):
 
         DataIngestion.clear_mem_cache("market")
 
-        cat_df, brands_df = DataIngestion.load_catalog("fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=False)
+        cat_df, brands_df = DataIngestion.load_catalog(
+            "fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=False
+        )
 
         self.assertFalse(mock_get.called)
         self.assertEqual(cat_df.iloc[0]["Name"], "Sample Item")
@@ -134,10 +140,16 @@ class TestCacheFallbackIsolation(unittest.TestCase):
 
         # Query an empty domain
         with self.assertRaises(RuntimeError) as ctx:
-            DataIngestion.load_catalog("fake_sheet_id", domain="non_existent_domain", force_fetch=False)
+            DataIngestion.load_catalog(
+                "fake_sheet_id", domain="non_existent_domain", force_fetch=False
+            )
 
-        self.assertIn("No catalog data found in memory, Feather cache, or SQLite", str(ctx.exception))
-        self.assertFalse(mock_get.called, "requests.get must NOT be called when force_fetch=False on cache miss!")
+        self.assertIn(
+            "No catalog data found in memory, Feather cache, or SQLite", str(ctx.exception)
+        )
+        self.assertFalse(
+            mock_get.called, "requests.get must NOT be called when force_fetch=False on cache miss!"
+        )
 
     @patch("requests.get")
     def test_force_fetch_calls_network(self, mock_get):
@@ -149,7 +161,9 @@ class TestCacheFallbackIsolation(unittest.TestCase):
 
         # force_fetch=True should trigger download
         try:
-            DataIngestion.load_catalog("fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=True)
+            DataIngestion.load_catalog(
+                "fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=True
+            )
         except Exception:
             # We only care that requests.get was invoked
             pass

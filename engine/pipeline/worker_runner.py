@@ -4,26 +4,26 @@ Executes async batch jobs, emits incremental HTTP callbacks to the Backend Gatew
 and handles Google Sheets webhook callbacks.
 """
 
-import json
 import logging
 import queue
 import threading
 import time
-from typing import Any, Dict, Optional, Set
+from typing import Any
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from engine.core.db import log_outbound_request
 from engine.pipeline.processor import process_request
 from engine.pipeline.uploader import process_upload
-from engine.core.db import log_outbound_request
 
 logger = logging.getLogger("matchops.engine.worker")
 
 _batch_queue = queue.Queue()
-_cancelled_jobs: Set[str] = set()
-_running_jobs: Dict[str, Dict[str, Any]] = {}
-_worker_thread: Optional[threading.Thread] = None
+_cancelled_jobs: set[str] = set()
+_running_jobs: dict[str, dict[str, Any]] = {}
+_worker_thread: threading.Thread | None = None
 
 # Persistent HTTP session with connection pooling.
 # allowed_methods must explicitly include POST: urllib3's default excludes it (only
@@ -36,8 +36,12 @@ _retries = Retry(
     status_forcelist=[502, 503, 504],
     allowed_methods=["GET", "POST"],
 )
-_http_session.mount("http://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_retries))
-_http_session.mount("https://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_retries))
+_http_session.mount(
+    "http://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_retries)
+)
+_http_session.mount(
+    "https://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_retries)
+)
 
 
 def cancel_job(job_id: str) -> bool:
@@ -51,17 +55,17 @@ def is_job_cancelled(job_id: str) -> bool:
     return str(job_id) in _cancelled_jobs
 
 
-def enqueue_batch_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+def enqueue_batch_job(payload: dict[str, Any]) -> dict[str, Any]:
     """Puts a batch job onto the engine execution queue."""
     global _worker_thread
     job_id = str(payload.get("job_id", ""))
     _cancelled_jobs.discard(job_id)
     _batch_queue.put(payload)
-    
+
     if _worker_thread is None or not _worker_thread.is_alive():
         _worker_thread = threading.Thread(target=_worker_loop, daemon=True)
         _worker_thread.start()
-        
+
     logger.info(f"[ENGINE WORKER] Enqueued job {job_id} ({len(payload.get('skus', []))} SKUs)")
     return {"status": "accepted", "job_id": job_id}
 
@@ -88,15 +92,23 @@ def _worker_loop():
             continue
 
         t0 = time.time()
-        logger.info(f"[ENGINE WORKER] Starting execution of job {job_id} (task={task}, domain={domain}, {len(skus)} SKUs)")
+        logger.info(
+            f"[ENGINE WORKER] Starting execution of job {job_id} (task={task}, domain={domain}, {len(skus)} SKUs)"
+        )
 
         last_progress_time = 0.0
         last_progress_pct = -10.0
         last_stage = None
 
-        def send_progress_update(stage: str, pct: float, eta: Optional[int] = None):
+        def send_progress_update(
+            stage: str,
+            pct: float,
+            eta: int | None = None,
+            _cur_job_id=job_id,
+            _cur_backend_url=backend_url,
+        ):
             nonlocal last_progress_time, last_progress_pct, last_stage
-            if is_job_cancelled(job_id):
+            if is_job_cancelled(_cur_job_id):
                 return
 
             now = time.time()
@@ -112,12 +124,14 @@ def _worker_loop():
             last_progress_pct = pct
             last_stage = stage
 
-            progress_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/progress"
+            progress_endpoint = (
+                f"{_cur_backend_url.rstrip('/')}/api/internal/jobs/{_cur_job_id}/progress"
+            )
             try:
                 _http_session.post(
                     progress_endpoint,
                     json={"current_stage": stage, "progress_pct": pct, "eta_seconds": eta},
-                    timeout=2.0
+                    timeout=2.0,
                 )
             except Exception as e:
                 logger.debug(f"Failed to post progress to backend: {e}")
@@ -130,8 +144,8 @@ def _worker_loop():
                     outlet_id=sheet_name,  # outlet ID is passed in sheet_name
                     job_id=job_id,
                     progress_callback=send_progress_update,
-                    is_cancelled=lambda: is_job_cancelled(job_id),
-                    has_more_jobs=not _batch_queue.empty()
+                    is_cancelled=lambda jid=job_id: is_job_cancelled(jid),
+                    has_more_jobs=not _batch_queue.empty(),
                 )
             else:
                 result_payload = process_request(
@@ -140,11 +154,13 @@ def _worker_loop():
                     domain=domain,
                     job_id=job_id,
                     progress_callback=send_progress_update,
-                    is_cancelled=lambda: is_job_cancelled(job_id)
+                    is_cancelled=lambda jid=job_id: is_job_cancelled(jid),
                 )
 
             if is_job_cancelled(job_id):
-                logger.info(f"[ENGINE WORKER] Job {job_id} aborted mid-execution due to cancellation.")
+                logger.info(
+                    f"[ENGINE WORKER] Job {job_id} aborted mid-execution due to cancellation."
+                )
                 _batch_queue.task_done()
                 continue
 
@@ -157,19 +173,28 @@ def _worker_loop():
             for res in res_list:
                 if task_lower == "matcher":
                     s = res.get("status", "")
-                    if "High" in s: high += 1
-                    elif "Medium" in s: med += 1
-                    else: low += 1
+                    if "High" in s:
+                        high += 1
+                    elif "Medium" in s:
+                        med += 1
+                    else:
+                        low += 1
                 elif task_lower == "classifier":
                     s = res.get("bt_status", "")
-                    if "AUTO" in s: high += 1
-                    elif "REVIEW" in s: med += 1
-                    else: low += 1
-                else: # pipeline
+                    if "AUTO" in s:
+                        high += 1
+                    elif "REVIEW" in s:
+                        med += 1
+                    else:
+                        low += 1
+                else:  # pipeline
                     s = res.get("status", "")
-                    if "High" in s: high += 1
-                    elif "Medium" in s: med += 1
-                    else: low += 1
+                    if "High" in s:
+                        high += 1
+                    elif "Medium" in s:
+                        med += 1
+                    else:
+                        low += 1
 
             match_rate = round((high / max(1, len(res_list))) * 100, 2)
 
@@ -193,22 +218,30 @@ def _worker_loop():
                         "match_rate": match_rate,
                         "results": res_list,
                         "raw_payload": result_payload,
-                        "callback_url": callback_url
+                        "callback_url": callback_url,
                     },
-                    timeout=30
+                    timeout=30,
                 )
-                logger.info(f"[ENGINE WORKER] Job {job_id} completed in {duration}m. Results delivered to backend.")
+                logger.info(
+                    f"[ENGINE WORKER] Job {job_id} completed in {duration}m. Results delivered to backend."
+                )
             except Exception as be_err:
-                logger.error(f"[ENGINE WORKER] Failed to deliver completion to backend for job {job_id}: {be_err}")
+                logger.error(
+                    f"[ENGINE WORKER] Failed to deliver completion to backend for job {job_id}: {be_err}"
+                )
 
             # Post direct Google Sheets callback if provided
             if callback_url:
                 t0_cb = time.time()
                 try:
-                    logger.info(f"[ENGINE WORKER] Delivering Google Sheets callback to {callback_url}...")
+                    logger.info(
+                        f"[ENGINE WORKER] Delivering Google Sheets callback to {callback_url}..."
+                    )
                     cb_resp = _http_session.post(callback_url, json=result_payload, timeout=120)
                     cb_dur = int((time.time() - t0_cb) * 1000)
-                    logger.info(f"[ENGINE WORKER] Callback responded with status {cb_resp.status_code} in {cb_dur}ms")
+                    logger.info(
+                        f"[ENGINE WORKER] Callback responded with status {cb_resp.status_code} in {cb_dur}ms"
+                    )
                     log_outbound_request(
                         url=callback_url,
                         method="POST",
@@ -216,11 +249,13 @@ def _worker_loop():
                         response_status=cb_resp.status_code,
                         response_text=cb_resp.text[:10000] if cb_resp.text else "",
                         duration_ms=cb_dur,
-                        path="/doPost"
+                        path="/doPost",
                     )
                 except Exception as cb_err:
                     cb_dur = int((time.time() - t0_cb) * 1000)
-                    logger.error(f"[ENGINE WORKER] Google Sheets callback delivery failed: {cb_err}")
+                    logger.error(
+                        f"[ENGINE WORKER] Google Sheets callback delivery failed: {cb_err}"
+                    )
                     log_outbound_request(
                         url=callback_url,
                         method="POST",
@@ -228,7 +263,7 @@ def _worker_loop():
                         response_status=500,
                         response_text=str(cb_err),
                         duration_ms=cb_dur,
-                        path="/doPost"
+                        path="/doPost",
                     )
 
         except InterruptedError:
@@ -250,9 +285,9 @@ def _worker_loop():
                         "status": "failed",
                         "error_message": str(e),
                         "duration_minutes": duration,
-                        "callback_url": callback_url
+                        "callback_url": callback_url,
                     },
-                    timeout=15
+                    timeout=15,
                 )
             except Exception as be_err:
                 logger.error(f"[ENGINE WORKER] Failed to notify backend of job failure: {be_err}")
@@ -263,7 +298,7 @@ def _worker_loop():
                     "error": str(e),
                     "sheet_name": sheet_name,
                     "spreadsheet_id": spreadsheet_id,
-                    "task": task
+                    "task": task,
                 }
                 t0_cb = time.time()
                 try:
@@ -276,7 +311,7 @@ def _worker_loop():
                         response_status=cb_resp.status_code,
                         response_text=cb_resp.text[:10000] if cb_resp.text else "",
                         duration_ms=cb_dur,
-                        path="/doPost"
+                        path="/doPost",
                     )
                 except Exception as cb_err:
                     cb_dur = int((time.time() - t0_cb) * 1000)
@@ -287,7 +322,7 @@ def _worker_loop():
                         response_status=500,
                         response_text=str(cb_err),
                         duration_ms=cb_dur,
-                        path="/doPost"
+                        path="/doPost",
                     )
 
         finally:
