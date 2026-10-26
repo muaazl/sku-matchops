@@ -20,7 +20,7 @@ import {
 } from '@mui/material';
 import { Download, ArrowLeft, Info, ChevronDown, FileSpreadsheet, ShieldCheck } from 'lucide-react';
 import { useSnackbar } from 'notistack';
-import { PageContainer, PageHeader, SideDrawer, ConfirmDialog } from '../components/ui';
+import { PageContainer, PageHeader, SideDrawer, ConfirmDialog, ConfidencePill } from '../components/ui';
 import RulesAppliedList from '../components/RulesAppliedList';
 import { DOMAINS } from '../constants';
 import { fmtTime, download, toCsv, formatGk, formatGkText } from '../utils';
@@ -314,7 +314,7 @@ export default function SkuResults() {
               ) : (
                 serverJobs.map((row) => (
                   <StyledTableRow key={row.id} hover onClick={() => setSelectedJob(row)} sx={{ cursor: 'pointer' }}>
-                    <TableCell>{row.id}</TableCell>
+                    <TableCell className="portal-mono">{row.id}</TableCell>
                     <TableCell>{row.target_sheet || row.sheet_name || 'N/A'}</TableCell>
                     <TableCell sx={{ textTransform: 'capitalize' }}>{row.domain}</TableCell>
                     <TableCell sx={{ textTransform: 'capitalize' }}>{row.task || row.type}</TableCell>
@@ -360,7 +360,7 @@ export default function SkuResults() {
   // SKUS VIEW (FOR SELECTED JOB)
   // -------------------------
   // Always 4: SKU Name + Generic Keywords + Basic Type + exactly one of Categories/Region.
-  const colSpan = 4;
+  const colSpan = 5;
   const isClassifier = selectedJob.task?.toLowerCase() === 'classifier';
   const isMatcher = selectedJob.task?.toLowerCase() === 'matcher';
 
@@ -507,6 +507,7 @@ export default function SkuResults() {
               <StyledHeaderCell width="45%">Generic Keywords</StyledHeaderCell>
               <StyledHeaderCell width="15%">Basic Type</StyledHeaderCell>
               {selectedJob.domain === 'food' && <StyledHeaderCell width="12%">Region</StyledHeaderCell>}
+              <StyledHeaderCell width="10%">Confidence</StyledHeaderCell>
             </TableRow>
           </StyledTableHead>
           <StyledTableBody>
@@ -536,6 +537,9 @@ export default function SkuResults() {
                     <TableCell>{formatGk(row.generic_keywords || row.gk_json || row.gk)}</TableCell>
                     <TableCell>{row.basic_type || row.bt}</TableCell>
                     {selectedJob.domain === 'food' && <TableCell>{row.region}</TableCell>}
+                    <TableCell>
+                      <ConfidencePill value={row.confidence} />
+                    </TableCell>
                   </StyledTableRow>
                 );
               })

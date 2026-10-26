@@ -19,6 +19,21 @@ export const useStore = create(
         set({ bearerToken: '' });
         sessionStorage.removeItem('app_bearer_token');
       },
+
+      // MatchOps app session (separate from the merchant-portal token above). Credentials live
+      // in sessionStorage only; the active tenant is remembered across sessions.
+      authToken: '',
+      apiKey: '',
+      tenantId: 'default',
+      setSession: ({ token = '', apiKey = '', tenantId }) => {
+        set({ authToken: token, apiKey, ...(tenantId && { tenantId }) });
+        sessionStorage.setItem('matchops_auth', JSON.stringify({ token, apiKey }));
+      },
+      clearSession: () => {
+        set({ authToken: '', apiKey: '', tenantId: 'default' });
+        sessionStorage.removeItem('matchops_auth');
+      },
+      setTenantId: (tenantId) => set({ tenantId: tenantId || 'default' }),
     }),
     {
       name: 'app-storage', // unique name
@@ -26,14 +41,21 @@ export const useStore = create(
       partialize: (state) => ({
         merchantId: state.merchantId,
         portalUrl: state.portalUrl,
-        // Do not persist bearerToken in localStorage
+        tenantId: state.tenantId,
+        // Do not persist bearerToken / authToken / apiKey in localStorage
       }),
     }
   )
 );
 
-// Initialization to pick up token from sessionStorage on load
+// Initialization to pick up tokens from sessionStorage on load
 const storedToken = sessionStorage.getItem('app_bearer_token');
 if (storedToken) {
   useStore.setState({ bearerToken: storedToken });
+}
+try {
+  const { token = '', apiKey = '' } = JSON.parse(sessionStorage.getItem('matchops_auth') || '{}');
+  useStore.setState({ authToken: token, apiKey });
+} catch {
+  sessionStorage.removeItem('matchops_auth');
 }

@@ -96,6 +96,9 @@ class BatchProcessRequest(BaseModel):
     callback_url: str | None = None
     sheet_name: str | None = None
     spreadsheet_id: str | None = None
+    # Carried so HTTP-fallback jobs keep the same tenant rules and trace as Redis-queued ones
+    tenant_id: str = "default"
+    trace_id: str = "-"
 
 
 class RunSingleRequest(BaseModel):
@@ -262,6 +265,8 @@ def process_batch(request: BatchProcessRequest):
         "callback_url": request.callback_url,
         "sheet_name": request.sheet_name,
         "spreadsheet_id": request.spreadsheet_id,
+        "tenant_id": request.tenant_id,
+        "trace_id": request.trace_id,
     }
 
     result = enqueue_batch_job(payload)

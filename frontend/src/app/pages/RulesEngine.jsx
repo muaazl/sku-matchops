@@ -17,6 +17,7 @@ import {
   TableCell,
   TableRow,
   TablePagination,
+  Tooltip,
 } from '@mui/material';
 import { Plus, Trash2, Play, FlaskConical, GripVertical, Pencil, X, Sparkles } from 'lucide-react';
 import { useSnackbar } from 'notistack';
@@ -26,6 +27,7 @@ import { JsonBlock } from '../components/JsonBlock';
 import TagAutocomplete from '../components/rules/TagAutocomplete';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getRules, saveRule, reorderRules, testRule, deleteRule } from '../api';
+import { useAuth } from '../hooks/useAuth';
 import {
   StyledTableBody,
   StyledTableContainer,
@@ -252,6 +254,9 @@ export default function RulesEngine() {
     setPage(0);
   };
 
+  const { canEditRules, role } = useAuth();
+  const lockedHint = canEditRules ? '' : 'Read-only: your role cannot create, change or delete rules';
+
   const paginatedRows = useMemo(() => {
     return localRules.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
   }, [localRules, page, rowsPerPage]);
@@ -262,16 +267,24 @@ export default function RulesEngine() {
         title="Rules Engine"
         subtitle="Domain-scoped rules. Edit conditions/actions and test against a sample."
         actions={
-          <Button
-            variant="contained"
-            startIcon={<Plus size={16} />}
-            onClick={() => {
-              setEditing(emptyRule(filtered));
-              setTestResult(null);
-            }}
-          >
-            New rule
-          </Button>
+          <>
+            {!canEditRules && role && <StatusChip status={`Read-only · ${role.replace('_', ' ')}`} tone="warn" />}
+            <Tooltip title={lockedHint}>
+              <span>
+                <Button
+                  variant="contained"
+                  startIcon={<Plus size={16} />}
+                  disabled={!canEditRules}
+                  onClick={() => {
+                    setEditing(emptyRule(filtered));
+                    setTestResult(null);
+                  }}
+                >
+                  New rule
+                </Button>
+              </span>
+            </Tooltip>
+          </>
         }
       />
 
@@ -336,7 +349,7 @@ export default function RulesEngine() {
                     }}
                   >
                     <TableCell onClick={(e) => e.stopPropagation()} sx={{ width: '50px' }}>
-                      {domain !== 'all' ? (
+                      {domain !== 'all' && canEditRules ? (
                         <Box
                           draggable
                           onDragStart={(e) => handleDragStart(e, index)}
@@ -364,7 +377,7 @@ export default function RulesEngine() {
                             color: 'text.disabled',
                             opacity: 0.5,
                           }}
-                          title="Select a specific domain to enable reordering"
+                          title={canEditRules ? 'Select a specific domain to enable reordering' : lockedHint}
                         >
                           <GripVertical size={16} />
                         </Box>
@@ -393,23 +406,27 @@ export default function RulesEngine() {
                         >
                           <Pencil size={18} />
                         </IconButton>
-                        <IconButton
-                          size="small"
-                          color="error"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setConfirm({
-                              open: true,
-                              title: 'Delete Rule',
-                              message: `Are you sure you want to delete rule ${row.rule_id}?`,
-                              onConfirm: () => deleteMutation.mutate(row.rule_id),
-                            });
-                          }}
-                          aria-label="Delete rule"
-                          title="Delete rule"
-                        >
-                          <Trash2 size={18} />
-                        </IconButton>
+                        <Tooltip title={lockedHint || 'Delete rule'}>
+                          <span>
+                            <IconButton
+                              size="small"
+                              color="error"
+                              disabled={!canEditRules}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirm({
+                                  open: true,
+                                  title: 'Delete Rule',
+                                  message: `Are you sure you want to delete rule ${row.rule_id}?`,
+                                  onConfirm: () => deleteMutation.mutate(row.rule_id),
+                                });
+                              }}
+                              aria-label="Delete rule"
+                            >
+                              <Trash2 size={18} />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
                       </Stack>
                     </TableCell>
                   </StyledTableRow>
@@ -676,14 +693,18 @@ export default function RulesEngine() {
             )}
 
             <Stack direction="row" spacing={1.5} sx={{ mt: 3 }}>
-              <Button variant="contained" disabled={saveMutation.isPending} onClick={save}>
-                Save rule
-              </Button>
+              <Tooltip title={lockedHint}>
+                <span>
+                  <Button variant="contained" disabled={!canEditRules || saveMutation.isPending} onClick={save}>
+                    Save rule
+                  </Button>
+                </span>
+              </Tooltip>
               {!editing.rule_id.startsWith('new_rule_') && (
                 <Button
                   variant="outlined"
                   color="error"
-                  disabled={deleteMutation.isPending}
+                  disabled={!canEditRules || deleteMutation.isPending}
                   onClick={() => {
                     setConfirm({
                       open: true,

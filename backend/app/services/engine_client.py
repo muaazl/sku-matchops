@@ -140,7 +140,11 @@ def _enqueue_or_post(job_id: str, payload: dict[str, Any], label: str) -> dict[s
         logger.info(
             f"Dispatching {label} {job_id} ({len(payload['skus'])} SKUs) to Engine at {ENGINE_URL}/engine/process-batch"
         )
-        resp = _session.post(f"{ENGINE_URL}/engine/process-batch", json=payload, timeout=10.0)
+        resp = _session.post(
+            f"{ENGINE_URL}/engine/process-batch",
+            json={"tenant_id": "default", "trace_id": "-", **payload},
+            timeout=10.0,
+        )
         if resp.status_code in (200, 202):
             return resp.json()
         error_msg = (

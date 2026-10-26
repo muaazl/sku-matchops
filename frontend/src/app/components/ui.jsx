@@ -1,47 +1,63 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Box, Button, Chip, Dialog, Drawer, IconButton, Stack, Typography } from '@mui/material';
+import { Box, Button, Dialog, Drawer, IconButton, Stack, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { AlertTriangle, HelpCircle, X } from 'lucide-react';
 
-// Map a job/request status to an MUI chip color.
-const STATUS_COLOR = {
-  completed: 'success',
-  done: 'success',
-  running: 'info',
-  queued: 'default',
-  pending: 'warning',
-  failed: 'error',
-  cancelled: 'default',
-  approved: 'success',
-  rejected: 'error',
-  matched: 'success',
-  review: 'warning',
-  confident: 'success',
-};
+// Map a free-form status ("completed", "High Confidence", "AUTO", "Low / Rejected") to a portal
+// pill tone (colors are tokens in src/index.css). Checked in order: worst tone wins.
+const TONE_RULES = [
+  ['bad', /low|fail|reject|escalat|dlq|error/i],
+  ['warn', /review|medium|pending/i],
+  ['ok', /high|auto|complet|done|approv|match|confident|^active$/i],
+];
 
-export function StatusChip({ status, ...props }) {
-  const color = STATUS_COLOR[status] ?? 'default';
+export const statusTone = (status) =>
+  (TONE_RULES.find(([, re]) => re.test(String(status))) || ['neutral'])[0];
+
+export function StatusChip({ status, tone, sx }) {
+  const resolved = tone ?? statusTone(status);
   return (
-    <Chip
-      size="small"
-      label={status}
-      color={color}
-      variant={color === 'default' ? 'outlined' : 'filled'}
-      sx={{ textTransform: 'capitalize', fontWeight: 500, ...(props.sx || {}) }}
-      {...props}
-    />
+    <Box component="span" className={`portal-pill portal-pill--${resolved}`} sx={sx}>
+      {status}
+    </Box>
   );
 }
 
 StatusChip.propTypes = {
   status: PropTypes.string.isRequired,
+  tone: PropTypes.oneOf(['ok', 'warn', 'bad', 'neutral']),
   sx: PropTypes.object,
 };
 
+// Same tiers as the backend dashboard (jobs.py): >= 0.85 high, >= 0.60 review, else low.
+export function ConfidencePill({ value }) {
+  if (value === null || value === undefined || value === '') {
+    return <StatusChip status="n/a" tone="neutral" />;
+  }
+  const score = Number(value) > 1 ? Number(value) / 100 : Number(value);
+  const [label, tone] = score >= 0.85 ? ['High', 'ok'] : score >= 0.6 ? ['Review', 'warn'] : ['Low', 'bad'];
+  return (
+    <Box component="span" className={`portal-pill portal-pill--${tone}`} sx={{ gap: 0.75 }}>
+      {label}
+      <span className="portal-mono" style={{ fontSize: 11 }}>
+        {(score * 100).toFixed(0)}%
+      </span>
+    </Box>
+  );
+}
+
+ConfidencePill.propTypes = {
+  value: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+};
+
 export function HttpStatusChip({ code }) {
-  const color = code >= 500 ? 'error' : code >= 400 ? 'warning' : code >= 200 && code < 300 ? 'success' : 'default';
-  return <Chip size="small" label={code} color={color} sx={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }} />;
+  const tone = code >= 500 ? 'bad' : code >= 400 ? 'warn' : code >= 200 && code < 300 ? 'ok' : 'neutral';
+  return (
+    <Box component="span" className={`portal-pill portal-pill--${tone} portal-mono`}>
+      {code}
+    </Box>
+  );
 }
 
 HttpStatusChip.propTypes = { code: PropTypes.number.isRequired };

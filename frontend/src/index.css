@@ -1,3 +1,65 @@
+/* ============================================================================================
+ * PORTAL DESIGN TOKENS - PASTE DEVTOOLS CSS OVERVIEW OVERRIDES HERE
+ * --------------------------------------------------------------------------------------------
+ * Single source of truth for the operations-portal look. The MUI theme (src/theme/*.js), the
+ * sidebar, tables, status pills and top bar all read these variables, so swapping a hex value
+ * or spacing inspected from the live portal (DevTools > CSS Overview) restyles everything.
+ * ============================================================================================ */
+:root {
+  /* Sidebar navigation */
+  --portal-sidebar-bg: #0f172a;
+  --portal-sidebar-surface: #1e293b; /* active / hover item fill */
+  --portal-sidebar-border: #1e293b;
+  --portal-sidebar-text: #94a3b8;
+  --portal-sidebar-text-active: #f8fafc;
+  --portal-accent: #fdb913; /* signature amber: active bar, primary highlights */
+  --portal-accent-strong: #f59e0b;
+  --portal-accent-bar-width: 3px;
+
+  /* Workspace canvas & surfaces (light mode) */
+  --portal-canvas: #f4f6f8;
+  --portal-surface: #ffffff;
+  --portal-border: #e2e8f0;
+  --portal-radius: 6px;
+  --portal-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+
+  /* Typography */
+  --portal-font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --portal-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --portal-text: #0f172a;
+  --portal-text-muted: #64748b;
+
+  /* High-density data grids */
+  --portal-row-height: 34px;
+  --portal-cell-py: 6px;
+  --portal-cell-px: 12px;
+  --portal-cell-font-size: 13px;
+  --portal-th-bg: #f8fafc; /* slate-50 */
+  --portal-th-text: #64748b; /* slate-500 */
+  --portal-th-font-size: 12px;
+  --portal-row-hover: #f8fafc;
+  --portal-table-max-height: 70vh; /* tables scroll internally so the header stays sticky */
+
+  /* Top operational bar */
+  --portal-topbar-bg: #ffffff;
+  --portal-topbar-border: #e2e8f0;
+
+  /* Semantic status pills */
+  --portal-ok-bg: #ecfdf5; /* emerald-50  : high confidence / approved / completed */
+  --portal-ok-text: #047857; /* emerald-700 */
+  --portal-ok-border: #a7f3d0; /* emerald-200 */
+  --portal-warn-bg: #fffbeb; /* amber-50    : review / medium */
+  --portal-warn-text: #b45309; /* amber-700 */
+  --portal-warn-border: #fde68a; /* amber-200 */
+  --portal-bad-bg: #fff1f2; /* rose-50     : low / failed / DLQ */
+  --portal-bad-text: #be123c; /* rose-700 */
+  --portal-bad-border: #fecdd3; /* rose-200 */
+  --portal-neutral-bg: #f1f5f9; /* slate-100   : queued / running / cancelled */
+  --portal-neutral-text: #475569; /* slate-600 */
+  --portal-neutral-border: #e2e8f0;
+}
+/* ============================== END PORTAL DESIGN TOKENS =================================== */
+
 /* Mona Sans Font Face Declarations */
 @font-face {
   font-family: 'Mona Sans';
@@ -39,13 +101,11 @@ html::-webkit-scrollbar-thumb {
 
 body {
   margin: 0;
-  font-family: 'Mona Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell',
-    'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  font-family: var(--portal-font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Fix thick underlines in Mona Sans font */
 a {
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
@@ -53,4 +113,46 @@ a {
 
 a:hover {
   text-decoration-thickness: 1px;
+}
+
+/* Monospace for machine values: SKU / batch / job / trace IDs, confidences, latencies */
+.portal-mono {
+  font-family: var(--portal-font-mono) !important;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+/* Semantic status pills */
+.portal-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+.portal-pill--ok {
+  background: var(--portal-ok-bg);
+  color: var(--portal-ok-text);
+  border-color: var(--portal-ok-border);
+}
+.portal-pill--warn {
+  background: var(--portal-warn-bg);
+  color: var(--portal-warn-text);
+  border-color: var(--portal-warn-border);
+}
+.portal-pill--bad {
+  background: var(--portal-bad-bg);
+  color: var(--portal-bad-text);
+  border-color: var(--portal-bad-border);
+}
+.portal-pill--neutral {
+  background: var(--portal-neutral-bg);
+  color: var(--portal-neutral-text);
+  border-color: var(--portal-neutral-border);
 }

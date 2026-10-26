@@ -27,7 +27,7 @@ def new_trace_id() -> str:
 @contextmanager
 def trace_context(trace_id: str | None) -> Iterator[str]:
     """Binds a trace id to the current thread/context so every log line carries it."""
-    token = TRACE_ID.set(trace_id or new_trace_id())
+    token = TRACE_ID.set(trace_id if trace_id and trace_id != "-" else new_trace_id())
     try:
         yield TRACE_ID.get()
     finally:

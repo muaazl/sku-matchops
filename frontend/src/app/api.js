@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { useStore } from './store';
 
 // ── Dynamic Backend URL Resolution ──────────────────────────────────────────
 // Locally: uses localhost:8000 (no tunnel needed).
@@ -61,10 +62,18 @@ const api = axios.create({
   baseURL: LOCAL_BACKEND, // initial default, overridden by interceptor
 });
 
-// Request interceptor: ensures every request uses the resolved tunnel URL
+// Request interceptor: ensures every request uses the resolved tunnel URL and carries the
+// active session (Bearer JWT, else API key) and tenant.
 api.interceptors.request.use(async (config) => {
   const base = await resolveBaseUrl();
   config.baseURL = base;
+  const { authToken, apiKey, tenantId } = useStore.getState();
+  if (authToken) {
+    config.headers.Authorization = `Bearer ${authToken}`;
+  } else if (apiKey) {
+    config.headers['X-API-Key'] = apiKey;
+  }
+  config.headers['X-Tenant-ID'] = tenantId || 'default';
   return config;
 });
 
@@ -72,10 +81,12 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response && error.response.status === 401) {
-      // Import store here to avoid circular dependencies
-      import('./store').then(({ useStore }) => {
-        useStore.getState().clearToken();
-      });
+      const state = useStore.getState();
+      if ((error.config?.url || '').includes('/merchant-fetch')) {
+        state.clearToken(); // rejected merchant-portal token
+      } else if (state.authToken || state.apiKey) {
+        state.clearSession(); // expired / invalid app session
+      }
     }
     return Promise.reject(error);
   }
@@ -156,3 +167,17 @@ export const getLogs = async (lines) => (await api.get('/logs', { params: { line
 
 // Health check
 export const checkHealth = async () => (await api.get('/health', { timeout: 4000 })).data;
+
+// Auth (OAuth2 password form -> JWT) and the server-confirmed identity
+export const login = async ({ username, password }) =>
+  (
+    await api.post('/auth/token', new URLSearchParams({ username, password }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    })
+  ).data;
+export const getMe = async () => (await api.get('/auth/me')).data;
+
+// Queue & DLQ, system status strip
+export const getDeadLetters = async () => (await api.get('/queue/dlq')).data;
+export const replayDeadLetter = async (taskId) => (await api.post(`/queue/dlq/${taskId}/replay`)).data;
+export const getSystemStatus = async () => (await api.get('/system/status')).data;

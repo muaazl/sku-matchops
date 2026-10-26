@@ -14,6 +14,7 @@ import {
   Search,
   Terminal,
   Heart,
+  Inbox,
 } from 'lucide-react';
 import {
   DrawerHeader,
@@ -36,6 +37,7 @@ export const NAV_ITEMS = [
   { title: 'SKU Results', icon: History, to: '/sku-results' },
   { title: 'Rules Engine', icon: SlidersHorizontal, to: '/rules' },
   { title: 'Catalog Search', icon: Search, to: '/catalog' },
+  { title: 'Queue & DLQ', icon: Inbox, to: '/queue' },
   { title: 'Logs', icon: Terminal, to: '/logs' },
 ];
 
@@ -64,7 +66,7 @@ export default function SkuSidebar() {
               gap: '10px',
               fontSize: '13px',
               fontWeight: 500,
-              color: 'text.secondary',
+              color: 'var(--portal-sidebar-text)',
             }}
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>

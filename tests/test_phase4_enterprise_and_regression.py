@@ -695,3 +695,103 @@ def test_golden_regression(golden_rules):
 
     assert not critical, f"critical rule false positives:\n{misses}"
     assert accuracy >= GOLDEN["min_accuracy"], f"accuracy {accuracy:.1%} below threshold:\n{misses}"
+
+
+# ---------------------------------------------------------------- HTTP fallback context (Phase 5)
+
+
+def test_http_fallback_preserves_tenant_and_trace(monkeypatch):
+    """Redis unavailable -> Gateway POSTs to the Engine; tenant and trace must survive the hop."""
+    from backend.app.schemas.models import BaseRequest, SKUItem
+    from backend.app.services import engine_client
+    from engine import server as engine_server
+    from engine.pipeline import worker_runner
+
+    monkeypatch.setattr(engine_client, "get_task_queue", lambda: None)  # queue disabled
+    engine_http = TestClient(engine_server.app)
+
+    def post_to_engine(url, json=None, timeout=None):
+        return engine_http.post(url.replace(engine_client.ENGINE_URL, ""), json=json)
+
+    monkeypatch.setattr(engine_client._session, "post", post_to_engine)
+    queued = []
+    monkeypatch.setattr(
+        engine_server, "enqueue_batch_job", lambda p: queued.append(p) or {"status": "accepted"}
+    )
+
+    trace = f"fallback-{uuid.uuid4().hex[:8]}"
+    req = BaseRequest(skus=[SKUItem(name="Coca Cola 1.5L")], domain="market", callback_url="")
+    with observability.trace_context(trace):
+        engine_client.dispatch_batch_job("fb-1", req, "pipeline", tenant_id="tenant_fb")
+
+    payload = queued[0]
+    assert payload["tenant_id"] == "tenant_fb" and payload["trace_id"] == trace
+
+    # Engine legacy worker loop: same tenant snapshot + trace binding as Redis-queued jobs
+    seen = {}
+
+    def fake_execute(p):
+        seen["trace"] = observability.TRACE_ID.get()
+        seen["tenant"] = p["tenant_id"]
+
+    monkeypatch.setattr(worker_runner, "_execute_job", fake_execute)
+    worker_runner._batch_queue.put(payload)
+    worker_runner._batch_queue.put(None)  # stop sentinel
+    worker_runner._worker_loop()
+    assert seen == {"trace": trace, "tenant": "tenant_fb"}
+
+
+def test_http_fallback_defaults_when_context_missing():
+    from engine import server as engine_server
+
+    req = engine_server.BatchProcessRequest(job_id="x", skus=[{"name": "a"}])
+    assert req.tenant_id == "default" and req.trace_id == "-"
+    with observability.trace_context("-") as bound:
+        assert bound != "-" and len(bound) == 32  # placeholder gets a real trace id
+
+
+# ---------------------------------------------------------------- system status (Phase 5)
+
+
+def test_system_status_is_tenant_scoped(app_client, tenants, tenant_data, auth_on, monkeypatch):
+    from backend.app.api.endpoints import queue as queue_api
+
+    stats = {"realtime": 1, "bulk": 2, "delayed": 0, "inflight": 1, "dlq": 7}
+    dlq = [
+        {"task_id": "t1", "payload": {"tenant_id": tenants.a}},
+        {"task_id": "t2", "payload": {"tenant_id": tenants.b}},
+        {"task_id": "t3", "payload": {"tenant_id": tenants.b}},
+    ]
+    fake = SimpleNamespace(stats=lambda: stats, dlq_items=lambda limit: dlq)
+    monkeypatch.setattr(queue_api, "get_task_queue", lambda: fake)
+
+    a = app_client.get(
+        "/system/status", headers=_hdr(app_client, tenants.user["a_reviewer"])
+    ).json()
+    assert a["tenant_id"] == tenants.a
+    from engine.core.db import get_engine
+
+    with get_engine().connect() as conn:
+        expected = conn.execute(
+            text("SELECT COUNT(*) FROM processed_skus WHERE tenant_id = :t"), {"t": tenants.a}
+        ).scalar()
+    assert a["processed_skus"] == expected >= 1  # tenant A's rows only
+    assert a["dlq_size"] == 1
+    assert a["queue_depth"] is None  # cross-tenant volume is hidden from tenant users
+    assert a["rule_version"] == loader.snapshot_rules(tenants.a).version
+
+    platform = _hdr(app_client, tenants.user["platform_admin"], **{"X-Tenant-ID": tenants.b})
+    b = app_client.get("/system/status", headers=platform).json()
+    assert b["dlq_size"] == 2 and b["queue_depth"] == stats and b["queue_online"] is True
+
+
+def test_system_status_when_queue_offline(app_client, monkeypatch):
+    from backend.app.api.endpoints import queue as queue_api
+
+    def down():
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(queue_api, "get_task_queue", down)
+    body = app_client.get("/system/status").json()
+    assert body["queue_online"] is False and body["dlq_size"] is None
+    assert isinstance(body["processed_skus"], int)

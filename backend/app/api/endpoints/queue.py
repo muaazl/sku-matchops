@@ -3,8 +3,9 @@ from sqlalchemy import text
 
 from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
 from backend.app.core.db import get_engine
-from backend.app.core.security import Principal, require_admin
+from backend.app.core.security import Principal, get_principal, require_admin
 from engine.pipeline.task_queue import TaskQueue, get_task_queue
+from engine.rules_engine.loader import snapshot_rules
 
 router = APIRouter()
 
@@ -64,3 +65,34 @@ def replay_dead_letter(task_id: str, principal: Principal = Depends(require_admi
     _job_progress[job_id] = 0.0
     _job_eta.pop(job_id, None)
     return {"message": "Replay queued", "job_id": job_id, "task_id": new_task_id}
+
+
+@router.get("/system/status")
+def system_status(principal: Principal = Depends(get_principal)):
+    """Operational counters for the portal health strip, scoped to the caller's tenant.
+    Queue depths span every tenant, so only platform admins receive them."""
+    with get_engine().connect() as conn:
+        processed = conn.execute(
+            text("SELECT COUNT(*) FROM processed_skus WHERE tenant_id = :t"),
+            {"t": principal.tenant_id},
+        ).scalar()
+
+    queue_depth, dlq_size, queue_online = None, None, False
+    try:
+        queue = get_task_queue()
+        if queue is not None:
+            dlq_size = len(_tenant_items(queue, principal))
+            if principal.is_platform_admin:
+                queue_depth = queue.stats()
+            queue_online = True
+    except Exception:
+        pass  # Redis down: the strip shows the queue as offline
+
+    return {
+        "tenant_id": principal.tenant_id,
+        "processed_skus": processed,
+        "rule_version": snapshot_rules(principal.tenant_id).version,
+        "queue_online": queue_online,
+        "queue_depth": queue_depth,
+        "dlq_size": dlq_size,
+    }
