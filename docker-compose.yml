@@ -65,11 +65,14 @@ services:
       - ./data/meilisearch:/meili_data
     restart: unless-stopped
 
+  # Horizontally scalable: every replica consumes the shared Redis job queue.
+  #   docker compose up -d --scale engine=3
+  # (no container_name, so Compose can name the replicas; the override file's fixed
+  #  host port 8001 only works with a single replica.)
   engine:
     build:
       context: .
       dockerfile: Dockerfile.engine
-    container_name: sku_matchops_engine
     expose:
       - "8001"
     environment:

@@ -60,6 +60,19 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
 # Rule-cache invalidation (pub/sub + version key); optional, PostgreSQL is the fallback
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# --- Distributed job queue (Redis) ---
+# Off -> legacy HTTP dispatch to a single engine. On but Redis unreachable -> same fallback.
+TASK_QUEUE_ENABLED = os.getenv("TASK_QUEUE_ENABLED", "true").lower() == "true"
+# Batches with at most this many SKUs go to the realtime tier, larger ones to bulk
+TASK_REALTIME_MAX_SKUS = int(os.getenv("TASK_REALTIME_MAX_SKUS", "50"))
+# Total attempts per task (first run included) before it moves to the dead-letter queue
+TASK_MAX_RETRIES = int(os.getenv("TASK_MAX_RETRIES", "3"))
+# Retry delay after attempt n is BACKOFF * 2**(n-1) seconds
+TASK_RETRY_BACKOFF_SECONDS = float(os.getenv("TASK_RETRY_BACKOFF_SECONDS", "5"))
+# A worker must renew its lease within this window or the task is reclaimed
+TASK_LEASE_SECONDS = float(os.getenv("TASK_LEASE_SECONDS", "120"))
+TASK_POLL_INTERVAL = float(os.getenv("TASK_POLL_INTERVAL", "0.5"))
 MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY", "meilimasterkey")
 
 # --- Qdrant Vector DB Settings ---

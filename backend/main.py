@@ -18,6 +18,7 @@ from backend.app.middleware.etag import ETagMiddleware
 from backend.app.services.meilisearch_service import check_and_sync_meilisearch
 from engine import config
 from engine.core.db import init_db
+from engine.pipeline.task_queue import get_task_queue
 from engine.rules_engine import refresh_rules_cache
 
 # Configure logging with standard stream and file handlers
@@ -91,6 +92,14 @@ def startup_event():
     # sit stuck in that state forever with no progress updates ever arriving again. Flip them
     # to 'failed' with a clear message so they show up as actionable — the existing "Retry"
     # button re-submits them from their stored input SKUs.
+    # Jobs still held by the Redis queue survive restarts and must not be failed here.
+    try:
+        queue = get_task_queue()
+        live_job_ids = list(queue.tracked_job_ids()) if queue is not None else []
+    except Exception as e:
+        logger.warning(f"Redis queue unreachable at startup ({e}); treating no jobs as queued.")
+        live_job_ids = []
+
     try:
         with get_engine().begin() as conn:
             cur = conn.execute(
@@ -100,15 +109,17 @@ def startup_event():
                     current_stage = 'failed',
                     error_message = 'Interrupted by a service restart. Use Retry to resubmit.',
                     completed_at = now()
-                WHERE status IN ('queued', 'running')
-                """)
+                WHERE status IN ('queued', 'running') AND NOT (id = ANY(:live))
+                """),
+                {"live": live_job_ids},
             )
             stuck_count = cur.rowcount
             conn.execute(
                 text("""
                 UPDATE batches SET status = 'failed', completed_at = now()
-                WHERE status IN ('queued', 'running')
-                """)
+                WHERE status IN ('queued', 'running') AND NOT (id = ANY(:live))
+                """),
+                {"live": live_job_ids},
             )
         if stuck_count:
             logger.warning(

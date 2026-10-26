@@ -13,6 +13,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from backend.app.schemas.models import BaseRequest
+from engine.pipeline.task_queue import get_task_queue
 
 logger = logging.getLogger("matchops.engine_client")
 
@@ -115,6 +116,35 @@ def refresh_engine_rules() -> dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+def _enqueue_or_post(job_id: str, payload: dict[str, Any], label: str) -> dict[str, Any]:
+    """Puts the job on the Redis queue (any engine worker can take it). Falls back to a direct
+    HTTP POST to ENGINE_URL when the queue is disabled or Redis is unreachable."""
+    try:
+        queue = get_task_queue()
+        if queue is not None:
+            task_id = queue.enqueue(payload)
+            return {"status": "queued", "job_id": str(job_id), "task_id": task_id}
+    except Exception as e:
+        logger.warning(f"Redis queue unavailable ({e}); dispatching {label} {job_id} over HTTP.")
+
+    try:
+        logger.info(
+            f"Dispatching {label} {job_id} ({len(payload['skus'])} SKUs) to Engine at {ENGINE_URL}/engine/process-batch"
+        )
+        resp = _session.post(f"{ENGINE_URL}/engine/process-batch", json=payload, timeout=10.0)
+        if resp.status_code in (200, 202):
+            return resp.json()
+        error_msg = (
+            f"ML Engine rejected {label} {job_id} with status {resp.status_code}: {resp.text}"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    except requests.RequestException as re:
+        error_msg = f"Failed to connect to ML Engine at {ENGINE_URL}: {re}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
 def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> dict[str, Any]:
     """
     Dispatches a batch job to the dedicated ML Engine microservice for async execution.
@@ -139,21 +169,7 @@ def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> dict[str
         "sheet_name": request.sheet_name,
         "spreadsheet_id": request.spreadsheet_id,
     }
-
-    try:
-        logger.info(
-            f"Dispatching job {job_id} ({len(skus_payload)} SKUs) to Engine at {ENGINE_URL}/engine/process-batch"
-        )
-        resp = _session.post(f"{ENGINE_URL}/engine/process-batch", json=payload, timeout=10.0)
-        if resp.status_code in (200, 202):
-            return resp.json()
-        error_msg = f"ML Engine rejected job {job_id} with status {resp.status_code}: {resp.text}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-    except requests.RequestException as re:
-        error_msg = f"Failed to connect to ML Engine at {ENGINE_URL}: {re}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
+    return _enqueue_or_post(job_id, payload, "job")
 
 
 def dispatch_upload_job(job_id: str, request: Any, task: str) -> dict[str, Any]:
@@ -197,23 +213,7 @@ def dispatch_upload_job(job_id: str, request: Any, task: str) -> dict[str, Any]:
         "callback_url": None,
         "spreadsheet_id": None,
     }
-
-    try:
-        logger.info(
-            f"Dispatching upload job {job_id} ({len(request.skus)} SKUs) to Engine at {ENGINE_URL}/engine/process-batch"
-        )
-        resp = _session.post(f"{ENGINE_URL}/engine/process-batch", json=payload, timeout=10.0)
-        if resp.status_code in (200, 202):
-            return resp.json()
-        error_msg = (
-            f"ML Engine rejected upload job {job_id} with status {resp.status_code}: {resp.text}"
-        )
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-    except requests.RequestException as re:
-        error_msg = f"Failed to connect to ML Engine at {ENGINE_URL}: {re}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
+    return _enqueue_or_post(job_id, payload, "upload job")
 
 
 def run_single(
@@ -269,7 +269,14 @@ def suggest_tags(
 
 
 def cancel_engine_job(job_id: str) -> bool:
-    """Notifies the ML Engine to abort processing for the given job."""
+    """Notifies the ML Engine to abort processing for the given job. The Redis flag reaches
+    whichever worker holds the job; the HTTP call covers legacy (in-memory) jobs."""
+    try:
+        queue = get_task_queue()
+        if queue is not None:
+            queue.request_cancel(str(job_id))
+    except Exception as e:
+        logger.warning(f"Could not set Redis cancellation flag for job {job_id}: {e}")
     try:
         resp = _session.post(f"{ENGINE_URL}/engine/jobs/{job_id}/cancel", timeout=5.0)
         return resp.status_code == 200

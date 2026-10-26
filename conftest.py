@@ -2,6 +2,7 @@
 Points every test at a dedicated PostgreSQL database (never the app's DATABASE_URL).
 
     TEST_DATABASE_URL=postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test
+    TEST_REDIS_URL=redis://localhost:6379/15
 
 The database is created if missing and migrated with Alembic once per session. Tests that
 need it use the `pg` fixture and are skipped when no PostgreSQL server is reachable.
@@ -19,6 +20,8 @@ TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL", "postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test"
 )
 config.DATABASE_URL = TEST_DATABASE_URL
+# Isolated Redis DB so tests never enqueue into (or read) the app's real queues
+config.REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
 
 _pg_error: str | None = None
 

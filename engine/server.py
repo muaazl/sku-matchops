@@ -26,7 +26,7 @@ from engine.core.resource_loader import (
 from engine.data_pipeline.vector_store import VectorStore
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
-from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job
+from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job, start_queue_worker
 from engine.rules_engine import clear_flavor_cache, refresh_rules_cache
 from engine.rules_engine.loader import start_invalidation_listener
 from engine.templates.template_suggest import suggest_tags_from_template
@@ -60,6 +60,7 @@ app.add_middleware(
 
 _model_load_lock = threading.Lock()
 _loading_in_progress = False
+_queue_worker: threading.Thread | None = None
 
 
 # --- Request Schemas ---
@@ -111,7 +112,7 @@ class VectorSearchRequest(BaseModel):
 
 
 def _bg_load_models():
-    global _loading_in_progress
+    global _loading_in_progress, _queue_worker
     logger.info("[ENGINE] Background model loading and warmup started...")
     try:
         for d in _model_statuses:
@@ -142,6 +143,9 @@ def _bg_load_models():
             list(executor.map(_init_domain, [config.DOMAIN_MARKET, config.DOMAIN_FOOD]))
 
         logger.info("[ENGINE] All ML models loaded and cached successfully.")
+        # Only take queued jobs once models are ready; until then other workers can serve them
+        if _queue_worker is None or not _queue_worker.is_alive():
+            _queue_worker = start_queue_worker()
     except Exception as e:
         logger.error(f"[ENGINE] Background model loading failed: {e}")
         reset_statuses()

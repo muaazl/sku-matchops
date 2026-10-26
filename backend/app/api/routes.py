@@ -13,6 +13,7 @@ from backend.app.api.endpoints.interactive import router as interactive_router
 from backend.app.api.endpoints.jobs import router as jobs_router
 from backend.app.api.endpoints.models import router as models_router
 from backend.app.api.endpoints.qdrant_proxy import router as qdrant_proxy_router
+from backend.app.api.endpoints.queue import router as queue_router
 from backend.app.api.endpoints.requests_log import router as requests_log_router
 from backend.app.api.endpoints.rules_api import router as rules_router
 from backend.app.api.endpoints.upload import router as upload_router
@@ -39,6 +40,7 @@ api_router.include_router(rules_router, tags=["rules_engine"])
 api_router.include_router(catalog_router, tags=["catalog"])
 api_router.include_router(models_router, tags=["models"])
 api_router.include_router(upload_router, tags=["upload"])
+api_router.include_router(queue_router, tags=["queue"])
 api_router.include_router(engine_callbacks_router)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)

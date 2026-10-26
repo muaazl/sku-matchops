@@ -19,46 +19,47 @@ SEAFOOD_CONDITIONS = [
 ]
 
 
-@pytest.mark.usefixtures("pg")
+@pytest.fixture(scope="class")
+def seafood_rule(pg):
+    """Seeds the food-domain Seafood rule these parity tests rely on, then removes it."""
+
+    def _delete(conn):
+        conn.execute(text("DELETE FROM rules WHERE rule_id = :r"), {"r": SEAFOOD_RULE_ID})
+
+    with pg.begin() as conn:
+        _delete(conn)
+        conn.execute(
+            text(
+                "INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic) "
+                "VALUES (:r, 'food', 1, 'Seafood GK', 'Seafood dishes get the Seafood GK', 'AND')"
+            ),
+            {"r": SEAFOOD_RULE_ID},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO conditions (rule_id, condition_group, condition_type, value, negate) "
+                "VALUES (:r, :g, :t, :v, :n)"
+            ),
+            [
+                {"r": SEAFOOD_RULE_ID, "g": g, "t": t, "v": v, "n": n}
+                for g, t, v, n in SEAFOOD_CONDITIONS
+            ],
+        )
+        conn.execute(
+            text(
+                "INSERT INTO actions (rule_id, action_type, value) VALUES (:r, 'add_gk', 'Seafood')"
+            ),
+            {"r": SEAFOOD_RULE_ID},
+        )
+    refresh_rules_cache()
+    yield
+    with pg.begin() as conn:
+        _delete(conn)  # conditions/actions cascade
+    refresh_rules_cache()
+
+
+@pytest.mark.usefixtures("pg", "seafood_rule")
 class TestAuditAlignment:
-    @pytest.fixture(scope="class", autouse=True)
-    def seafood_rule(self, pg):
-        """Seeds the food-domain Seafood rule these parity tests rely on, then removes it."""
-
-        def _delete(conn):
-            conn.execute(text("DELETE FROM rules WHERE rule_id = :r"), {"r": SEAFOOD_RULE_ID})
-
-        with pg.begin() as conn:
-            _delete(conn)
-            conn.execute(
-                text(
-                    "INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic) "
-                    "VALUES (:r, 'food', 1, 'Seafood GK', 'Seafood dishes get the Seafood GK', 'AND')"
-                ),
-                {"r": SEAFOOD_RULE_ID},
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO conditions (rule_id, condition_group, condition_type, value, negate) "
-                    "VALUES (:r, :g, :t, :v, :n)"
-                ),
-                [
-                    {"r": SEAFOOD_RULE_ID, "g": g, "t": t, "v": v, "n": n}
-                    for g, t, v, n in SEAFOOD_CONDITIONS
-                ],
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO actions (rule_id, action_type, value) VALUES (:r, 'add_gk', 'Seafood')"
-                ),
-                {"r": SEAFOOD_RULE_ID},
-            )
-        refresh_rules_cache()
-        yield
-        with pg.begin() as conn:
-            _delete(conn)  # conditions/actions cascade
-        refresh_rules_cache()
-
     @classmethod
     def setup_class(cls):
         # Warm up models for food domain
