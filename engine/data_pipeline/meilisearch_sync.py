@@ -159,8 +159,26 @@ def sync_dictionaries_to_meili(domain: str, clear_existing: bool = True):
 
     from engine.core.db import get_connection
 
-    conn = get_connection()
     params = {"domain": domain}
+    with get_connection() as conn:
+        dict_rows = conn.execute(
+            text(
+                "SELECT id, tag_type, tag, catalog_count FROM classifier_dictionaries WHERE domain = :domain"
+            ),
+            params,
+        ).fetchall()
+        brand_rows = conn.execute(
+            text(
+                "SELECT id, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, catalog_count FROM brand_flavors WHERE domain = :domain"
+            ),
+            params,
+        ).fetchall()
+        map_rows = conn.execute(
+            text(
+                "SELECT id, basictype, generic_keywords, gk_count, catalog_count FROM bt_gk_map WHERE domain = :domain"
+            ),
+            params,
+        ).fetchall()
 
     dict_index_name = (
         config.MEILI_INDEX_MARKET_DICTS
@@ -183,12 +201,7 @@ def sync_dictionaries_to_meili(domain: str, clear_existing: bool = True):
     documents = []
 
     # 1. Tags from classifier_dictionaries (gk, bt, category/region)
-    for row_id, tag_type, tag, count in conn.execute(
-        text(
-            "SELECT id, tag_type, tag, catalog_count FROM classifier_dictionaries WHERE domain = :domain"
-        ),
-        params,
-    ).fetchall():
+    for row_id, tag_type, tag, count in dict_rows:
         dataset_name = "category" if tag_type in ("category", "region") else tag_type
         documents.append(
             {
@@ -210,12 +223,6 @@ def sync_dictionaries_to_meili(domain: str, clear_existing: bool = True):
         )
 
     # 2. Brands/Flavors from brand_flavors
-    brand_rows = conn.execute(
-        text(
-            "SELECT id, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, catalog_count FROM brand_flavors WHERE domain = :domain"
-        ),
-        params,
-    ).fetchall()
     for (
         row_id,
         name,
@@ -248,12 +255,7 @@ def sync_dictionaries_to_meili(domain: str, clear_existing: bool = True):
         )
 
     # 3. BT-GK Map from bt_gk_map
-    for row_id, basictype, gks, gk_count, count in conn.execute(
-        text(
-            "SELECT id, basictype, generic_keywords, gk_count, catalog_count FROM bt_gk_map WHERE domain = :domain"
-        ),
-        params,
-    ).fetchall():
+    for row_id, basictype, gks, gk_count, count in map_rows:
         documents.append(
             {
                 "id": f"{domain}_map_{row_id}",
@@ -272,8 +274,6 @@ def sync_dictionaries_to_meili(domain: str, clear_existing: bool = True):
                 "is_seafood": False,
             }
         )
-
-    conn.close()
 
     total_docs = len(documents)
     logger.info(f"[MEILI] Syncing {total_docs} dictionary items to '{dict_index_name}'...")

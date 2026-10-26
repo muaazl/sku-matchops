@@ -601,7 +601,15 @@ class ZeroShotClassifier:
         if self.bt_model == "arcface" and getattr(self, "_arcface_session", None) is not None:
             scaled_p = self._preprocess_arcface_prices(prices)
             vecs_with_price = np.hstack([vecs, scaled_p]).astype(np.float32)
-            logits = self._arcface_session.run(None, {self._arcface_input_name: vecs_with_price})[0]
+            bs = config.ONNX_BATCH_SIZE
+            logits = np.concatenate(
+                [
+                    self._arcface_session.run(
+                        None, {self._arcface_input_name: vecs_with_price[i : i + bs]}
+                    )[0]
+                    for i in range(0, n, bs)
+                ]
+            )
             exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
             probas = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
             bests = np.argmax(probas, axis=1)

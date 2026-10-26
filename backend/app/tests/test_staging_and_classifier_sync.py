@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import joblib
 import numpy as np
 import pandas as pd
+import pytest
 
 from engine import config
 from engine.classification.classifier import ZeroShotClassifier
@@ -141,6 +142,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         self.assertTrue(len(hashes["market_training_state"]) > 0)
         self.assertTrue(clf._trained)
 
+    @pytest.mark.usefixtures("pg")  # sync_cache writes NLP metadata back to catalog_items
     @patch("scripts.catalog.sync.DataIngestion.load_catalog")
     @patch("scripts.catalog.sync.DataIngestion.load_classifier_dictionaries")
     def test_rebuild_disk_caches_safe_token_count(self, mock_load_dicts, mock_load_cat):

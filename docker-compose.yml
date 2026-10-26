@@ -36,12 +36,18 @@ services:
         condition: service_healthy
     restart: "no"
 
+  redis:
+    image: redis:7-alpine
+    container_name: sku_matchops_redis
+    expose:
+      - "6379"
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: sku_matchops_qdrant
     expose:
       - "6333"
-      - "6334"
     volumes:
       - ./data/qdrant:/qdrant/storage:z
     restart: unless-stopped
@@ -74,6 +80,7 @@ services:
       - ENGINE_PORT=8001
       - USE_INT8_MODELS=true
       - TZ=Asia/Colombo
+      - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
     env_file:
       - .env
@@ -86,6 +93,8 @@ services:
       qdrant:
         condition: service_started
       meilisearch:
+        condition: service_started
+      redis:
         condition: service_started
       migrate:
         condition: service_completed_successfully
@@ -104,6 +113,7 @@ services:
       - ENGINE_URL=http://engine:8001
       - BACKEND_INTERNAL_URL=http://backend:8000
       - TZ=Asia/Colombo
+      - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
     env_file:
       - .env
@@ -117,6 +127,8 @@ services:
       meilisearch:
         condition: service_started
       engine:
+        condition: service_started
+      redis:
         condition: service_started
       migrate:
         condition: service_completed_successfully

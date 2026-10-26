@@ -25,7 +25,11 @@ _pg_error: str | None = None
 
 def _create_database_if_missing(url_str: str) -> None:
     url = make_url(url_str)
-    admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    admin = create_engine(
+        url.set(database="postgres"),
+        isolation_level="AUTOCOMMIT",
+        connect_args={"connect_timeout": 5},
+    )
     try:
         with admin.connect() as conn:
             exists = conn.execute(

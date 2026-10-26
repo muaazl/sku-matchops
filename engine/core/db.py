@@ -27,7 +27,7 @@ def get_engine() -> Engine:
             max_overflow=config.DB_MAX_OVERFLOW,
             pool_pre_ping=True,
             # Keep now()/CURRENT_TIMESTAMP and naive timestamp params in UTC.
-            connect_args={"options": "-c timezone=utc"},
+            connect_args={"options": "-c timezone=utc", "connect_timeout": 5},
         )
     return _engine
 

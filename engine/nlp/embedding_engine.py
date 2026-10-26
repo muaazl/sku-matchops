@@ -162,7 +162,7 @@ class EmbeddingEngine:
             logger.info("[EMBED] Cross-Encoder (ONNX) warmed up.")
 
     def encode(
-        self, texts: list[str], batch_size: int = config.EMBED_BATCH_SIZE
+        self, texts: list[str], batch_size: int = config.ONNX_BATCH_SIZE
     ) -> dict[str, np.ndarray | list[dict]]:
         """
         Generates hybrid embeddings for a list of texts using the hybrid ONNX model or PyTorch fallback.
@@ -255,7 +255,9 @@ class EmbeddingEngine:
         """Encodes a single query string."""
         return self.encode([text], batch_size=1)
 
-    def score_cross_encoder(self, pairs: list[list[str]], batch_size: int = 32) -> np.ndarray:
+    def score_cross_encoder(
+        self, pairs: list[list[str]], batch_size: int = config.ONNX_BATCH_SIZE
+    ) -> np.ndarray:
         """Scores candidate pairs using the Cross-Encoder reranker (ONNX) in batches."""
         if not pairs:
             return np.array([], dtype=np.float32)
@@ -483,7 +485,7 @@ class EmbeddingEngine:
                 f"({len(keywords) - len(missing_keywords)} cached)."
             )
             all_dense, all_sparse = [], []
-            batch_size = config.EMBED_BATCH_SIZE
+            batch_size = config.ONNX_BATCH_SIZE
             batches = [
                 missing_keywords[i : i + batch_size]
                 for i in range(0, len(missing_keywords), batch_size)

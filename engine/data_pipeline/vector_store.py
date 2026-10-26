@@ -451,7 +451,7 @@ class VectorStore:
             )
 
         results = []
-        batch_size = 100
+        batch_size = config.QDRANT_BATCH_CHUNK_SIZE
         try:
             for i in range(0, len(requests), batch_size):
                 chunk = requests[i : i + batch_size]

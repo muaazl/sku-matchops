@@ -121,12 +121,12 @@ def fetch_catalog_few_shots(
 
     from engine.core.db import get_connection
 
-    conn = get_connection()
     examples = []
-
-    for cat in categories:
-        # One random example per basictype, then a random sample of those
-        query = """
+    rows_by_cat = {}
+    with get_connection() as conn:
+        for cat in categories:
+            # One random example per basictype, then a random sample of those
+            query = """
         SELECT name, generic_keywords FROM (
             SELECT DISTINCT ON (basictype) name, generic_keywords
             FROM catalog_items
@@ -141,9 +141,12 @@ def fetch_catalog_few_shots(
         ORDER BY RANDOM()
         LIMIT :limit
         """
-        for name, gks_raw in conn.execute(
-            text(query), {"cat": cat, "limit": limit_per_cat}
-        ).fetchall():
+            rows_by_cat[cat] = conn.execute(
+                text(query), {"cat": cat, "limit": limit_per_cat}
+            ).fetchall()
+
+    for cat in categories:
+        for name, gks_raw in rows_by_cat[cat]:
             # Parse generic keywords (comma-separated or JSON)
             if gks_raw.startswith("["):
                 try:
@@ -164,7 +167,6 @@ def fetch_catalog_few_shots(
             if cleaned_gks:
                 examples.append((name, cleaned_gks))
 
-    conn.close()
     logger.info(
         f"Mined {len(examples)} high-quality catalog few-shot examples across categories: {categories}."
     )

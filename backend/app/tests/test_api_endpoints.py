@@ -1,7 +1,10 @@
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.api.routes import api_router
+
+pytestmark = pytest.mark.usefixtures("pg")
 
 api_app = FastAPI()
 api_app.include_router(api_router)

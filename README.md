@@ -78,7 +78,7 @@ docker compose up -d
 ```
 
 > [!NOTE]
-> **Development vs. hardened networking.** `docker compose up` also loads `docker-compose.override.yml`, which publishes internal service ports (Qdrant `6333/6334`, Meilisearch `7700`, engine `8001`) to the host for local debugging. For a hardened deployment, skip the override so only the backend (`8000`) and frontend (`5173`) are exposed:
+> **Development vs. hardened networking.** `docker compose up` also loads `docker-compose.override.yml`, which publishes internal service ports (Qdrant `6333`, Meilisearch `7700`, engine `8001`) to the host for local debugging. For a hardened deployment, skip the override so only the backend (`8000`) and frontend (`5173`) are exposed:
 >
 > ```bash
 > docker compose -f docker-compose.yml up -d

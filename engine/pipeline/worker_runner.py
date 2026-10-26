@@ -18,7 +18,7 @@ from engine.core.db import log_outbound_request
 from engine.pipeline.persistence import record_job_completion, record_job_failure
 from engine.pipeline.processor import process_request
 from engine.pipeline.uploader import process_upload
-from engine.rules_engine.loader import get_rules_version
+from engine.rules_engine.loader import pinned_rules, snapshot_rules, sync_rules_version
 
 logger = logging.getLogger("matchops.engine.worker")
 
@@ -139,7 +139,11 @@ def _worker_loop():
                 logger.debug(f"Failed to post progress to backend: {e}")
 
         try:
-            rule_version = get_rules_version()
+            sync_rules_version()
+            # Pin one (rules, rule_version) pair for every chunk of this job: a reload mid-job
+            # must not change which rules evaluate it or the version its results are saved under
+            rule_snapshot = snapshot_rules()
+            rule_version = rule_snapshot.version
             # Execute processing
             if task.lower() == "upload":
                 result_payload = process_upload(
@@ -151,14 +155,15 @@ def _worker_loop():
                     has_more_jobs=not _batch_queue.empty(),
                 )
             else:
-                result_payload = process_request(
-                    skus=skus,
-                    task=task,
-                    domain=domain,
-                    job_id=job_id,
-                    progress_callback=send_progress_update,
-                    is_cancelled=lambda jid=job_id: is_job_cancelled(jid),
-                )
+                with pinned_rules(rule_snapshot):
+                    result_payload = process_request(
+                        skus=skus,
+                        task=task,
+                        domain=domain,
+                        job_id=job_id,
+                        progress_callback=send_progress_update,
+                        is_cancelled=lambda jid=job_id: is_job_cancelled(jid),
+                    )
 
             if is_job_cancelled(job_id):
                 logger.info(

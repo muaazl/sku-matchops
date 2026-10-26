@@ -1,10 +1,64 @@
+import pytest
+from sqlalchemy import text
+
 from engine.classification.loader import is_conflicting_dish_tag
 from engine.core.resource_loader import get_classifier, get_ner_engine, get_pipeline
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
+from engine.rules_engine import refresh_rules_cache
+
+SEAFOOD_RULE_ID = "test_audit_seafood"
+
+# Production "Rule 1": seafood dishes get the 'Seafood' GK unless they are short eats,
+# already say "Seafood", or also contain land meat.
+SEAFOOD_CONDITIONS = [
+    (1, "flavor_is", "seafood", 0),
+    (2, "gk_contains", "Short Eats", 1),
+    (3, "sku_contains", "Seafood", 1),
+    (4, "flavor_is", "meat", 1),
+]
 
 
+@pytest.mark.usefixtures("pg")
 class TestAuditAlignment:
+    @pytest.fixture(scope="class", autouse=True)
+    def seafood_rule(self, pg):
+        """Seeds the food-domain Seafood rule these parity tests rely on, then removes it."""
+
+        def _delete(conn):
+            conn.execute(text("DELETE FROM rules WHERE rule_id = :r"), {"r": SEAFOOD_RULE_ID})
+
+        with pg.begin() as conn:
+            _delete(conn)
+            conn.execute(
+                text(
+                    "INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic) "
+                    "VALUES (:r, 'food', 1, 'Seafood GK', 'Seafood dishes get the Seafood GK', 'AND')"
+                ),
+                {"r": SEAFOOD_RULE_ID},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO conditions (rule_id, condition_group, condition_type, value, negate) "
+                    "VALUES (:r, :g, :t, :v, :n)"
+                ),
+                [
+                    {"r": SEAFOOD_RULE_ID, "g": g, "t": t, "v": v, "n": n}
+                    for g, t, v, n in SEAFOOD_CONDITIONS
+                ],
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO actions (rule_id, action_type, value) VALUES (:r, 'add_gk', 'Seafood')"
+                ),
+                {"r": SEAFOOD_RULE_ID},
+            )
+        refresh_rules_cache()
+        yield
+        with pg.begin() as conn:
+            _delete(conn)  # conditions/actions cascade
+        refresh_rules_cache()
+
     @classmethod
     def setup_class(cls):
         # Warm up models for food domain

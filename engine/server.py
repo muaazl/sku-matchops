@@ -28,6 +28,7 @@ from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
 from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job
 from engine.rules_engine import clear_flavor_cache, refresh_rules_cache
+from engine.rules_engine.loader import start_invalidation_listener
 from engine.templates.template_suggest import suggest_tags_from_template
 
 # Configure logging
@@ -127,6 +128,7 @@ def _bg_load_models():
 
     try:
         refresh_rules_cache()
+        start_invalidation_listener()
         clear_flavor_cache()
 
         def _init_domain(d):
@@ -299,7 +301,7 @@ def reload_models(background_tasks: BackgroundTasks):
 
 @app.post("/engine/refresh-rules")
 def refresh_rules():
-    """Reloads the rules-engine cache from SQLite in this process, without touching ML models.
+    """Reloads the rules-engine cache from PostgreSQL in this process, without touching ML models.
 
     Called by the backend after any rules CRUD operation so live matching/classification
     jobs pick up rule changes immediately, instead of only after a full model reload/restart.

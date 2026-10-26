@@ -16,8 +16,8 @@ from engine.pipeline.processor import process_request
 from scripts.database.migrate import migrate
 
 
+@pytest.mark.usefixtures("pg")
 class TestDefectFixes:
-    @pytest.mark.usefixtures("pg")
     def test_database_migration_normalizes_legacy_scores(self, tmp_path):
         """Verify the SQLite -> PostgreSQL copy migrates legacy confidence/match_score > 1.0 down by /100."""
         db_file = str(tmp_path / "test_migration.db")

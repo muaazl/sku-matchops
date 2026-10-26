@@ -5,14 +5,14 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.schemas.models import RuleModel
 from backend.app.services.engine_client import refresh_engine_rules
-from engine.rules_engine import refresh_rules_cache
+from engine.rules_engine.loader import publish_rules_invalidation
 
 
 def _refresh_rules_everywhere() -> None:
-    """Refreshes the rules cache in this (backend) process and notifies the live engine
-    process to do the same, so rule changes take effect immediately for real jobs."""
-    refresh_rules_cache()
-    refresh_engine_rules()
+    """Reloads this process's rules, bumps matchops:rules:version and broadcasts the change to
+    every engine worker over Redis. If Redis is down, falls back to the direct HTTP refresh."""
+    if not publish_rules_invalidation():
+        refresh_engine_rules()
 
 
 def _rule_fields(rule: RuleModel) -> dict[str, Any]:

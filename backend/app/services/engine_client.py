@@ -103,7 +103,8 @@ def reload_engine_models() -> dict[str, Any]:
 
 
 def refresh_engine_rules() -> dict[str, Any]:
-    """Tells the ML Engine to reload its rules-engine cache from SQLite (no model reload)."""
+    """Tells the ML Engine to reload its rules-engine cache from PostgreSQL (no model reload).
+    Fallback for when Redis pub/sub invalidation is unavailable."""
     try:
         resp = _session.post(f"{ENGINE_URL}/engine/refresh-rules", timeout=5.0)
         if resp.status_code == 200:

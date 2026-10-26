@@ -278,7 +278,7 @@ class NEREngine:
     # ─────────────────────────────────────────────────────────────
 
     def batch_extract_entities(
-        self, texts: list[str], batch_size: int = config.EMBED_BATCH_SIZE
+        self, texts: list[str], batch_size: int = config.ONNX_BATCH_SIZE
     ) -> list[dict[str, set[str]]]:
         """Batch extraction: dict first, NER only for texts where dict found nothing."""
         if not texts:

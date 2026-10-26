@@ -58,6 +58,8 @@ DB_BULK_CHUNK_SIZE = int(os.getenv("DB_BULK_CHUNK_SIZE", "1000"))
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
+# Rule-cache invalidation (pub/sub + version key); optional, PostgreSQL is the fallback
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY", "meilimasterkey")
 
 # --- Qdrant Vector DB Settings ---
@@ -66,7 +68,8 @@ QDRANT_HNSW_EF_CONSTRUCT = 100
 QDRANT_INDEXING_THRESHOLD = 10000
 QDRANT_MEMMAP_THRESHOLD = 5000
 QDRANT_TIMEOUT = 60.0
-QDRANT_BATCH_CHUNK_SIZE = 100
+# Max requests per Qdrant query_batch_points call
+QDRANT_BATCH_CHUNK_SIZE = int(os.getenv("QDRANT_BATCH_CHUNK_SIZE", "100"))
 
 # --- Domain & Collection Identifiers ---
 DOMAIN_MARKET = "market"
@@ -169,7 +172,8 @@ NER_CONFIDENCE_THRESHOLD = 0.25
 # --- Matching Parameters & Gates ---
 TOP_K_RETRIEVAL = 30
 BGE_M3_DENSE_DIM = 1024
-EMBED_BATCH_SIZE = 32
+# Max rows per ONNX session.run() (bi-encoder, cross-encoder, NER, ArcFace) to bound RAM
+ONNX_BATCH_SIZE = int(os.getenv("ONNX_BATCH_SIZE", "32"))
 UPSERT_BATCH_SIZE = 256
 MATCH_CHUNK_SIZE = 250
 CLASSIFY_CHUNK_SIZE = 250

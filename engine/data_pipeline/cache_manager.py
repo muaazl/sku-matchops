@@ -313,7 +313,7 @@ class CacheManager:
                         TextPipeline.prep_for_ner(str(t)) for t in changed_df["Name"].tolist()
                     ]
                     ner_results = self.ner.batch_extract_entities(
-                        texts_for_ner, batch_size=config.EMBED_BATCH_SIZE
+                        texts_for_ner, batch_size=config.ONNX_BATCH_SIZE
                     )
                     for i in range(len(entities_list)):
                         if entities_list[i] is None:
@@ -323,7 +323,7 @@ class CacheManager:
                     TextPipeline.prep_for_ner(str(t)) for t in changed_df["Name"].tolist()
                 ]
                 entities_list = self.ner.batch_extract_entities(
-                    texts_for_ner, batch_size=config.EMBED_BATCH_SIZE
+                    texts_for_ner, batch_size=config.ONNX_BATCH_SIZE
                 )
 
             changed_df["entities"] = entities_list
