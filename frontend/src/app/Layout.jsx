@@ -5,8 +5,6 @@ import { Outlet, useLocation, Link } from 'react-router-dom';
 import ColorModeToggle from '../components/Common/ColorModeToggle';
 import AccessibilityToggle from '../components/Common/AccessibilityToggle';
 import SkuSidebar from './SkuSidebar';
-import AuthBar from './components/AuthBar';
-import SystemHealthStrip from './components/SystemHealthStrip';
 import { DrawerHeader } from '../components/Sidebar/SidebarStyled';
 import { Logo } from '../components/Logo';
 import { IconModal } from './components/ui';
@@ -109,11 +107,10 @@ export default function Layout() {
       <AppBar
         position="fixed"
         sx={{
-          zIndex: (t) => t.zIndex.drawer + 1,
-          background: theme.palette.mode === 'light' ? 'var(--portal-topbar-bg)' : theme.palette.background.paper,
+          zIndex: (t) => t.zIndex.drawer,
+          background: theme.palette.background.paper,
           boxShadow: 'none',
-          borderBottom:
-            theme.palette.mode === 'light' ? '1px solid var(--portal-topbar-border)' : `1px solid ${theme.palette.divider}`,
+          borderBottom: `1px solid ${theme.palette.divider}`,
         }}
       >
         <Toolbar>
@@ -148,7 +145,6 @@ export default function Layout() {
             )}
           </Box>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <AuthBar />
             {isLoading ? (
               <Button
                 variant="contained"
@@ -212,7 +208,6 @@ export default function Layout() {
       <SkuSidebar />
       <Box component="main" sx={{ flexGrow: 1, minWidth: 0, overflowX: 'clip' }}>
         <DrawerHeader />
-        <SystemHealthStrip />
         <Outlet />
       </Box>
 

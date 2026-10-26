@@ -52,6 +52,10 @@ const emptyRule = (currentRules = []) => {
   };
 };
 
+// Stable fallback: a fresh [] per render would re-trigger the localRules sync effect forever
+// while the rules query is loading (an infinite render loop).
+const NO_RULES = [];
+
 export default function RulesEngine() {
   const { enqueueSnackbar } = useSnackbar();
   const queryClient = useQueryClient();
@@ -70,7 +74,7 @@ export default function RulesEngine() {
     setPage(0);
   }, [domain]);
 
-  const { data: serverRules = [], isLoading } = useQuery({
+  const { data: serverRules = NO_RULES, isLoading } = useQuery({
     queryKey: ['rules', domain],
     queryFn: () => getRules({ ...(domain !== 'all' && { domain }) }),
   });
@@ -268,7 +272,9 @@ export default function RulesEngine() {
         subtitle="Domain-scoped rules. Edit conditions/actions and test against a sample."
         actions={
           <>
-            {!canEditRules && role && <StatusChip status={`Read-only · ${role.replace('_', ' ')}`} tone="warn" />}
+            {!canEditRules && role && (
+              <Chip size="small" color="warning" variant="outlined" label={`Read-only · ${role.replace('_', ' ')}`} />
+            )}
             <Tooltip title={lockedHint}>
               <span>
                 <Button

@@ -4,14 +4,9 @@ import { Link } from 'react-router-dom';
 import React from 'react';
 import PropTypes from 'prop-types';
 
-// Sizing, sticky header and colors come from the portal tokens via the MUI theme (src/theme)
 export const StyledTableContainer = styled(TableContainer)(({ theme }) => ({
-  borderRadius: 'var(--portal-radius)',
-  border:
-    theme.palette.mode === 'light'
-      ? '1px solid var(--portal-border)'
-      : `1px solid ${alpha(theme.palette.divider, 0.12)}`,
-  backgroundColor: theme.palette.mode === 'light' ? 'var(--portal-surface)' : undefined,
+  borderRadius: '0.5rem',
+  border: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
 }));
 
 export const StyledTableHead = styled(TableHead)(({ theme }) => ({
@@ -19,7 +14,14 @@ export const StyledTableHead = styled(TableHead)(({ theme }) => ({
   borderBottom: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
 }));
 
-export const StyledHeaderCell = styled(TableCell)(() => ({
+export const StyledHeaderCell = styled(TableCell)(({ theme }) => ({
+  padding: '1rem',
+  fontSize: '0.875rem',
+  fontWeight: 600,
+  lineHeight: 1.5,
+  color: theme.palette.text.secondary,
+  textTransform: 'uppercase',
+  letterSpacing: '0.5px',
   whiteSpace: 'nowrap',
 }));
 
@@ -33,7 +35,11 @@ export const StyledTableRow = styled(TableRow)(({ theme }) => ({
     borderBottom: 'none',
   },
   '& .MuiTableCell-root': {
+    padding: '1rem',
     borderBottom: 'none',
+    fontSize: '1rem',
+    fontWeight: 400,
+    lineHeight: 1.5,
     color: theme.palette.text.primary,
   },
 }));
@@ -55,7 +61,7 @@ export const TableSkeleton = ({ columns, rows = 5 }) => {
         <StyledTableRow key={rowIndex}>
           {[...Array(columns)].map((_, colIndex) => (
             <TableCell key={colIndex}>
-              <Skeleton variant="text" width={colIndex === 0 ? '40%' : '80%'} height={18} />
+              <Skeleton variant="text" width={colIndex === 0 ? '40%' : '80%'} height={24} />
             </TableCell>
           ))}
         </StyledTableRow>

@@ -270,8 +270,8 @@ export default function Requests() {
                   <TableCell>
                     <HttpStatusChip code={row.status_code} />
                   </TableCell>
-                  <TableCell className="portal-mono">{row.duration_ms} ms</TableCell>
-                  <TableCell className="portal-mono">{fmtTime(row.created_at)}</TableCell>
+                  <TableCell>{row.duration_ms} ms</TableCell>
+                  <TableCell>{fmtTime(row.created_at)}</TableCell>
                   <TableCell align="right">
                     <IconButton
                       size="small"

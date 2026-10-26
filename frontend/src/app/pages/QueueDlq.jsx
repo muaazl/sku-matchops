@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
-import { Alert, Box, Button, Table, TableCell, TableRow, Tooltip, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, Table, TableCell, TableRow, Tooltip, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSnackbar } from 'notistack';
 import { RotateCcw } from 'lucide-react';
 import { getDeadLetters, replayDeadLetter } from '../api';
 import { useAuth } from '../hooks/useAuth';
 import { fmtTime } from '../utils';
-import { ConfirmDialog, PageContainer, PageHeader, StatusChip } from '../components/ui';
+import { ConfirmDialog, PageContainer, PageHeader } from '../components/ui';
 import {
   StyledHeaderCell,
   StyledTableBody,
@@ -17,6 +17,7 @@ import {
 } from '../../components/Common/StyledTable';
 
 const COLUMNS = ['Task', 'Job / Batch', 'Tier', 'Error', 'Attempts', 'Failed at', ''];
+const MONO = { fontFamily: 'monospace' };
 
 export default function QueueDlq() {
   const queryClient = useQueryClient();
@@ -87,26 +88,37 @@ export default function QueueDlq() {
               ) : (
                 data.map((item) => (
                   <StyledTableRow key={item.task_id} hover>
-                    <TableCell className="portal-mono">{item.task_id.slice(0, 12)}</TableCell>
-                    <TableCell className="portal-mono">
+                    <TableCell sx={MONO}>{item.task_id.slice(0, 12)}</TableCell>
+                    <TableCell sx={MONO}>
                       {item.job_id}
                       {item.batch_id && item.batch_id !== item.job_id ? ` / ${item.batch_id}` : ''}
                     </TableCell>
                     <TableCell>
-                      <StatusChip status={item.queue?.split(':').pop() || 'n/a'} tone="neutral" />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        label={item.queue?.split(':').pop() || 'n/a'}
+                        sx={{ textTransform: 'capitalize' }}
+                      />
                     </TableCell>
                     <TableCell sx={{ maxWidth: 420 }}>
                       <Tooltip title={item.error}>
-                        <Box sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          <StatusChip status="dlq" sx={{ mr: 1 }} />
+                        <Box
+                          sx={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            color: 'error.main',
+                          }}
+                        >
                           {item.error}
                         </Box>
                       </Tooltip>
                     </TableCell>
-                    <TableCell align="right" className="portal-mono">
+                    <TableCell align="right" sx={MONO}>
                       {item.attempts}
                     </TableCell>
-                    <TableCell className="portal-mono">{fmtTime(item.failed_at)}</TableCell>
+                    <TableCell>{fmtTime(item.failed_at)}</TableCell>
                     <TableCell align="right">
                       <Button
                         size="small"

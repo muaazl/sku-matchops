@@ -26,6 +26,8 @@ import {
   StyledSidebarFooterList,
 } from '../components/Sidebar/SidebarStyled';
 import { Logo } from '../components/Logo';
+import SessionControl from './components/SessionControl';
+import { useAuth } from './hooks/useAuth';
 
 export const NAV_ITEMS = [
   { title: 'Dashboard', icon: LayoutDashboard, to: '/dashboard' },
@@ -37,13 +39,14 @@ export const NAV_ITEMS = [
   { title: 'SKU Results', icon: History, to: '/sku-results' },
   { title: 'Rules Engine', icon: SlidersHorizontal, to: '/rules' },
   { title: 'Catalog Search', icon: Search, to: '/catalog' },
-  { title: 'Queue & DLQ', icon: Inbox, to: '/queue' },
+  { title: 'Queue & DLQ', icon: Inbox, to: '/queue', adminOnly: true },
   { title: 'Logs', icon: Terminal, to: '/logs' },
 ];
 
 export default function SkuSidebar() {
   const location = useLocation();
   const isActive = (linkTo) => location.pathname === linkTo || location.pathname.startsWith(linkTo + '/');
+  const { isAdmin } = useAuth();
 
   return (
     <Drawer variant="permanent">
@@ -52,11 +55,14 @@ export default function SkuSidebar() {
       </DrawerHeader>
       <Divider />
       <StyledList>
-        {NAV_ITEMS.map(({ title, icon: Icon, to }) => (
+        {NAV_ITEMS.filter((item) => isAdmin || !item.adminOnly).map(({ title, icon: Icon, to }) => (
           <SidebarItem key={to} title={title} icon={<Icon size="16px" />} linkTo={to} active={isActive(to)} />
         ))}
       </StyledList>
       <StyledSidebarFooterList>
+        <StyledSidebarFooterListItem>
+          <SessionControl />
+        </StyledSidebarFooterListItem>
         <StyledSidebarFooterListItem>
           <StyledSidebarFooterText
             variant="caption"
@@ -66,7 +72,7 @@ export default function SkuSidebar() {
               gap: '10px',
               fontSize: '13px',
               fontWeight: 500,
-              color: 'var(--portal-sidebar-text)',
+              color: 'text.secondary',
             }}
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>

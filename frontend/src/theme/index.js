@@ -7,8 +7,20 @@ import { highContrastThemeOptions } from './high-contrast-theme';
 
 const themeOptions = {
   typography: {
-    // Portal design token (src/index.css)
-    fontFamily: 'var(--portal-font-sans)',
+    fontFamily: [
+      '"Mona Sans"',
+      '-apple-system',
+      'BlinkMacSystemFont',
+      '"Segoe UI"',
+      '"Roboto"',
+      '"Oxygen"',
+      '"Ubuntu"',
+      '"Cantarell"',
+      '"Fira Sans"',
+      '"Droid Sans"',
+      '"Helvetica Neue"',
+      'sans-serif',
+    ].join(', '),
     allVariants: {
       fontFeatureSettings: "'ss01' on, 'ss05' on, 'ss06' on, 'liga' off, 'clig' off",
       textDecorationThickness: '1px',
@@ -19,55 +31,6 @@ const themeOptions = {
     },
   },
   components: {
-    // --- Portal design system: everything below reads the tokens in src/index.css ---
-    MuiCssBaseline: {
-      styleOverrides: (theme) => ({
-        body: theme.palette.mode === 'light' ? { backgroundColor: 'var(--portal-canvas)' } : {},
-      }),
-    },
-    MuiPaper: {
-      styleOverrides: {
-        rounded: { borderRadius: 'var(--portal-radius)' },
-      },
-    },
-    MuiTableContainer: {
-      styleOverrides: {
-        // Internal scroll keeps the sticky header visible on long operational grids
-        root: { maxHeight: 'var(--portal-table-max-height)' },
-      },
-    },
-    MuiTableCell: {
-      styleOverrides: {
-        root: ({ theme }) => ({
-          height: 'var(--portal-row-height)',
-          padding: 'var(--portal-cell-py) var(--portal-cell-px)',
-          fontSize: 'var(--portal-cell-font-size)',
-          lineHeight: 1.4,
-          ...(theme.palette.mode === 'light' && { borderBottom: '1px solid var(--portal-border)' }),
-        }),
-        head: ({ theme }) => ({
-          position: 'sticky',
-          top: 0,
-          zIndex: 2,
-          fontSize: 'var(--portal-th-font-size)',
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-          whiteSpace: 'nowrap',
-          backgroundColor: theme.palette.mode === 'light' ? 'var(--portal-th-bg)' : theme.palette.background.paper,
-          color: theme.palette.mode === 'light' ? 'var(--portal-th-text)' : theme.palette.text.secondary,
-        }),
-      },
-    },
-    MuiTableRow: {
-      styleOverrides: {
-        hover: ({ theme }) => ({
-          '&:hover': {
-            backgroundColor: theme.palette.mode === 'light' ? 'var(--portal-row-hover) !important' : undefined,
-          },
-        }),
-      },
-    },
     MuiCardHeader: {
       styleOverrides: {
         root: ({ theme }) => ({
@@ -90,12 +53,9 @@ const themeOptions = {
     MuiCard: {
       styleOverrides: {
         root: ({ theme }) => ({
-          borderRadius: 'var(--portal-radius)',
-          border:
-            theme.palette.mode === 'light' ? '1px solid var(--portal-border)' : `1px solid ${theme.palette.divider}`,
-          background:
-            theme.palette.mode === 'light' ? 'var(--portal-surface)' : theme.palette.background.paperElevation1,
-          boxShadow: theme.palette.mode === 'light' ? 'var(--portal-shadow)' : 'none',
+          borderRadius: '8px',
+          border: `1px solid ${theme.palette.divider}`,
+          background: theme.palette.background.paperElevation1,
         }),
       },
     },
@@ -171,9 +131,9 @@ const themeOptions = {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          borderRadius: 'var(--portal-radius)',
-          padding: '0.375rem 0.875rem',
-          fontSize: '0.8125rem',
+          borderRadius: '0.5rem',
+          padding: '0.5rem 1rem',
+          fontSize: '0.875rem',
           fontStyle: 'normal',
           fontWeight: 500,
           lineHeight: '1.4',

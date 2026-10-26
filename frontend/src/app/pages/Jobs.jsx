@@ -201,7 +201,7 @@ export default function Jobs() {
                       }}
                       sx={{ cursor: 'pointer' }}
                     >
-                      <TableCell className="portal-mono">{row.id}</TableCell>
+                      <TableCell>{row.id}</TableCell>
                       <TableCell>{row.target_sheet || row.sheet_name || 'N/A'}</TableCell>
                       <TableCell sx={{ textTransform: 'capitalize' }}>{row.domain}</TableCell>
                       <TableCell sx={{ textTransform: 'capitalize' }}>{row.task || row.type}</TableCell>
@@ -210,9 +210,7 @@ export default function Jobs() {
                       </TableCell>
                       <TableCell align="right">{row.total_items ?? '-'}</TableCell>
                       <TableCell align="right">{row.high_conf ?? '-'}</TableCell>
-                      <TableCell align="right" className="portal-mono">
-                        {fmtDuration(row.duration_minutes)}
-                      </TableCell>
+                      <TableCell align="right">{fmtDuration(row.duration_minutes)}</TableCell>
                       <TableCell align="right" onClick={(e) => e.stopPropagation()}>
                         <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
                           <Tooltip title={canCancel ? 'Cancel job' : 'Nothing to cancel'}>

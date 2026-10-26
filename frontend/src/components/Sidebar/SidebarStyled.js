@@ -1,4 +1,4 @@
-import { styled } from '@mui/material/styles';
+import { styled, alpha } from '@mui/material/styles';
 import MuiDrawer from '@mui/material/Drawer';
 import { List, ListItem, ListItemButton, Typography } from '@mui/material';
 
@@ -18,52 +18,35 @@ export const Drawer = styled(MuiDrawer)(() => ({
   flexShrink: 0,
   whiteSpace: 'nowrap',
   boxSizing: 'border-box',
-  // Portal tokens (src/index.css): the dark navy sidebar is the same in every color mode
   '& .MuiDrawer-paper': {
     width: drawerWidth,
     overflowX: 'hidden',
-    backgroundColor: 'var(--portal-sidebar-bg)',
-    borderRight: '1px solid var(--portal-sidebar-border)',
-    color: 'var(--portal-sidebar-text)',
-  },
-  '& .MuiDivider-root': {
-    borderColor: 'var(--portal-sidebar-border)',
   },
 }));
 
 export const StyledListItemButton = styled(ListItemButton, {
   shouldForwardProp: (prop) => prop !== 'isActive',
-})(({ isActive }) => ({
+})(({ theme, isActive }) => ({
   display: 'flex',
-  height: '36px',
-  padding: '6px 12px',
+  height: '40px',
+  padding: '8px 12px',
   justifyContent: 'space-between',
   alignItems: 'center',
   alignSelf: 'stretch',
-  borderRadius: 'var(--portal-radius)',
-  '& .MuiListItemText-primary': {
-    fontSize: '13px',
-    fontWeight: 500,
-  },
+  borderRadius: '8px',
   '& .MuiListItemText-primary, & .MuiListItemIcon-root': {
-    color: 'var(--portal-sidebar-text)',
+    color: theme.palette.text.secondary,
   },
   '&:hover': {
-    backgroundColor: 'var(--portal-sidebar-surface)',
-    '& .MuiListItemText-primary, & .MuiListItemIcon-root': {
-      color: 'var(--portal-sidebar-text-active)',
-    },
+    backgroundColor: alpha(theme.palette.primary.light, 0.05),
   },
   ...(isActive && {
-    backgroundColor: 'var(--portal-sidebar-surface)',
-    // Crisp left accent bar in the signature portal amber
-    boxShadow: 'inset var(--portal-accent-bar-width) 0 0 var(--portal-accent)',
+    backgroundColor: alpha(theme.palette.primary.light, 0.08),
     '& .MuiListItemIcon-root': {
-      color: 'var(--portal-accent)',
+      color: theme.palette.primary.main,
     },
     '& .MuiListItemText-primary': {
-      color: 'var(--portal-sidebar-text-active)',
-      fontWeight: 600,
+      color: theme.palette.text.primary,
     },
   }),
 }));
@@ -94,8 +77,8 @@ export const StyledSidebarFooterListItem = styled(ListItem)(() => ({
   },
 }));
 
-export const StyledSidebarFooterText = styled(Typography)(() => ({
-  color: 'var(--portal-sidebar-text)',
+export const StyledSidebarFooterText = styled(Typography)(({ theme }) => ({
+  color: theme.palette.text.secondary,
   fontFeatureSettings: "'ss01' on, 'ss05' on, 'ss06' on, 'liga' off, 'clig' off",
   fontFamily: 'Mona Sans, sans-serif',
   fontSize: '12px',
@@ -104,8 +87,8 @@ export const StyledSidebarFooterText = styled(Typography)(() => ({
   lineHeight: '150%',
 }));
 
-export const StyledSidebarFooterList = styled(List)(() => ({
+export const StyledSidebarFooterList = styled(List)(({ theme }) => ({
   marginTop: 'auto',
-  borderTop: '1px solid var(--portal-sidebar-border)',
+  borderTop: `1px solid ${theme.palette.divider}`,
   padding: '1rem',
 }));
