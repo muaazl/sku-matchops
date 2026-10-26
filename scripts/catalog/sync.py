@@ -32,7 +32,6 @@ import argparse
 import json
 import logging
 import os
-import sqlite3
 import sys
 
 import joblib
@@ -59,42 +58,43 @@ logging.basicConfig(
 logger = logging.getLogger("matchops.sync_catalog")
 
 from engine import config
-from engine.core.db import clear_db_cache, init_db
+from engine.core.db import get_engine, init_db
 from engine.core.resource_loader import _get_vector_store, get_classifier, get_pipeline
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.nlp.text_cleaner import TextPipeline
 
 
-def reset_sqlite_tables(domain: str = None):
-    """Drops and recreates SQLite catalog tables for a clean fresh import."""
-    init_db(force=False)
-    conn = sqlite3.connect(config.DB_PATH)
-    try:
-        if domain and domain in (config.DOMAIN_MARKET, config.DOMAIN_FOOD):
-            conn.execute("DELETE FROM catalog_items WHERE domain = ?", (domain,))
-            conn.execute("DELETE FROM brand_flavors WHERE domain = ?", (domain,))
-            conn.execute("DELETE FROM classifier_dictionaries WHERE domain = ?", (domain,))
-            conn.execute("DELETE FROM bt_gk_map WHERE domain = ?", (domain,))
-            conn.commit()
-            logger.info(
-                f"[{domain.upper()}] Deleted existing SQLite table rows for domain '{domain}'."
-            )
-        else:
-            conn.execute("DROP TABLE IF EXISTS catalog_items;")
-            conn.execute("DROP TABLE IF EXISTS brand_flavors;")
-            conn.execute("DROP TABLE IF EXISTS classifier_dictionaries;")
-            conn.execute("DROP TABLE IF EXISTS bt_gk_map;")
-            conn.commit()
-            logger.info(
-                "Dropped catalog_items, brand_flavors, classifier_dictionaries, and bt_gk_map tables."
-            )
-            clear_db_cache()
-    except Exception as e:
-        logger.warning(f"Error while resetting SQLite tables: {e}")
-    finally:
-        conn.close()
+def reset_catalog_tables(domain: str = None):
+    """Empties the catalog tables (for one domain, or all) for a clean fresh import."""
+    from sqlalchemy import text
 
-    init_db(force=True)
+    init_db()
+    try:
+        with get_engine().begin() as conn:
+            if domain and domain in (config.DOMAIN_MARKET, config.DOMAIN_FOOD):
+                for table in (
+                    "catalog_items",
+                    "brand_flavors",
+                    "classifier_dictionaries",
+                    "bt_gk_map",
+                ):
+                    conn.execute(
+                        text(f"DELETE FROM {table} WHERE domain = :domain"), {"domain": domain}
+                    )
+                logger.info(
+                    f"[{domain.upper()}] Deleted existing table rows for domain '{domain}'."
+                )
+            else:
+                conn.execute(
+                    text(
+                        "TRUNCATE catalog_items, brand_flavors, classifier_dictionaries, bt_gk_map RESTART IDENTITY"
+                    )
+                )
+                logger.info(
+                    "Emptied catalog_items, brand_flavors, classifier_dictionaries, and bt_gk_map tables."
+                )
+    except Exception as e:
+        logger.warning(f"Error while resetting catalog tables: {e}")
 
 
 def wipe_local_cache_files():
@@ -129,14 +129,14 @@ def wipe_domain_cache_files(domain: str):
 
 def sync_db(domain: str, sheet_id: str, mode: str):
     """
-    sync:    Incrementally imports Sheets -> SQLite. Existing DataIngestion logic already
+    sync:    Incrementally imports Sheets -> PostgreSQL. Existing DataIngestion logic already
              diffs by row_hash/db_uid and only inserts/updates/deletes what actually changed.
-    rebuild: Wipes this domain's SQLite rows first, then does a full fresh import.
+    rebuild: Wipes this domain's rows first, then does a full fresh import.
     """
     if mode == "rebuild":
-        reset_sqlite_tables(domain)
+        reset_catalog_tables(domain)
     else:
-        init_db(force=False)
+        init_db()
 
     cat_df, _ = DataIngestion.load_catalog(sheet_id, domain=domain, force_fetch=True)
     DataIngestion.load_classifier_dictionaries(sheet_id, domain=domain, force_fetch=True)
@@ -326,7 +326,7 @@ def run(
 
     if from_sample:
         wipe_local_cache_files()
-        reset_sqlite_tables()
+        reset_catalog_tables()
         logger.info(f"\n>>> EXTRACTING SAMPLE DATA FROM '{sample_file}' <<<")
         if not os.path.exists(sample_file):
             logger.critical(f"Sample data file not found at '{sample_file}'.")

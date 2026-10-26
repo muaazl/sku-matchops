@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -42,7 +41,6 @@ logger = logging.getLogger("keyword_gen")
 # Paths
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = REPO_ROOT / "data"
-DEFAULT_DB_PATH = DATA_DIR / "sku-matchops.db"
 ONNX_BGE_DIR = REPO_ROOT / "models" / "bge_m3"
 ONNX_BGE_PATH = ONNX_BGE_DIR / "model_int8.onnx"
 EXPORTS_DIR = DATA_DIR / "exports"
@@ -89,26 +87,24 @@ def parse_job_id_range(job_arg: str) -> list[str]:
     return sorted(set(job_ids), key=lambda x: int(x) if x.isdigit() else x)
 
 
-def fetch_low_confidence_skus(
-    db_path: Path, job_ids: list[str], max_conf: float = 0.75
-) -> list[str]:
+def fetch_low_confidence_skus(job_ids: list[str], max_conf: float = 0.75) -> list[str]:
     """Fetches non-high-confidence SKUs from processed_skus for the specified jobs."""
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
-    placeholders = ",".join("?" for _ in job_ids)
+    from sqlalchemy import text
 
-    query = f"""
-    SELECT DISTINCT sku_name
+    from engine.core.db import get_connection
+
+    query = """
+    SELECT sku_name
     FROM processed_skus
-    WHERE batch_id IN ({placeholders})
-      AND (confidence < ? OR bt IS NULL OR bt = '' OR match_source != 'Matcher')
+    WHERE batch_id = ANY(:job_ids)
+      AND (confidence < :max_conf OR bt IS NULL OR bt = '' OR match_source != 'Matcher')
       AND sku_name IS NOT NULL
       AND length(trim(sku_name)) > 2
-    ORDER BY ROWID ASC
+    GROUP BY sku_name
+    ORDER BY MIN(created_at), MIN(sku_index)
     """
-    cursor.execute(query, (*job_ids, max_conf))
-    rows = cursor.fetchall()
-    conn.close()
+    with get_connection() as conn:
+        rows = conn.execute(text(query), {"job_ids": job_ids, "max_conf": max_conf}).fetchall()
 
     raw_skus = [r[0].strip() for r in rows if r[0] and r[0].strip()]
     logger.info(
@@ -118,29 +114,36 @@ def fetch_low_confidence_skus(
 
 
 def fetch_catalog_few_shots(
-    db_path: Path, categories: list[str], limit_per_cat: int = 7
+    categories: list[str], limit_per_cat: int = 7
 ) -> list[tuple[str, list[str]]]:
     """Fetches 10-20 high quality tagged SKUs from catalog_items across specified categories."""
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
+    from sqlalchemy import text
+
+    from engine.core.db import get_connection
+
+    conn = get_connection()
     examples = []
 
     for cat in categories:
+        # One random example per basictype, then a random sample of those
         query = """
-        SELECT name, generic_keywords
-        FROM catalog_items
-        WHERE domain = 'market'
-          AND category = ?
-          AND basictype IS NOT NULL
-          AND length(basictype) > 2
-          AND generic_keywords IS NOT NULL
-          AND length(generic_keywords) > 5
-        GROUP BY basictype
+        SELECT name, generic_keywords FROM (
+            SELECT DISTINCT ON (basictype) name, generic_keywords
+            FROM catalog_items
+            WHERE domain = 'market'
+              AND category = :cat
+              AND basictype IS NOT NULL
+              AND length(basictype) > 2
+              AND generic_keywords IS NOT NULL
+              AND length(generic_keywords) > 5
+            ORDER BY basictype, RANDOM()
+        ) per_bt
         ORDER BY RANDOM()
-        LIMIT ?
+        LIMIT :limit
         """
-        cursor.execute(query, (cat, limit_per_cat))
-        for name, gks_raw in cursor.fetchall():
+        for name, gks_raw in conn.execute(
+            text(query), {"cat": cat, "limit": limit_per_cat}
+        ).fetchall():
             # Parse generic keywords (comma-separated or JSON)
             if gks_raw.startswith("["):
                 try:
@@ -431,9 +434,6 @@ def main():
         help="Vector cosine similarity clustering threshold",
     )
     parser.add_argument("--batch-size", type=int, default=100, help="SKUs per Gemini call batch")
-    parser.add_argument(
-        "--db-path", type=str, default=str(DEFAULT_DB_PATH), help="Path to sqlite3 database"
-    )
     args = parser.parse_args()
 
     load_dotenv(REPO_ROOT / ".env")
@@ -445,11 +445,6 @@ def main():
     from google import genai
 
     client = genai.Client(api_key=api_key)
-
-    db_path = Path(args.db_path)
-    if not db_path.exists():
-        logger.error(f"Database not found at: {db_path}")
-        sys.exit(1)
 
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     checkpoints_dir = EXPORTS_DIR / f"checkpoints_{args.subgroup.lower().replace(' ', '_')}"
@@ -465,7 +460,7 @@ def main():
     logger.info("=" * 60)
 
     # Step 1: Ingestion
-    raw_skus = fetch_low_confidence_skus(db_path, job_ids, max_conf=args.max_conf)
+    raw_skus = fetch_low_confidence_skus(job_ids, max_conf=args.max_conf)
     if not raw_skus:
         logger.error("No SKUs found matching criteria.")
         sys.exit(1)
@@ -479,7 +474,7 @@ def main():
     logger.info(f"Proceeding with {len(distinct_skus)} distinct representative product SKUs.")
 
     # Step 3: Mine Catalog Few-Shots
-    few_shots = fetch_catalog_few_shots(db_path, categories, limit_per_cat=6)
+    few_shots = fetch_catalog_few_shots(categories, limit_per_cat=6)
     system_prompt = build_system_prompt(few_shots, args.subgroup)
 
     # Step 4: Batch Processing with Gemini & State Persistence

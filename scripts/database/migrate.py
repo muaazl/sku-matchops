@@ -1,9 +1,21 @@
+"""
+One-off copy of a legacy SQLite database (data/sku-matchops.db) into PostgreSQL.
+
+    python -m scripts.database.migrate [--sqlite data/sku-matchops.db]
+
+Applies Alembic migrations first, then copies every table. Re-runnable: rows whose
+primary key already exists in PostgreSQL are skipped.
+"""
+
+import argparse
+import json
 import os
 import sqlite3
 import sys
+from datetime import UTC, datetime
 
-from engine.config import DB_PATH
-from engine.core.db import ensure_db_initialized
+from sqlalchemy import DateTime, Integer, Text, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # Add project root to python path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -11,90 +23,71 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from engine import config
+from engine.core.db import get_engine, init_db
+from engine.core.models import metadata
 
-def migrate():
-    print(f"Connecting to database at {os.path.abspath(DB_PATH)}")
+DEFAULT_SQLITE_PATH = os.path.join(config.DATA_DIR, "sku-matchops.db")
+CHUNK_SIZE = 1000
 
-    # Ensure directory exists
-    os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH)
+def _convert(col, val):
+    if val is None:
+        return None
+    if isinstance(col.type, DateTime):
+        dt = datetime.fromisoformat(str(val).replace(" ", "T"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    if isinstance(col.type, Text) and not isinstance(val, str):
+        # SQLite is dynamically typed: e.g. weight_val held bare floats
+        return json.dumps(val) if isinstance(val, (int, float)) else str(val)
+    if col.name in ("confidence", "match_score") and val > 1.0:
+        return val / 100.0  # legacy 0-100 scale -> 0-1
+    return val
 
+
+def migrate(sqlite_path: str = DEFAULT_SQLITE_PATH) -> dict[str, int]:
+    """Copies all rows from the SQLite file into PostgreSQL. Returns rows copied per table."""
+    if not os.path.exists(sqlite_path):
+        raise FileNotFoundError(f"SQLite database not found at {os.path.abspath(sqlite_path)}")
+
+    init_db()
+    src = sqlite3.connect(sqlite_path)
+    copied = {}
     try:
-        # 1. Set WAL mode
-        conn.execute("PRAGMA journal_mode=WAL;")
-        print("Set PRAGMA journal_mode=WAL;")
+        with get_engine().begin() as conn:
+            for table in metadata.sorted_tables:
+                exists = src.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table.name,)
+                ).fetchone()
+                if not exists:
+                    continue
+                src_cols = {r[1] for r in src.execute(f"PRAGMA table_info({table.name})")}
+                cols = [c for c in table.columns if c.name in src_cols]
+                cur = src.execute(f"SELECT {', '.join(c.name for c in cols)} FROM {table.name}")
 
-        # 2. Drop deprecated tables if they exist
-        conn.execute("DROP TABLE IF EXISTS staged_training_rows;")
-        conn.execute("DROP TABLE IF EXISTS merchant_credentials;")
-        print("Dropped deprecated tables (staged_training_rows, merchant_credentials).")
+                copied[table.name] = 0
+                while chunk := cur.fetchmany(CHUNK_SIZE):
+                    rows = [{c.name: _convert(c, v) for c, v in zip(cols, r)} for r in chunk]
+                    conn.execute(pg_insert(table).values(rows).on_conflict_do_nothing())
+                    copied[table.name] += len(rows)
 
-        # 3. Create all tables and indexes if they do not exist
-        ensure_db_initialized(conn)
-        print("Ensured all 11 tables and indexes exist.")
-
-        # 4. Handle duration_minutes migration if both columns exist
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(jobs);")
-        updated_jobs_columns = [row[1] for row in cursor.fetchall()]
-        if (
-            "duration_minutes" in updated_jobs_columns
-            and "duration_seconds" in updated_jobs_columns
-        ):
-            conn.execute(
-                "UPDATE jobs SET duration_minutes = duration_seconds / 60.0 WHERE duration_minutes IS NULL AND duration_seconds IS NOT NULL;"
-            )
-            conn.commit()
-            print("Migrated existing duration_seconds values to duration_minutes.")
-
-        # 5. Handle dictionary tables columns migration (catalog_count, metadata_json, gk_count)
-        cursor.execute("PRAGMA table_info(classifier_dictionaries);")
-        dict_cols = [row[1] for row in cursor.fetchall()]
-        if "catalog_count" not in dict_cols:
-            conn.execute(
-                "ALTER TABLE classifier_dictionaries ADD COLUMN catalog_count INTEGER DEFAULT 0;"
-            )
-            print("Added catalog_count to classifier_dictionaries.")
-        if "metadata_json" not in dict_cols:
-            conn.execute("ALTER TABLE classifier_dictionaries ADD COLUMN metadata_json TEXT;")
-            print("Added metadata_json to classifier_dictionaries.")
-
-        cursor.execute("PRAGMA table_info(brand_flavors);")
-        brand_cols = [row[1] for row in cursor.fetchall()]
-        if "catalog_count" not in brand_cols:
-            conn.execute("ALTER TABLE brand_flavors ADD COLUMN catalog_count INTEGER DEFAULT 0;")
-            print("Added catalog_count to brand_flavors.")
-
-        cursor.execute("PRAGMA table_info(bt_gk_map);")
-        map_cols = [row[1] for row in cursor.fetchall()]
-        if "gk_count" not in map_cols:
-            conn.execute("ALTER TABLE bt_gk_map ADD COLUMN gk_count INTEGER DEFAULT 0;")
-            print("Added gk_count to bt_gk_map.")
-        if "catalog_count" not in map_cols:
-            conn.execute("ALTER TABLE bt_gk_map ADD COLUMN catalog_count INTEGER DEFAULT 0;")
-            print("Added catalog_count to bt_gk_map.")
-
-        # Re-ensure indexes after adding columns
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_classifier_dict_lookup ON classifier_dictionaries(domain, tag_type, catalog_count DESC);"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_brand_flavors_count ON brand_flavors(domain, catalog_count DESC);"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_bt_gk_map_count ON bt_gk_map(domain, catalog_count DESC);"
-        )
-        conn.commit()
-
-        print("Migration completed successfully.")
-
-    except Exception as e:
-        print(f"Error during migration: {e}", file=sys.stderr)
-        conn.rollback()
+                # Advance SERIAL sequences past the copied ids
+                if isinstance(table.c.id.type, Integer):
+                    conn.execute(
+                        text(
+                            f"SELECT setval(pg_get_serial_sequence('{table.name}', 'id'), "
+                            f"COALESCE((SELECT MAX(id) FROM {table.name}), 0) + 1, false)"
+                        )
+                    )
+                print(f"Copied {copied[table.name]} rows into {table.name}.")
     finally:
-        conn.close()
+        src.close()
+
+    print("Migration completed successfully.")
+    return copied
 
 
 if __name__ == "__main__":
-    migrate()
+    parser = argparse.ArgumentParser(description="Copy a legacy SQLite database into PostgreSQL.")
+    parser.add_argument("--sqlite", default=DEFAULT_SQLITE_PATH, help="Path to the SQLite file")
+    migrate(parser.parse_args().sqlite)

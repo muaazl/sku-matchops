@@ -16,9 +16,10 @@ import csv
 import json
 import os
 import re
-import sqlite3
 import sys
 from pathlib import Path
+
+from sqlalchemy import Connection, inspect, text
 
 # Ensure UTF-8 output on Windows terminal
 if hasattr(sys.stdout, "reconfigure"):
@@ -27,28 +28,23 @@ if hasattr(sys.stdout, "reconfigure"):
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 DATA_DIR = Path(os.getenv("DATA_DIR", str(PROJECT_ROOT / "data")))
-DEFAULT_DB_PATH = DATA_DIR / "sku-matchops.db"
 EXPORTS_DIR = DATA_DIR / "exports"
 
-
-def get_db_path() -> Path:
-    env_db = os.getenv("DB_PATH")
-    if env_db and Path(env_db).exists():
-        return Path(env_db)
-    if DEFAULT_DB_PATH.exists():
-        return DEFAULT_DB_PATH
-    raise FileNotFoundError(f"Database not found at {DEFAULT_DB_PATH}")
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def get_connection(readonly: bool = True) -> sqlite3.Connection:
-    db_path = get_db_path()
+def get_connection(readonly: bool = True) -> Connection:
+    from engine.core.db import get_engine
+
+    conn = get_engine().connect()
     if readonly:
-        uri_path = f"file:{db_path.as_posix()}?mode=ro"
-        conn = sqlite3.connect(uri_path, uri=True)
-    else:
-        conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+        conn = conn.execution_options(postgresql_readonly=True)
     return conn
+
+
+def _table_names(conn: Connection) -> list[str]:
+    return sorted(inspect(conn).get_table_names())
 
 
 def sanitize_filename(name: str) -> str:
@@ -326,12 +322,9 @@ def export_data(
 # ==============================================================================
 
 
-def query_job_summaries(conn: sqlite3.Connection, job_ids: list) -> list:
+def query_job_summaries(conn: Connection, job_ids: list) -> list:
     """Fetches high-level metrics for given job numbers."""
-    cursor = conn.cursor()
-    placeholders = ",".join("?" for _ in job_ids)
-
-    query = f"""
+    query = """
     SELECT
         j.id AS job_id,
         COALESCE(NULLIF(j.sheet_name, ''), NULLIF(j.target_sheet, ''), 'Job ' || j.id) AS sheet_name,
@@ -339,17 +332,18 @@ def query_job_summaries(conn: sqlite3.Connection, job_ids: list) -> list:
         COALESCE(j.high_conf, (SELECT COUNT(*) FROM processed_skus p WHERE p.batch_id = j.id AND p.confidence >= 0.8)) AS high_conf_skus,
         COALESCE(j.med_conf, 0) AS med_conf_skus,
         COALESCE(j.low_conf, 0) AS low_conf_skus,
-        ROUND(COALESCE(j.match_rate, 0.0), 2) AS match_rate,
+        ROUND(CAST(COALESCE(j.match_rate, 0.0) AS numeric), 2) AS match_rate,
         j.status AS status,
-        ROUND(COALESCE(j.duration_minutes, 0.0), 2) AS duration_min,
+        ROUND(CAST(COALESCE(j.duration_minutes, 0.0) AS numeric), 2) AS duration_min,
         j.domain AS domain,
         j.completed_at AS completed_at
     FROM jobs j
-    WHERE j.id IN ({placeholders})
-    ORDER BY CAST(j.id AS INTEGER) ASC
+    WHERE j.id = ANY(:ids)
+    ORDER BY CASE WHEN j.id ~ '^[0-9]+$' THEN CAST(j.id AS BIGINT) END ASC, j.id
     """
-    cursor.execute(query, [str(j).strip().lstrip("#") for j in job_ids])
-    rows = cursor.fetchall()
+    rows = conn.execute(
+        text(query), {"ids": [str(j).strip().lstrip("#") for j in job_ids]}
+    ).mappings()
     return [dict(r) for r in rows]
 
 
@@ -358,9 +352,8 @@ def query_job_summaries(conn: sqlite3.Connection, job_ids: list) -> list:
 # ==============================================================================
 
 
-def query_job_skus(conn: sqlite3.Connection, job_id: str) -> list:
+def query_job_skus(conn: Connection, job_id: str) -> list:
     """Fetches detailed SKU rows for a given job."""
-    cursor = conn.cursor()
     job_str = str(job_id).strip().lstrip("#")
 
     query = """
@@ -376,12 +369,11 @@ def query_job_skus(conn: sqlite3.Connection, job_id: str) -> list:
         bt,
         match_source
     FROM processed_skus
-    WHERE batch_id = ?
-       OR batch_id IN (SELECT batch_id FROM jobs WHERE id = ?)
-    ORDER BY ROWID ASC
+    WHERE batch_id = :job_id
+       OR batch_id IN (SELECT batch_id FROM jobs WHERE id = :job_id)
+    ORDER BY sku_index ASC NULLS LAST, created_at ASC
     """
-    cursor.execute(query, (job_str, job_str))
-    rows = cursor.fetchall()
+    rows = conn.execute(text(query), {"job_id": job_str}).mappings().fetchall()
 
     results = []
     for r in rows:
@@ -419,16 +411,16 @@ def query_job_skus(conn: sqlite3.Connection, job_id: str) -> list:
 
 
 def export_multi_job_skus(
-    conn: sqlite3.Connection, job_ids: list, formatted: bool = False, out_name: str = None
+    conn: Connection, job_ids: list, formatted: bool = False, out_name: str = None
 ):
     """Exports SKU details for multiple jobs into separate CSVs and multi-tab XLSX."""
-    cursor = conn.cursor()
-    placeholders = ",".join("?" for _ in job_ids)
-    cursor.execute(
-        f"SELECT id, COALESCE(NULLIF(sheet_name, ''), NULLIF(target_sheet, ''), 'Job ' || id) AS sheet_name FROM jobs WHERE id IN ({placeholders})",
-        [str(j).strip().lstrip("#") for j in job_ids],
-    )
-    sheet_map = {str(r["id"]): r["sheet_name"] for r in cursor.fetchall()}
+    rows = conn.execute(
+        text(
+            "SELECT id, COALESCE(NULLIF(sheet_name, ''), NULLIF(target_sheet, ''), 'Job ' || id) AS sheet_name FROM jobs WHERE id = ANY(:ids)"
+        ),
+        {"ids": [str(j).strip().lstrip("#") for j in job_ids]},
+    ).mappings()
+    sheet_map = {str(r["id"]): r["sheet_name"] for r in rows}
 
     all_jobs_data = {}
     total_records = 0
@@ -602,7 +594,7 @@ def export_multi_job_skus(
 
 
 def query_table(
-    conn: sqlite3.Connection,
+    conn: Connection,
     table: str,
     columns: str = "*",
     where: str = None,
@@ -610,7 +602,6 @@ def query_table(
     limit: int = None,
 ) -> list:
     """Queries any table with optional column selection, filter, sort, and limit."""
-    cursor = conn.cursor()
     col_str = columns if columns and columns.strip() else "*"
     sql = f"SELECT {col_str} FROM {table}"
     if where and where.strip():
@@ -620,33 +611,22 @@ def query_table(
     if limit and int(limit) > 0:
         sql += f" LIMIT {int(limit)}"
 
-    cursor.execute(sql)
-    rows = cursor.fetchall()
-    return [dict(r) for r in rows]
+    return [dict(r) for r in conn.execute(text(sql)).mappings()]
 
 
-def run_raw_sql(conn: sqlite3.Connection, sql: str) -> list:
+def run_raw_sql(conn: Connection, sql: str) -> list:
     """Executes a custom SQL statement and returns results as dicts."""
-    cursor = conn.cursor()
-    cursor.execute(sql)
-    rows = cursor.fetchall()
-    return [dict(r) for r in rows]
+    return [dict(r) for r in conn.execute(text(sql)).mappings()]
 
 
-def list_tables_and_schema(conn: sqlite3.Connection):
+def list_tables_and_schema(conn: Connection):
     """Prints all tables, their row counts, and column definitions."""
-    cursor = conn.cursor()
-    tables = [
-        r[0]
-        for r in cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        ).fetchall()
-    ]
+    tables = _table_names(conn)
 
     summary = []
     for t in tables:
-        count = cursor.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({t})").fetchall()]
+        count = conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+        cols = [c["name"] for c in inspect(conn).get_columns(t)]
         summary.append(
             {
                 "Table Name": t,
@@ -663,7 +643,7 @@ def list_tables_and_schema(conn: sqlite3.Connection):
 # ==============================================================================
 
 
-def interactive_menu(conn: sqlite3.Connection):
+def interactive_menu(conn: Connection):
     while True:
         print("\n" + "=" * 60)
         print("  SKU-MATCHOPS DATABASE QUERY TOOL")
@@ -731,22 +711,14 @@ def interactive_menu(conn: sqlite3.Connection):
             export_multi_job_skus(conn, job_ids, formatted=fmt_prompt in ("", "y", "yes"))
 
         elif choice == "3":
-            cursor = conn.cursor()
-            tables = [
-                r[0]
-                for r in cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                ).fetchall()
-            ]
+            tables = _table_names(conn)
             print("\nAvailable tables: " + ", ".join(tables))
             table_name = input("Table name: ").strip()
             if table_name not in tables:
                 print(f"[Error] Table '{table_name}' does not exist.")
                 continue
 
-            cols_info = [
-                r[1] for r in cursor.execute(f"PRAGMA table_info({table_name})").fetchall()
-            ]
+            cols_info = [c["name"] for c in inspect(conn).get_columns(table_name)]
             print(f"Columns: {', '.join(cols_info)}")
 
             cols_input = input("Columns to select (Enter for *): ").strip() or "*"
@@ -882,7 +854,7 @@ def main():
 
     try:
         conn = get_connection(readonly=True)
-    except FileNotFoundError as e:
+    except Exception as e:
         print(f"[Error] {e}")
         sys.exit(1)
 

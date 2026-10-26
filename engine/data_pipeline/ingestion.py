@@ -1,20 +1,30 @@
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
-import sqlite3
 import threading
 import time
 
 import pandas as pd
 import polars as pl
 import requests
+from sqlalchemy import Connection, text
 
 from engine import config
-from engine.core.db import ensure_db_initialized
+from engine.core.db import get_connection
 
 logger = logging.getLogger("matchops.ingestion")
+
+
+def _nan_to_none(row: dict) -> dict:
+    """pandas NaN -> None, so it binds as SQL NULL (Postgres rejects NaN for TEXT columns)."""
+    return {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in row.items()}
+
+
+def _flag(val) -> int:
+    return int(val) if val is not None and not pd.isna(val) else 0
 
 
 class DataIngestion:
@@ -343,7 +353,7 @@ class DataIngestion:
     def load_catalog(
         sheet_id: str, domain: str = config.DOMAIN_MARKET, force_fetch: bool = False
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Loads catalog and brands data from memory cache, local Feather cache, or SQLite database. Only downloads from Sheets when force_fetch=True."""
+        """Loads catalog and brands data from memory cache, local Feather cache, or the database. Only downloads from Sheets when force_fetch=True."""
         # 1. Return from in-memory cache if available and not force_fetch
         if (
             not force_fetch
@@ -380,20 +390,23 @@ class DataIngestion:
                             return cat_df, brands_df
                     except Exception as fe_err:
                         logger.warning(
-                            f"[LOAD] [{domain.upper()}] Failed to read Feather cache: {fe_err}. Falling back to SQLite."
+                            f"[LOAD] [{domain.upper()}] Failed to read Feather cache: {fe_err}. Falling back to the database."
                         )
 
-            # 3. Check local SQLite database
-            conn = ensure_db_initialized()
+            # 3. Check the database
+            conn = get_connection()
+            p = {"domain": domain}
 
             try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM catalog_items WHERE domain = ?", (domain,))
-                cat_count = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM brand_flavors WHERE domain = ?", (domain,))
-                brand_count = cursor.fetchone()[0]
+                cat_count = conn.execute(
+                    text("SELECT COUNT(*) FROM catalog_items WHERE domain = :domain"), p
+                ).scalar()
+                brand_count = conn.execute(
+                    text("SELECT COUNT(*) FROM brand_flavors WHERE domain = :domain"), p
+                ).scalar()
             except Exception as e:
-                logger.warning(f"[LOAD] [{domain.upper()}] SQLite check failed: {e}.")
+                logger.warning(f"[LOAD] [{domain.upper()}] Database check failed: {e}.")
+                conn.rollback()
                 cat_count = 0
                 brand_count = 0
 
@@ -404,18 +417,18 @@ class DataIngestion:
                 try:
                     # Query catalog items
                     cat_df = pd.read_sql_query(
-                        "SELECT * FROM catalog_items WHERE domain = ?", conn, params=[domain]
+                        text("SELECT * FROM catalog_items WHERE domain = :domain"), conn, params=p
                     )
 
                     # Query brand flavors
                     brands_df = pd.read_sql_query(
-                        "SELECT * FROM brand_flavors WHERE domain = ?", conn, params=[domain]
+                        text("SELECT * FROM brand_flavors WHERE domain = :domain"), conn, params=p
                     )
 
                     # Close DB connection
                     conn.close()
 
-                    # Cleanup sqlite-specific column conversions
+                    # Decode JSON-encoded columns
                     entities_list = []
                     for _, val in cat_df["entities_json"].items():
                         if pd.isna(val) or not val:
@@ -449,21 +462,23 @@ class DataIngestion:
                     for idx, val in cat_df["weight_val"].items():
                         if pd.isna(val) or not val:
                             weight_list.append(None)
-                        elif isinstance(val, (int, float)):
-                            # Reconstruct tuple from clean_text if SQLite had a raw float
+                            continue
+                        try:
+                            parsed = json.loads(str(val))
+                        except Exception:
+                            weight_list.append(None)
+                            continue
+                        if isinstance(parsed, (int, float)):
+                            # Reconstruct tuple from clean_text if the DB had a bare number
                             clean_t = cat_df.at[idx, "clean_text"]
                             if pd.isna(clean_t) or not clean_t:
-                                weight_list.append((float(val), None, None))
+                                weight_list.append((float(parsed), None, None))
                             else:
                                 weight_list.append(TextPipeline.extract_weight_feature(clean_t))
                         else:
-                            try:
-                                parsed = json.loads(str(val))
-                                weight_list.append(
-                                    tuple(parsed) if isinstance(parsed, list) else parsed
-                                )
-                            except Exception:
-                                weight_list.append(None)
+                            weight_list.append(
+                                tuple(parsed) if isinstance(parsed, list) else parsed
+                            )
                     cat_df["weight_val"] = weight_list
 
                     # Rename columns back to DataFrame naming conventions
@@ -503,23 +518,22 @@ class DataIngestion:
                             brands_df[col] = brands_df[col].astype(bool)
 
                     logger.info(
-                        f"[LOAD] [{domain.upper()}] Read {len(cat_df)} catalog rows and {len(brands_df)} brands from SQLite database."
+                        f"[LOAD] [{domain.upper()}] Read {len(cat_df)} catalog rows and {len(brands_df)} brands from the database."
                     )
 
                     # Cache in Python memory
                     DataIngestion._catalog_mem_cache[domain] = cat_df
                     DataIngestion._brands_mem_cache[domain] = brands_df
 
-                    # Ensure dictionary counts are initialized in SQLite
+                    # Ensure dictionary counts are initialized in the database
                     try:
-                        chk_conn = ensure_db_initialized()
-                        chk_cur = chk_conn.cursor()
-                        chk_cur.execute(
-                            "SELECT COALESCE(SUM(catalog_count), 0) FROM classifier_dictionaries WHERE domain = ?",
-                            (domain,),
-                        )
-                        dict_count_sum = chk_cur.fetchone()[0]
-                        chk_conn.close()
+                        with get_connection() as chk_conn:
+                            dict_count_sum = chk_conn.execute(
+                                text(
+                                    "SELECT COALESCE(SUM(catalog_count), 0) FROM classifier_dictionaries WHERE domain = :domain"
+                                ),
+                                p,
+                            ).scalar()
                         if dict_count_sum == 0:
                             DataIngestion.compute_and_store_dictionary_counts(domain, cat_df=cat_df)
                     except Exception as cnt_err:
@@ -533,10 +547,13 @@ class DataIngestion:
                     if conn:
                         conn.close()
 
+            # Release the pooled connection: an open read transaction blocks DDL/TRUNCATE in Postgres
+            conn.close()
+
             # If force_fetch is False, do NOT reach out to Google Sheets over network
             if not force_fetch:
                 raise RuntimeError(
-                    f"[LOAD] No catalog data found in memory, Feather cache, or SQLite for domain '{domain}'. "
+                    f"[LOAD] No catalog data found in memory, Feather cache, or the database for domain '{domain}'. "
                     f"Please run 'python -m scripts.catalog.sync' to initialize the catalog."
                 )
 
@@ -544,21 +561,21 @@ class DataIngestion:
 
     @staticmethod
     def compute_and_store_dictionary_counts(
-        domain: str, cat_df: pd.DataFrame | None = None, conn: sqlite3.Connection | None = None
+        domain: str, cat_df: pd.DataFrame | None = None, conn: Connection | None = None
     ):
         """
         Precomputes the occurrence frequencies of all dictionary tags (GK, BT, Category/Region, Brands/Flavors, BT-GK map)
-        across catalog items and persists the counts directly into SQLite tables.
+        across catalog items and persists the counts directly into the database tables.
         """
         from collections import Counter
 
         close_conn = False
         if conn is None:
-            conn = ensure_db_initialized()
+            conn = get_connection()
             close_conn = True
 
         try:
-            cursor = conn.cursor()
+            p = {"domain": domain}
 
             cat_col = "category" if domain == config.DOMAIN_MARKET else "region"
             brand_col = "Brand" if domain == config.DOMAIN_MARKET else "Flavor"
@@ -595,11 +612,12 @@ class DataIngestion:
                             if t:
                                 brand_c[t] += 1
             else:
-                cursor.execute(
-                    f"SELECT generic_keywords, basictype, {cat_col}, {brand_db_col} FROM catalog_items WHERE domain = ?",
-                    (domain,),
-                )
-                for gks, bts, cats, brs in cursor.fetchall():
+                for gks, bts, cats, brs in conn.execute(
+                    text(
+                        f"SELECT generic_keywords, basictype, {cat_col}, {brand_db_col} FROM catalog_items WHERE domain = :domain"
+                    ),
+                    p,
+                ).fetchall():
                     if gks:
                         for item in str(gks).split(","):
                             t = item.strip().lower()
@@ -621,10 +639,12 @@ class DataIngestion:
                                 brand_c[t] += 1
 
             # 1. Update classifier_dictionaries
-            cursor.execute(
-                "SELECT id, tag_type, tag FROM classifier_dictionaries WHERE domain = ?", (domain,)
-            )
-            dict_rows = cursor.fetchall()
+            dict_rows = conn.execute(
+                text(
+                    "SELECT id, tag_type, tag FROM classifier_dictionaries WHERE domain = :domain"
+                ),
+                p,
+            ).fetchall()
             dict_updates = []
             for row_id, tag_type, tag in dict_rows:
                 t = tag.strip().lower()
@@ -634,50 +654,58 @@ class DataIngestion:
                     cnt = bt_c.get(t, 0)
                 else:
                     cnt = cat_c.get(t, 0)
-                dict_updates.append((cnt, row_id))
+                dict_updates.append({"cnt": cnt, "id": row_id})
             if dict_updates:
-                cursor.executemany(
-                    "UPDATE classifier_dictionaries SET catalog_count = ? WHERE id = ?",
+                conn.execute(
+                    text("UPDATE classifier_dictionaries SET catalog_count = :cnt WHERE id = :id"),
                     dict_updates,
                 )
 
             # 2. Update brand_flavors
-            cursor.execute("SELECT id, name FROM brand_flavors WHERE domain = ?", (domain,))
-            brand_rows = cursor.fetchall()
+            brand_rows = conn.execute(
+                text("SELECT id, name FROM brand_flavors WHERE domain = :domain"), p
+            ).fetchall()
             brand_updates = []
             for row_id, name in brand_rows:
                 cnt = brand_c.get(name.strip().lower(), 0)
-                brand_updates.append((cnt, row_id))
+                brand_updates.append({"cnt": cnt, "id": row_id})
             if brand_updates:
-                cursor.executemany(
-                    "UPDATE brand_flavors SET catalog_count = ? WHERE id = ?", brand_updates
+                conn.execute(
+                    text("UPDATE brand_flavors SET catalog_count = :cnt WHERE id = :id"),
+                    brand_updates,
                 )
 
             # 3. Ensure bt_gk_map is populated and updated
-            cursor.execute("SELECT COUNT(*) FROM bt_gk_map WHERE domain = ?", (domain,))
-            bt_gk_count = cursor.fetchone()[0]
+            bt_gk_count = conn.execute(
+                text("SELECT COUNT(*) FROM bt_gk_map WHERE domain = :domain"), p
+            ).scalar()
 
             if bt_gk_count == 0:
                 DataIngestion.build_bt_gk_map_from_catalog(domain=domain, cat_df=cat_df, conn=conn)
 
             # Update catalog_count on existing bt_gk_map rows
-            cursor.execute(
-                "SELECT id, basictype, generic_keywords FROM bt_gk_map WHERE domain = ?", (domain,)
-            )
-            map_rows = cursor.fetchall()
+            map_rows = conn.execute(
+                text(
+                    "SELECT id, basictype, generic_keywords FROM bt_gk_map WHERE domain = :domain"
+                ),
+                p,
+            ).fetchall()
             map_updates = []
             for row_id, bt, gks in map_rows:
                 cat_cnt = bt_c.get(bt.strip().lower(), 0)
                 gk_cnt = len([k for k in str(gks).split(",") if k.strip()])
-                map_updates.append((cat_cnt, gk_cnt, row_id))
+                map_updates.append({"cat_cnt": cat_cnt, "gk_cnt": gk_cnt, "id": row_id})
             if map_updates:
-                cursor.executemany(
-                    "UPDATE bt_gk_map SET catalog_count = ?, gk_count = ? WHERE id = ?", map_updates
+                conn.execute(
+                    text(
+                        "UPDATE bt_gk_map SET catalog_count = :cat_cnt, gk_count = :gk_cnt WHERE id = :id"
+                    ),
+                    map_updates,
                 )
 
             conn.commit()
             logger.info(
-                f"[LOAD] [{domain.upper()}] Precomputed and stored dictionary counts in SQLite (GK: {len(gk_c)}, BT: {len(bt_c)}, Brands: {len(brand_c)})."
+                f"[LOAD] [{domain.upper()}] Precomputed and stored dictionary counts in the database (GK: {len(gk_c)}, BT: {len(bt_c)}, Brands: {len(brand_c)})."
             )
         except Exception as e:
             logger.error(
@@ -693,7 +721,7 @@ class DataIngestion:
     def load_catalog_from_sheets(
         sheet_id: str, domain: str = config.DOMAIN_MARKET
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Downloads fresh data from Google Sheets, imports it incrementally into SQLite tables, and returns dataframes."""
+        """Downloads fresh data from Google Sheets, imports it incrementally into the database tables, and returns dataframes."""
         os.makedirs(config.CACHE_DIR, exist_ok=True)
         hash_file = os.path.join(config.CACHE_DIR, f"{domain}_source_hashes.json")
 
@@ -763,13 +791,15 @@ class DataIngestion:
                 & (pl.col(brand_col).str.to_lowercase() != "none")
             )
 
-        # Import directly to SQLite database (Incrementally)
-        conn = ensure_db_initialized()
+        # Import directly to the database (Incrementally)
+        conn = get_connection()
         try:
             # First, fetch existing items to make incremental comparisons
             old_rows = conn.execute(
-                "SELECT id, name, row_hash FROM catalog_items WHERE domain = ? ORDER BY id ASC",
-                (domain,),
+                text(
+                    "SELECT id, name, row_hash FROM catalog_items WHERE domain = :domain ORDER BY id ASC"
+                ),
+                {"domain": domain},
             ).fetchall()
             old_uids_map = {}
             name_counts_old = {}
@@ -780,8 +810,10 @@ class DataIngestion:
                 old_uids_map[uid] = (row_id, row_hash)
 
             old_brands = conn.execute(
-                "SELECT id, name, row_hash FROM brand_flavors WHERE domain = ? ORDER BY id ASC",
-                (domain,),
+                text(
+                    "SELECT id, name, row_hash FROM brand_flavors WHERE domain = :domain ORDER BY id ASC"
+                ),
+                {"domain": domain},
             ).fetchall()
             old_brands_map = {}
             brand_counts_old = {}
@@ -799,13 +831,13 @@ class DataIngestion:
             name_counts_new = {}
 
             # Keep counts of insert/update/delete for logging
-            cat_inserted = 0
-            cat_updated = 0
-            cat_deleted = 0
+            cat_inserts = []
+            cat_updates = []
 
             from engine.nlp.text_cleaner import TextPipeline
 
             for row in cat_df_raw.to_dict(orient="records"):
+                row = _nan_to_none(row)
                 raw_name = str(row.get("Name", "")).strip().lower()
                 name_counts_new[raw_name] = name_counts_new.get(raw_name, 0) + 1
                 uid = f"{raw_name}#occ_{name_counts_new[raw_name]}"
@@ -813,7 +845,7 @@ class DataIngestion:
 
                 row_hash = calculate_row_hash(row, domain=domain)
 
-                # Pre-calculate NLP metadata columns for instant SQLite persistence
+                # Pre-calculate NLP metadata columns for instant DB persistence
                 name_val = str(row.get("Name", "") or "")
                 clean_text = TextPipeline.normalize_final(TextPipeline.standardize_units(name_val))
                 clean_no_weights = TextPipeline.strip_weights(clean_text)
@@ -829,80 +861,81 @@ class DataIngestion:
                 )
                 token_count = len(clean_text.split())
 
+                values = {
+                    "name": row.get("Name"),
+                    "brand": row.get("Brand") if domain == config.DOMAIN_MARKET else None,
+                    "flavor": row.get("Flavor") if domain == config.DOMAIN_FOOD else None,
+                    "basictype": row.get("basictype"),
+                    "generic_keywords": row.get("Generic keywords"),
+                    "price": clean_price(row.get("Price")),
+                    "category": row.get("category") if domain == config.DOMAIN_MARKET else None,
+                    "region": row.get("region") if domain == config.DOMAIN_FOOD else None,
+                    "description": row.get("Description"),
+                    "clean_text": clean_text,
+                    "clean_no_weights": clean_no_weights,
+                    # weight_val is a JSON TEXT column; a bare number is expanded on read
+                    "weight_val": json.dumps(weight_val_num)
+                    if weight_val_num is not None
+                    else None,
+                    "token_count": token_count,
+                    "row_hash": row_hash,
+                }
                 if uid not in old_uids_map:
-                    conn.execute(
-                        """
-                        INSERT INTO catalog_items (
-                            domain, name, brand, flavor, basictype, generic_keywords, price, category, region, description,
-                            clean_text, clean_no_weights, weight_val, token_count, row_hash
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            domain,
-                            row.get("Name"),
-                            row.get("Brand") if domain == config.DOMAIN_MARKET else None,
-                            row.get("Flavor") if domain == config.DOMAIN_FOOD else None,
-                            row.get("basictype"),
-                            row.get("Generic keywords"),
-                            clean_price(row.get("Price")),
-                            row.get("category") if domain == config.DOMAIN_MARKET else None,
-                            row.get("region") if domain == config.DOMAIN_FOOD else None,
-                            row.get("Description"),
-                            clean_text,
-                            clean_no_weights,
-                            weight_val_num,
-                            token_count,
-                            row_hash,
-                        ),
-                    )
-                    cat_inserted += 1
+                    cat_inserts.append({"domain": domain, **values})
                 else:
                     row_id, old_hash = old_uids_map[uid]
                     if old_hash != row_hash:
-                        conn.execute(
-                            """
-                            UPDATE catalog_items
-                            SET name = ?, brand = ?, flavor = ?, basictype = ?, generic_keywords = ?, price = ?, category = ?, region = ?, description = ?,
-                                clean_text = ?, clean_no_weights = ?, weight_val = ?, token_count = ?, row_hash = ?
-                            WHERE id = ?
-                        """,
-                            (
-                                row.get("Name"),
-                                row.get("Brand") if domain == config.DOMAIN_MARKET else None,
-                                row.get("Flavor") if domain == config.DOMAIN_FOOD else None,
-                                row.get("basictype"),
-                                row.get("Generic keywords"),
-                                clean_price(row.get("Price")),
-                                row.get("category") if domain == config.DOMAIN_MARKET else None,
-                                row.get("region") if domain == config.DOMAIN_FOOD else None,
-                                row.get("Description"),
-                                clean_text,
-                                clean_no_weights,
-                                weight_val_num,
-                                token_count,
-                                row_hash,
-                                row_id,
-                            ),
-                        )
-                        cat_updated += 1
+                        cat_updates.append({"id": row_id, **values})
+
+            if cat_inserts:
+                conn.execute(
+                    text("""
+                    INSERT INTO catalog_items (
+                        domain, name, brand, flavor, basictype, generic_keywords, price, category, region, description,
+                        clean_text, clean_no_weights, weight_val, token_count, row_hash
+                    ) VALUES (
+                        :domain, :name, :brand, :flavor, :basictype, :generic_keywords, :price, :category, :region, :description,
+                        :clean_text, :clean_no_weights, :weight_val, :token_count, :row_hash
+                    )
+                """),
+                    cat_inserts,
+                )
+            if cat_updates:
+                conn.execute(
+                    text("""
+                    UPDATE catalog_items
+                    SET name = :name, brand = :brand, flavor = :flavor, basictype = :basictype,
+                        generic_keywords = :generic_keywords, price = :price, category = :category,
+                        region = :region, description = :description, clean_text = :clean_text,
+                        clean_no_weights = :clean_no_weights, weight_val = :weight_val,
+                        token_count = :token_count, row_hash = :row_hash
+                    WHERE id = :id
+                """),
+                    cat_updates,
+                )
 
             # Delete catalog items that are no longer in Sheets
-            deleted_cat_uids = set(old_uids_map.keys()) - new_uids_seen
-            for uid in deleted_cat_uids:
-                row_id, _ = old_uids_map[uid]
-                conn.execute("DELETE FROM catalog_items WHERE id = ?", (row_id,))
-                cat_deleted += 1
+            deleted_cat_ids = [old_uids_map[uid][0] for uid in set(old_uids_map) - new_uids_seen]
+            if deleted_cat_ids:
+                conn.execute(
+                    text("DELETE FROM catalog_items WHERE id = ANY(:ids)"), {"ids": deleted_cat_ids}
+                )
+            cat_inserted, cat_updated, cat_deleted = (
+                len(cat_inserts),
+                len(cat_updates),
+                len(deleted_cat_ids),
+            )
 
             # --- 2. Incrementally update brand_flavors ---
             brands_df_raw = brands_pl.to_pandas()
             new_brands_seen = set()
             brand_counts_new = {}
 
-            brands_inserted = 0
-            brands_updated = 0
-            brands_deleted = 0
+            brand_inserts = []
+            brand_updates = []
 
             for row in brands_df_raw.to_dict(orient="records"):
+                row = _nan_to_none(row)
                 name_val = (
                     row.get("Flavor Name")
                     if domain == config.DOMAIN_FOOD
@@ -916,84 +949,66 @@ class DataIngestion:
                 row_str = str(name_val) + str(row.get("Aliases", "")) + config.CACHE_SALT
                 row_hash = hashlib.md5(row_str.encode("utf-8")).hexdigest()
 
+                values = {
+                    "name": name_val,
+                    "aliases": row.get("Aliases"),
+                    "is_weak": _flag(row.get("Is_Weak")),
+                    "is_meat": _flag(row.get("Is_Meat")),
+                    "is_vegetable": _flag(row.get("Is_Vegetable")),
+                    "is_seafood": _flag(row.get("Is_Seafood")),
+                    "row_hash": row_hash,
+                }
                 if uid not in old_brands_map:
-                    conn.execute(
-                        """
-                        INSERT INTO brand_flavors (
-                            domain, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, row_hash
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            domain,
-                            name_val,
-                            row.get("Aliases"),
-                            int(row.get("Is_Weak"))
-                            if row.get("Is_Weak") is not None and not pd.isna(row.get("Is_Weak"))
-                            else 0,
-                            int(row.get("Is_Meat"))
-                            if row.get("Is_Meat") is not None and not pd.isna(row.get("Is_Meat"))
-                            else 0,
-                            int(row.get("Is_Vegetable"))
-                            if row.get("Is_Vegetable") is not None
-                            and not pd.isna(row.get("Is_Vegetable"))
-                            else 0,
-                            int(row.get("Is_Seafood"))
-                            if row.get("Is_Seafood") is not None
-                            and not pd.isna(row.get("Is_Seafood"))
-                            else 0,
-                            row_hash,
-                        ),
-                    )
-                    brands_inserted += 1
+                    brand_inserts.append({"domain": domain, **values})
                 else:
                     brand_id, old_hash = old_brands_map[uid]
                     if old_hash != row_hash:
-                        conn.execute(
-                            """
-                            UPDATE brand_flavors
-                            SET name = ?, aliases = ?, is_weak = ?, is_meat = ?, is_vegetable = ?, is_seafood = ?, row_hash = ?
-                            WHERE id = ?
-                        """,
-                            (
-                                name_val,
-                                row.get("Aliases"),
-                                int(row.get("Is_Weak"))
-                                if row.get("Is_Weak") is not None
-                                and not pd.isna(row.get("Is_Weak"))
-                                else 0,
-                                int(row.get("Is_Meat"))
-                                if row.get("Is_Meat") is not None
-                                and not pd.isna(row.get("Is_Meat"))
-                                else 0,
-                                int(row.get("Is_Vegetable"))
-                                if row.get("Is_Vegetable") is not None
-                                and not pd.isna(row.get("Is_Vegetable"))
-                                else 0,
-                                int(row.get("Is_Seafood"))
-                                if row.get("Is_Seafood") is not None
-                                and not pd.isna(row.get("Is_Seafood"))
-                                else 0,
-                                row_hash,
-                                brand_id,
-                            ),
-                        )
-                        brands_updated += 1
+                        brand_updates.append({"id": brand_id, **values})
+
+            if brand_inserts:
+                conn.execute(
+                    text("""
+                    INSERT INTO brand_flavors (
+                        domain, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, row_hash
+                    ) VALUES (
+                        :domain, :name, :aliases, :is_weak, :is_meat, :is_vegetable, :is_seafood, :row_hash
+                    )
+                """),
+                    brand_inserts,
+                )
+            if brand_updates:
+                conn.execute(
+                    text("""
+                    UPDATE brand_flavors
+                    SET name = :name, aliases = :aliases, is_weak = :is_weak, is_meat = :is_meat,
+                        is_vegetable = :is_vegetable, is_seafood = :is_seafood, row_hash = :row_hash
+                    WHERE id = :id
+                """),
+                    brand_updates,
+                )
 
             # Delete brand flavors that are no longer in Sheets
-            deleted_brand_uids = set(old_brands_map.keys()) - new_brands_seen
-            for uid in deleted_brand_uids:
-                brand_id, _ = old_brands_map[uid]
-                conn.execute("DELETE FROM brand_flavors WHERE id = ?", (brand_id,))
-                brands_deleted += 1
+            deleted_brand_ids = [
+                old_brands_map[uid][0] for uid in set(old_brands_map) - new_brands_seen
+            ]
+            if deleted_brand_ids:
+                conn.execute(
+                    text("DELETE FROM brand_flavors WHERE id = ANY(:ids)"),
+                    {"ids": deleted_brand_ids},
+                )
+            brands_inserted, brands_updated, brands_deleted = (
+                len(brand_inserts),
+                len(brand_updates),
+                len(deleted_brand_ids),
+            )
 
-            # Commit SQLite changes
             conn.commit()
 
             # Clear memory cache so next queries fetch fresh database rows
             DataIngestion.clear_mem_cache(domain)
 
             logger.info(
-                f"[LOAD] [{domain.upper()}] SQLite Incremental Update Complete: "
+                f"[LOAD] [{domain.upper()}] Database Incremental Update Complete: "
                 f"Catalog ({cat_inserted} inserted, {cat_updated} updated, {cat_deleted} deleted), "
                 f"Brands ({brands_inserted} inserted, {brands_updated} updated, {brands_deleted} deleted)."
             )
@@ -1016,7 +1031,7 @@ class DataIngestion:
         finally:
             conn.close()
 
-        # Delete old Feather caches so we read fresh from SQLite
+        # Delete old Feather caches so we read fresh from the database
         cat_feather = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
         brands_feather = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
         for fpath in [cat_feather, brands_feather]:
@@ -1055,25 +1070,27 @@ class DataIngestion:
     def load_classifier_dictionaries(
         sheet_id: str, domain: str = config.DOMAIN_MARKET, force_fetch: bool = False
     ) -> dict[str, list[str]]:
-        """Loads tag dictionaries from SQLite DB or local JSON cache. If DB is empty and force_fetch=True, imports from Google Sheets."""
-        conn = ensure_db_initialized()
+        """Loads tag dictionaries from the DB or local JSON cache. If DB is empty and force_fetch=True, imports from Google Sheets."""
+        conn = get_connection()
+        p = {"domain": domain}
 
         try:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT COUNT(*) FROM classifier_dictionaries WHERE domain = ?", (domain,)
-            )
-            count = cursor.fetchone()[0]
+            count = conn.execute(
+                text("SELECT COUNT(*) FROM classifier_dictionaries WHERE domain = :domain"), p
+            ).scalar()
         except Exception as e:
             logger.warning(f"[LOAD] classifier_dictionaries table check failed: {e}")
+            conn.rollback()
             count = 0
 
         if not force_fetch and count > 0:
             try:
-                cursor.execute(
-                    "SELECT tag_type, tag FROM classifier_dictionaries WHERE domain = ?", (domain,)
-                )
-                rows = cursor.fetchall()
+                rows = conn.execute(
+                    text(
+                        "SELECT tag_type, tag FROM classifier_dictionaries WHERE domain = :domain"
+                    ),
+                    p,
+                ).fetchall()
                 conn.close()
 
                 dicts = {"gk": [], "bt": []}
@@ -1085,14 +1102,16 @@ class DataIngestion:
                         dicts[tag_type].append(tag)
                 return dicts
             except Exception as e:
-                logger.error(f"[LOAD] Failed to load classifier dictionaries from SQLite: {e}")
+                logger.error(
+                    f"[LOAD] Failed to load classifier dictionaries from the database: {e}"
+                )
                 if conn:
                     conn.close()
 
+        conn.close()
+
         # Check local JSON cache before raising error if not force_fetch
         if not force_fetch:
-            if conn:
-                conn.close()
             dicts_cache = os.path.join(config.CACHE_DIR, f"{domain}_classifier_dicts.json")
             if os.path.exists(dicts_cache):
                 try:
@@ -1102,7 +1121,7 @@ class DataIngestion:
                     logger.warning(f"[LOAD] Failed to read JSON dict cache: {e}")
 
             raise RuntimeError(
-                f"[LOAD] No classifier dictionaries found in SQLite or local cache for domain '{domain}'. "
+                f"[LOAD] No classifier dictionaries found in the database or local cache for domain '{domain}'. "
                 f"Please run 'python -m scripts.catalog.sync' to initialize dictionaries."
             )
 
@@ -1118,9 +1137,12 @@ class DataIngestion:
             third_tag_key: f"{domain_suffix}_{third_tag_sheet}",
         }
 
-        conn = ensure_db_initialized()
+        conn = get_connection()
         try:
-            conn.execute("DELETE FROM classifier_dictionaries WHERE domain = ?", (domain,))
+            conn.execute(
+                text("DELETE FROM classifier_dictionaries WHERE domain = :domain"),
+                {"domain": domain},
+            )
 
             for key, sheet_name in sheets_to_load.items():
                 df = DataIngestion._fetch_sheet_as_csv(sheet_id, sheet_name, header=None, dtype=str)
@@ -1128,16 +1150,16 @@ class DataIngestion:
                 keywords = [k for k in keywords if k]
 
                 dicts[key] = keywords
-                for kw in keywords:
+                if keywords:
                     conn.execute(
-                        """
-                        INSERT INTO classifier_dictionaries (domain, tag_type, tag) VALUES (?, ?, ?)
-                    """,
-                        (domain, key, kw),
+                        text(
+                            "INSERT INTO classifier_dictionaries (domain, tag_type, tag) VALUES (:domain, :tag_type, :tag)"
+                        ),
+                        [{"domain": domain, "tag_type": key, "tag": kw} for kw in keywords],
                     )
 
             conn.commit()
-            logger.info(f"[LOAD] Imported classifier dictionaries into SQLite ({domain}).")
+            logger.info(f"[LOAD] Imported classifier dictionaries into the database ({domain}).")
         except Exception as e:
             conn.rollback()
             logger.error(f"[LOAD] Failed to import classifier dictionaries: {e}")
@@ -1151,23 +1173,23 @@ class DataIngestion:
     def build_bt_gk_map_from_catalog(
         domain: str = config.DOMAIN_MARKET,
         cat_df: pd.DataFrame | None = None,
-        conn: sqlite3.Connection | None = None,
+        conn: Connection | None = None,
     ) -> dict[str, list[str]]:
         """
-        Builds the BT→GK map on the fly from catalog data (SQLite catalog_items or DataFrame).
-        Persists the mappings into SQLite bt_gk_map table and returns {basictype: [generic_keywords]}.
+        Builds the BT→GK map on the fly from catalog data (catalog_items table or DataFrame).
+        Persists the mappings into the bt_gk_map table and returns {basictype: [generic_keywords]}.
         """
         close_conn = False
         if conn is None:
-            conn = ensure_db_initialized()
+            conn = get_connection()
             close_conn = True
         try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT basictype, generic_keywords FROM catalog_items WHERE domain = ? AND basictype IS NOT NULL AND generic_keywords IS NOT NULL",
-                (domain,),
-            )
-            cat_rows = cur.fetchall()
+            cat_rows = conn.execute(
+                text(
+                    "SELECT basictype, generic_keywords FROM catalog_items WHERE domain = :domain AND basictype IS NOT NULL AND generic_keywords IS NOT NULL"
+                ),
+                {"domain": domain},
+            ).fetchall()
 
             from collections import defaultdict
 
@@ -1220,17 +1242,19 @@ class DataIngestion:
                 sorted_gks = sorted(gks_set)
                 gks_str = ", ".join(sorted_gks)
                 result[bt] = sorted_gks
-                inserts.append((domain, bt, gks_str))
+                inserts.append({"domain": domain, "bt": bt, "gks": gks_str})
 
-            conn.execute("DELETE FROM bt_gk_map WHERE domain = ?", (domain,))
+            conn.execute(text("DELETE FROM bt_gk_map WHERE domain = :domain"), {"domain": domain})
             if inserts:
-                conn.executemany(
-                    "INSERT INTO bt_gk_map (domain, basictype, generic_keywords) VALUES (?, ?, ?)",
+                conn.execute(
+                    text(
+                        "INSERT INTO bt_gk_map (domain, basictype, generic_keywords) VALUES (:domain, :bt, :gks)"
+                    ),
                     inserts,
                 )
             conn.commit()
             logger.info(
-                f"[LOAD] [{domain.upper()}] Generated on the fly and imported {len(inserts)} BT→GK map entries into SQLite."
+                f"[LOAD] [{domain.upper()}] Generated on the fly and imported {len(inserts)} BT→GK map entries into the database."
             )
             return result
         except Exception as e:
@@ -1253,14 +1277,15 @@ class DataIngestion:
         Loads or generates BT-GK map. BT-GK maps are built on the fly from the catalog
         since they are not present in external Google Sheets tabs.
         """
-        conn = ensure_db_initialized()
+        conn = get_connection()
         try:
             if not force_fetch:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT basictype, generic_keywords FROM bt_gk_map WHERE domain = ?", (domain,)
-                )
-                rows = cursor.fetchall()
+                rows = conn.execute(
+                    text(
+                        "SELECT basictype, generic_keywords FROM bt_gk_map WHERE domain = :domain"
+                    ),
+                    {"domain": domain},
+                ).fetchall()
                 if rows:
                     result = {}
                     for bt, gks in rows:

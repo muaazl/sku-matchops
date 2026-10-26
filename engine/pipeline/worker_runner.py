@@ -1,7 +1,7 @@
 """
 SKU MatchOps Engine - Background Job Worker Runner
-Executes async batch jobs, emits incremental HTTP callbacks to the Backend Gateway,
-and handles Google Sheets webhook callbacks.
+Executes async batch jobs, persists results directly to PostgreSQL, emits progress/status
+HTTP callbacks to the Backend Gateway, and handles Google Sheets webhook callbacks.
 """
 
 import logging
@@ -15,8 +15,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from engine.core.db import log_outbound_request
+from engine.pipeline.persistence import record_job_completion, record_job_failure
 from engine.pipeline.processor import process_request
 from engine.pipeline.uploader import process_upload
+from engine.rules_engine.loader import get_rules_version
 
 logger = logging.getLogger("matchops.engine.worker")
 
@@ -137,6 +139,7 @@ def _worker_loop():
                 logger.debug(f"Failed to post progress to backend: {e}")
 
         try:
+            rule_version = get_rules_version()
             # Execute processing
             if task.lower() == "upload":
                 result_payload = process_upload(
@@ -204,30 +207,28 @@ def _worker_loop():
             result_payload["task"] = task
             result_payload["spreadsheet_id"] = spreadsheet_id
 
-            # Post completion to Backend Gateway
+            # Persist results directly; a DB error falls through to the failure path below
+            record_job_completion(
+                job_id=job_id,
+                domain=domain,
+                task=task,
+                results=res_list,
+                rule_version=rule_version,
+                duration_minutes=duration,
+                high_conf=high,
+                med_conf=med,
+                low_conf=low,
+                match_rate=match_rate,
+            )
+
+            # Notify the Backend Gateway so its in-memory progress state is finalized
             complete_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/complete"
             try:
-                _http_session.post(
-                    complete_endpoint,
-                    json={
-                        "status": "completed",
-                        "duration_minutes": duration,
-                        "high_conf": high,
-                        "med_conf": med,
-                        "low_conf": low,
-                        "match_rate": match_rate,
-                        "results": res_list,
-                        "raw_payload": result_payload,
-                        "callback_url": callback_url,
-                    },
-                    timeout=30,
-                )
-                logger.info(
-                    f"[ENGINE WORKER] Job {job_id} completed in {duration}m. Results delivered to backend."
-                )
+                _http_session.post(complete_endpoint, json={"status": "completed"}, timeout=10)
+                logger.info(f"[ENGINE WORKER] Job {job_id} completed in {duration}m.")
             except Exception as be_err:
                 logger.error(
-                    f"[ENGINE WORKER] Failed to deliver completion to backend for job {job_id}: {be_err}"
+                    f"[ENGINE WORKER] Failed to notify backend of completion for job {job_id}: {be_err}"
                 )
 
             # Post direct Google Sheets callback if provided
@@ -277,18 +278,14 @@ def _worker_loop():
             duration = round((time.time() - t0) / 60, 4)
             logger.error(f"[ENGINE WORKER] Job {job_id} failed: {e}", exc_info=True)
 
+            try:
+                record_job_failure(job_id, str(e), duration)
+            except Exception as db_err:
+                logger.error(f"[ENGINE WORKER] Failed to record failure of job {job_id}: {db_err}")
+
             fail_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/fail"
             try:
-                _http_session.post(
-                    fail_endpoint,
-                    json={
-                        "status": "failed",
-                        "error_message": str(e),
-                        "duration_minutes": duration,
-                        "callback_url": callback_url,
-                    },
-                    timeout=15,
-                )
+                _http_session.post(fail_endpoint, json={"status": "failed"}, timeout=15)
             except Exception as be_err:
                 logger.error(f"[ENGINE WORKER] Failed to notify backend of job failure: {be_err}")
 

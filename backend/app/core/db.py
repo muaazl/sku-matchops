@@ -1,41 +1,22 @@
-import sqlite3
+from sqlalchemy import Connection, text
 
-from engine.config import DB_PATH
-from engine.core.db import ensure_db_initialized
+from engine.core.db import get_connection, get_engine
+
+__all__ = ["get_db_connection", "get_engine", "get_next_job_id"]
 
 
 def get_db_connection():
-    """FastAPI dependency for SQLite database connection."""
-    conn = ensure_db_initialized(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    """FastAPI dependency yielding a pooled PostgreSQL connection."""
+    conn = get_connection()
     try:
         yield conn
     finally:
         conn.close()
 
 
-def get_next_job_id(conn_or_path=None) -> str:
+def get_next_job_id(conn: Connection) -> str:
     """Gets the next sequential job ID starting from 1."""
-    is_conn = False
-    if conn_or_path is None:
-        conn = sqlite3.connect(DB_PATH, timeout=60.0)
-    elif hasattr(conn_or_path, "cursor"):
-        conn = conn_or_path
-        is_conn = True
-    else:
-        conn = sqlite3.connect(conn_or_path, timeout=60.0)
-
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COALESCE(MAX(CAST(id AS INTEGER)), 0) + 1 FROM jobs WHERE id GLOB '[0-9]*'"
-        )
-        row = cursor.fetchone()
-        next_id = row[0] if row and row[0] else 1
-    except Exception:
-        next_id = 1
-    finally:
-        if not is_conn:
-            conn.close()
-
-    return str(next_id)
+    row = conn.execute(
+        text("SELECT COALESCE(MAX(CAST(id AS BIGINT)), 0) + 1 FROM jobs WHERE id ~ '^[0-9]+$'")
+    ).fetchone()
+    return str(row[0] if row and row[0] else 1)

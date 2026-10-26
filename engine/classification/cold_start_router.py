@@ -1,7 +1,6 @@
 import enum
 import logging
 import os
-import sqlite3
 import threading
 from typing import Any
 
@@ -169,23 +168,26 @@ class TaxonomyLifecycleRegistry:
                 if bt_col:
                     vc = cat_df[bt_col].astype(str).str.strip().value_counts()
                     counts = {str(k): int(v) for k, v in vc.items() if str(k).strip()}
-            elif os.path.exists(config.DB_PATH):
-                # Fall back to SQLite catalog_items table
+            else:
+                # Fall back to the catalog_items table
                 try:
-                    conn = sqlite3.connect(config.DB_PATH)
-                    cur = conn.cursor()
-                    cur.execute(
-                        "SELECT basictype, COUNT(*) FROM catalog_items WHERE domain = ? GROUP BY basictype",
-                        (self.domain,),
-                    )
-                    rows = cur.fetchall()
-                    conn.close()
+                    from sqlalchemy import text
+
+                    from engine.core.db import get_connection
+
+                    with get_connection() as conn:
+                        rows = conn.execute(
+                            text(
+                                "SELECT basictype, COUNT(*) FROM catalog_items WHERE domain = :domain GROUP BY basictype"
+                            ),
+                            {"domain": self.domain},
+                        ).fetchall()
                     counts = {
                         str(r[0]).strip(): int(r[1]) for r in rows if r[0] and str(r[0]).strip()
                     }
                 except Exception as db_err:
                     logger.warning(
-                        f"[{self.domain}] Could not read class counts from SQLite: {db_err}"
+                        f"[{self.domain}] Could not read class counts from the database: {db_err}"
                     )
 
             # Assign counts for all known BTs

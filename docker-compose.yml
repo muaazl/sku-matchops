@@ -1,7 +1,41 @@
 services:
-  # Internal-only services (qdrant, meilisearch, engine) are NOT published to the
+  # Internal-only services (postgres, qdrant, meilisearch, engine) are NOT published to the
   # host. They communicate over the private compose network by service name.
   # For local debugging, docker-compose.override.yml re-publishes their ports.
+  postgres:
+    image: postgres:16-alpine
+    container_name: sku_matchops_postgres
+    expose:
+      - "5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-matchops}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-matchops}
+      - POSTGRES_DB=${POSTGRES_DB:-matchops}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-matchops} -d ${POSTGRES_DB:-matchops}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # One-shot: applies Alembic migrations before the Gateway and Engine start.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: sku_matchops_migrate
+    entrypoint: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: sku_matchops_qdrant
@@ -40,6 +74,7 @@ services:
       - ENGINE_PORT=8001
       - USE_INT8_MODELS=true
       - TZ=Asia/Colombo
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
     env_file:
       - .env
     volumes:
@@ -48,8 +83,12 @@ services:
       - ./models:/app/models:ro
       - ./scripts:/app/scripts
     depends_on:
-      - qdrant
-      - meilisearch
+      qdrant:
+        condition: service_started
+      meilisearch:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   backend:
@@ -65,6 +104,7 @@ services:
       - ENGINE_URL=http://engine:8001
       - BACKEND_INTERNAL_URL=http://backend:8000
       - TZ=Asia/Colombo
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
     env_file:
       - .env
     volumes:
@@ -72,9 +112,14 @@ services:
       - ./engine:/app/engine
       - ./data:/app/data
       - ./scripts:/app/scripts
+      - ./migrations:/app/migrations
     depends_on:
-      - meilisearch
-      - engine
+      meilisearch:
+        condition: service_started
+      engine:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:

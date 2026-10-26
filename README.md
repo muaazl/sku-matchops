@@ -20,7 +20,7 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
                       │          http://localhost:8000          │
                       │  • Business Rules Engine (AST)          │
                       │  • Batch Job Orchestration & Workers    │
-                      │  • SQLite Audit Trail / WAL Cache       │
+                      │  • PostgreSQL Audit Trail (SQLAlchemy)  │
                       └────────────┬───────────────┬────────────┘
                                    │               │
             ┌──────────────────────┘               └──────────────────────┐
@@ -52,6 +52,7 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 | **`engine`** | `8001` | Dedicated ML inference microservice serving INT8 ONNX models and zero-shot entity extractors. |
 | **`qdrant`** | `6333` | Vector database managing BGE-M3 dense and sparse embeddings with HNSW indexing. |
 | **`meilisearch`** | `7700` | Typo-tolerant lexical search engine for high-speed catalog candidate retrieval. |
+| **`postgres`** | `5432` | PostgreSQL 16 for jobs, rules, and per-SKU audit results. Both the gateway and the engine connect directly via a pooled SQLAlchemy engine; schema is managed by Alembic (`migrate` one-shot service runs `alembic upgrade head`). |
 
 ---
 
@@ -158,10 +159,13 @@ If you prefer running the Python and Node services directly on your host machine
 - Python 3.10+ (Python 3.11 recommended)
 - `uv` (recommended for ultra-fast pip installs) or `pip`
 - Node.js 18+ and `pnpm` (install via `npm install -g pnpm`)
-- Running instances of **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these two database containers using Docker:
+- Running instances of **PostgreSQL** (`localhost:5432`), **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these database containers using Docker:
   ```bash
-  docker compose up -d qdrant meilisearch
+  docker compose up -d postgres qdrant meilisearch
+  alembic upgrade head   # create/upgrade the schema (DATABASE_URL from .env)
   ```
+- Upgrading from the SQLite version? Copy your existing data once with
+  `python -m scripts.database.migrate --sqlite data/sku-matchops.db`.
 
 ### 2. Python Environment Setup
 ```bash
@@ -204,6 +208,9 @@ pnpm start
 | Variable | Required | Description |
 | :--- | :--- | :--- |
 | `GOOGLE_SHEET_ID` | Yes (live mode) | Google Sheet ID containing catalog and taxonomy tabs. |
+| `DATABASE_URL` | Yes | PostgreSQL URL (`postgresql+psycopg://user:pass@host:5432/db`). |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | No | SQLAlchemy connection pool per process. Defaults to `10` / `20`. |
+| `DB_BULK_CHUNK_SIZE` | No | Rows per INSERT when bulk-writing per-SKU results. Defaults to `1000`. |
 | `ENGINE_URL` | Yes | URL of the ML inference engine microservice. |
 | `BACKEND_INTERNAL_URL` | Yes | Internal backend gateway URL. |
 | `QDRANT_URL` | Yes | Qdrant vector database URL. |

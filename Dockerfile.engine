@@ -23,6 +23,8 @@ RUN pip install --no-cache-dir -r /app/engine/requirements.txt && \
 
 COPY engine /app/engine
 COPY scripts /app/scripts
+COPY alembic.ini /app/alembic.ini
+COPY migrations /app/migrations
 
 COPY docker-entrypoint-engine.py /app/docker-entrypoint-engine.py
 

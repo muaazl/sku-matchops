@@ -7,6 +7,7 @@ from typing import Any
 import joblib
 import pandas as pd
 import requests
+from sqlalchemy import text
 
 from engine import config as engine_config
 from engine.data_pipeline.cache_manager import calculate_row_hash, clean_price
@@ -55,22 +56,22 @@ def get_bt_gk_cache(domain: str) -> dict[str, Any]:
         except Exception as e:
             logger.warning(f"Failed to load BT-GK cache for domain {domain}: {e}")
 
-    # Reconstruct from SQLite bt_gk_map table if pkl cache is missing
+    # Reconstruct from the bt_gk_map table if pkl cache is missing
     try:
-        from engine.core.db import ensure_db_initialized
+        from engine.core.db import get_connection
 
-        conn = ensure_db_initialized()
-        cur = conn.cursor()
-        cur.execute("SELECT basictype, generic_keywords FROM bt_gk_map WHERE domain = ?", (domain,))
-        rows = cur.fetchall()
-        conn.close()
+        with get_connection() as conn:
+            rows = conn.execute(
+                text("SELECT basictype, generic_keywords FROM bt_gk_map WHERE domain = :domain"),
+                {"domain": domain},
+            ).fetchall()
         if rows:
             bt_gk_map = {}
             for bt, gks in rows:
                 bt_gk_map[bt] = [k.strip() for k in gks.split(",") if k.strip()]
             return {"bt_gk_map": bt_gk_map, "umbrella": {}, "third_tag_map": {}}
     except Exception as db_err:
-        logger.warning(f"Failed to load BT-GK map from SQLite for domain {domain}: {db_err}")
+        logger.warning(f"Failed to load BT-GK map from the database for domain {domain}: {db_err}")
 
     return {"bt_gk_map": {}, "umbrella": {}, "third_tag_map": {}}
 
@@ -108,17 +109,19 @@ def _build_occurrence_uids(df: pd.DataFrame, name_col: str = "Name"):
 
 
 def check_changes_for_domain(domain: str, limit: int = 50) -> dict:
-    """Checks differences between Google Sheets and local SQLite cached catalog items."""
-    import sqlite3
-
+    """Checks differences between Google Sheets and the cached catalog items in the database."""
     import polars as pl
 
-    conn = sqlite3.connect(engine_config.DB_PATH)
+    from engine.core.db import get_connection
+
+    conn = get_connection()
     cached_df = pd.DataFrame()
     old_hashes = {}
     try:
         cached_df = pd.read_sql_query(
-            "SELECT * FROM catalog_items WHERE domain = ?", conn, params=[domain]
+            text("SELECT * FROM catalog_items WHERE domain = :domain"),
+            conn,
+            params={"domain": domain},
         )
         cached_df = cached_df.rename(
             columns={
@@ -149,7 +152,7 @@ def check_changes_for_domain(domain: str, limit: int = 50) -> dict:
                 if raw_name not in cached_by_name:
                     cached_by_name[raw_name] = record
     except Exception as db_err:
-        logger.warning(f"Failed to load cached items from SQLite: {db_err}")
+        logger.warning(f"Failed to load cached items from the database: {db_err}")
     finally:
         conn.close()
 

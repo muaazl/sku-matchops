@@ -1,20 +1,20 @@
 import json
 import logging
-import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
-from backend.app.core.db import get_db_connection, get_next_job_id
+from backend.app.core.db import get_engine, get_next_job_id
 from backend.app.schemas.models import EnqueueJobResponse, UploadRequest
 from backend.app.services.engine_client import dispatch_upload_job
-from engine.config import DB_PATH
 
 router = APIRouter()
 logger = logging.getLogger("matchops.api.upload")
 
 
 @router.post("/upload", response_model=EnqueueJobResponse)
-def trigger_upload(request: UploadRequest, db: sqlite3.Connection = Depends(get_db_connection)):
+def trigger_upload(request: UploadRequest):
     if not request.skus:
         raise HTTPException(status_code=400, detail="'skus' list is empty.")
 
@@ -27,38 +27,33 @@ def trigger_upload(request: UploadRequest, db: sqlite3.Connection = Depends(get_
     # We use a new connection here to handle the get_next_job_id retry logic
     # similar to the worker enqueue_job logic.
     for attempt in range(1, max_attempts + 1):
-        conn = sqlite3.connect(DB_PATH, timeout=60.0)
+        conn = get_engine().connect()
         try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA busy_timeout=60000;")
             job_id = get_next_job_id(conn)
 
             # Using target_sheet to store the outlet_id_or_name as requested
             conn.execute(
-                """
+                text("""
                 INSERT INTO jobs (
                     id, batch_id, type, status, current_stage,
                     total_items, completed_items, created_by,
                     started_at, domain, target_sheet, input_skus_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
-                """,
-                (
-                    job_id,
-                    job_id,
-                    "upload",
-                    "queued",
-                    "queued",
-                    len(request.skus),
-                    0,
-                    "system",
-                    domain,
-                    request.outlet_id_or_name,
-                    input_skus_json,
-                ),
+                ) VALUES (
+                    :id, :id, 'upload', 'queued', 'queued', :total_items, 0, 'system',
+                    now(), :domain, :target_sheet, :input_skus_json
+                )
+                """),
+                {
+                    "id": job_id,
+                    "total_items": len(request.skus),
+                    "domain": domain,
+                    "target_sheet": request.outlet_id_or_name,
+                    "input_skus_json": input_skus_json,
+                },
             )
             conn.commit()
             break
-        except sqlite3.IntegrityError as e:
+        except IntegrityError as e:
             conn.rollback()
             job_id = None
             if attempt == max_attempts:
@@ -80,14 +75,13 @@ def trigger_upload(request: UploadRequest, db: sqlite3.Connection = Depends(get_
     except Exception as dispatch_err:
         logger.error(f"[JOB {job_id}] Dispatch to ML Engine failed: {dispatch_err}")
         try:
-            conn = sqlite3.connect(DB_PATH, timeout=60.0)
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute(
-                "UPDATE jobs SET status = 'failed', current_stage = 'failed', error_message = ? WHERE id = ?",
-                (str(dispatch_err), job_id),
-            )
-            conn.commit()
-            conn.close()
+            with get_engine().begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE jobs SET status = 'failed', current_stage = 'failed', error_message = :err WHERE id = :id"
+                    ),
+                    {"err": str(dispatch_err), "id": job_id},
+                )
         except Exception:
             pass
         raise HTTPException(

@@ -1,6 +1,5 @@
-import sqlite3
-
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy import Connection, text
 
 from backend.app.core.db import get_db_connection
 from backend.app.schemas.models import (
@@ -24,10 +23,10 @@ def create_batch(
     created_by: str = Form(...),
     task: str = Form("pipeline"),
     file: UploadFile = File(...),
-    db: sqlite3.Connection = Depends(get_db_connection),
+    db: Connection = Depends(get_db_connection),
 ):
     # A plain `def` endpoint runs in FastAPI's threadpool rather than on the event loop,
-    # so the blocking SQLite writes and the blocking dispatch POST to the engine below
+    # so the blocking DB writes and the blocking dispatch POST to the engine below
     # (both inside enqueue_job) don't stall every other request while this one is in flight.
     if task not in ("pipeline", "matcher", "classifier"):
         raise HTTPException(status_code=400, detail="Invalid task type.")
@@ -68,11 +67,11 @@ def create_batch(
 
     # Insert batch entry
     db.execute(
-        """
+        text("""
         INSERT INTO batches (id, source, filename, domain, status, created_by)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (job_id, "upload", filename, domain, "queued", created_by),
+        VALUES (:id, 'upload', :filename, :domain, 'queued', :created_by)
+        """),
+        {"id": job_id, "filename": filename, "domain": domain, "created_by": created_by},
     )
     db.commit()
 
@@ -109,8 +108,8 @@ def merchant_fetch(request: MerchantFetchRequest):
 
 
 @router.get("/batches/{id}", response_model=BatchResponse)
-def get_batch(id: str, db: sqlite3.Connection = Depends(get_db_connection)):
-    row = db.execute("SELECT * FROM batches WHERE id = ?", (id,)).fetchone()
+def get_batch(id: str, db: Connection = Depends(get_db_connection)):
+    row = db.execute(text("SELECT * FROM batches WHERE id = :id"), {"id": id}).mappings().fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Batch not found")
     return dict(row)

@@ -5,21 +5,26 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
+from sqlalchemy import text
 
 from backend.app.services.catalog_service import (
     get_bt_gk_cache,
     get_classifier_dicts,
 )
 from engine import config
-from engine.core.db import ensure_db_initialized
+from engine.core.db import get_engine
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.rules_engine.evaluator import _load_flavor_data, clear_flavor_cache
 
+_CATALOG_TABLES = "catalog_items, brand_flavors, classifier_dictionaries, bt_gk_map"
 
+
+@pytest.mark.usefixtures("pg")
 class TestCacheFallbackIsolation(unittest.TestCase):
     """
     Verifies that runtime catalog, dictionary, and rules queries strictly use local
-    in-memory, Feather, and SQLite caches without attempting any network HTTP calls
+    in-memory, Feather, and database caches without attempting any network HTTP calls
     to Google Sheets.
     """
 
@@ -27,52 +32,50 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         self.orig_cache_dir = config.CACHE_DIR
         self.orig_staging_dir = config.STAGING_DIR
-        self.orig_db_path = config.DB_PATH
 
         config.CACHE_DIR = self.test_dir
         config.STAGING_DIR = os.path.join(self.test_dir, "staged")
-        config.DB_PATH = os.path.join(self.test_dir, "test_matchops.db")
 
-        # Initialize SQLite DB
-        conn = ensure_db_initialized(config.DB_PATH)
+        conn = get_engine().connect()
+        conn.execute(text(f"TRUNCATE {_CATALOG_TABLES} RESTART IDENTITY"))
 
-        # Seed minimal SQLite catalog and brand records for 'market' domain
+        # Seed minimal catalog and brand records for 'market' domain
         conn.execute(
-            """
+            text("""
             INSERT INTO catalog_items (domain, name, brand, category, basictype, generic_keywords, price, clean_text, row_hash)
             VALUES ('market', 'Anchor Butter 200g', 'Anchor', 'Dairy', 'Butter', 'Dairy, Butter', 850.0, 'anchor butter 200g', 'hash_market_1')
-            """
+            """)
         )
         conn.execute(
-            """
+            text("""
             INSERT INTO brand_flavors (domain, name, aliases, is_weak, row_hash)
             VALUES ('market', 'Anchor', 'anchor,anchr', 0, 'hash_brand_1')
-            """
+            """)
         )
-        # Seed minimal SQLite records for 'food' domain
+        # Seed minimal records for 'food' domain
         conn.execute(
-            """
+            text("""
             INSERT INTO catalog_items (domain, name, flavor, region, basictype, generic_keywords, price, clean_text, row_hash)
             VALUES ('food', 'Chicken Fried Rice', 'Chicken', 'Sri Lankan', 'Fried Rice', 'Rice, Fried Rice', 1200.0, 'chicken fried rice', 'hash_food_1')
-            """
+            """)
         )
         conn.execute(
-            """
+            text("""
             INSERT INTO brand_flavors (domain, name, aliases, is_meat, is_vegetable, is_seafood, row_hash)
             VALUES ('food', 'Chicken', 'chk,chick', 1, 0, 0, 'hash_flavor_1')
-            """
+            """)
         )
         conn.execute(
-            """
+            text("""
             INSERT INTO classifier_dictionaries (domain, tag_type, tag, catalog_count)
             VALUES ('market', 'bt', 'Butter', 1), ('market', 'gk', 'Dairy', 1)
-            """
+            """)
         )
         conn.execute(
-            """
+            text("""
             INSERT INTO bt_gk_map (domain, basictype, generic_keywords, catalog_count, gk_count)
             VALUES ('market', 'Butter', 'Dairy, Butter', 1, 2)
-            """
+            """)
         )
         conn.commit()
         conn.close()
@@ -84,6 +87,8 @@ class TestCacheFallbackIsolation(unittest.TestCase):
     def tearDown(self):
         DataIngestion.clear_mem_cache()
         clear_flavor_cache()
+        with get_engine().begin() as conn:
+            conn.execute(text(f"TRUNCATE {_CATALOG_TABLES} RESTART IDENTITY"))
         config.CACHE_DIR = self.orig_cache_dir
         config.STAGING_DIR = self.orig_staging_dir
         import gc
@@ -145,7 +150,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
             )
 
         self.assertIn(
-            "No catalog data found in memory, Feather cache, or SQLite", str(ctx.exception)
+            "No catalog data found in memory, Feather cache, or the database", str(ctx.exception)
         )
         self.assertFalse(
             mock_get.called, "requests.get must NOT be called when force_fetch=False on cache miss!"

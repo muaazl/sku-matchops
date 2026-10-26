@@ -42,10 +42,17 @@ CACHE_DIR = os.path.join(DATA_DIR, "cache")
 STAGING_DIR = os.path.join(CACHE_DIR, "staged_sheets")
 QDRANT_DATA_DIR = os.path.join(DATA_DIR, "qdrant")
 
-DB_DIR = DATA_DIR
-DB_PATH = os.path.join(DB_DIR, "sku-matchops.db")
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
+
+# --- PostgreSQL (shared by the Gateway and the Engine) ---
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql+psycopg://matchops:matchops@localhost:5432/matchops"
+)
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+# Rows per INSERT statement when bulk-writing per-SKU results
+DB_BULK_CHUNK_SIZE = int(os.getenv("DB_BULK_CHUNK_SIZE", "1000"))
 
 # --- External Services & Integrations ---
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")

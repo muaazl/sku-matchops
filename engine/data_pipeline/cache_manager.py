@@ -378,12 +378,12 @@ class CacheManager:
             f"[CACHE] [{domain.upper()}] ✓ Successfully synced {len(changed_df)} catalog items to Qdrant."
         )
 
-        # 6. Finalize Local Cache (update SQLite DB)
-        import sqlite3
+        # 6. Finalize Local Cache (update the database)
+        from sqlalchemy import text
 
-        conn = sqlite3.connect(config.DB_PATH, timeout=60.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=60000;")
+        from engine.core.db import get_connection
+
+        conn = get_connection()
         try:
             update_rows = []
             records = changed_df.to_dict(orient="records")
@@ -406,8 +406,11 @@ class CacheManager:
                     )
 
                 w_val = row.get("weight_val")
-                # Since weight_val is a tuple (value, unit, type), serialize it as JSON for SQLite storage
-                w_json = json.dumps(w_val) if isinstance(w_val, (tuple, list)) else w_val
+                # weight_val is a TEXT column of JSON: the (value, unit, type) tuple or a bare number
+                if w_val is None or (isinstance(w_val, float) and pd.isna(w_val)):
+                    w_json = None
+                else:
+                    w_json = w_val if isinstance(w_val, str) else json.dumps(w_val)
 
                 token_cnt = row.get("token_count")
                 token_cnt_val = (
@@ -415,38 +418,38 @@ class CacheManager:
                 )
 
                 update_rows.append(
-                    (
-                        row.get("clean_text"),
-                        w_json,
-                        ent_json,
-                        token_cnt_val,
-                        row.get("clean_no_weights"),
-                        domain,
-                        row.get("row_hash"),
-                    )
+                    {
+                        "clean_text": row.get("clean_text"),
+                        "weight_val": w_json,
+                        "entities_json": ent_json,
+                        "token_count": token_cnt_val,
+                        "clean_no_weights": row.get("clean_no_weights"),
+                        "domain": domain,
+                        "row_hash": row.get("row_hash"),
+                    }
                 )
 
             if update_rows:
-                conn.executemany(
-                    """
+                conn.execute(
+                    text("""
                     UPDATE catalog_items
-                    SET clean_text = ?,
-                        weight_val = ?,
-                        entities_json = ?,
-                        token_count = ?,
-                        clean_no_weights = ?
-                    WHERE domain = ? AND row_hash = ?
-                """,
+                    SET clean_text = :clean_text,
+                        weight_val = :weight_val,
+                        entities_json = :entities_json,
+                        token_count = :token_count,
+                        clean_no_weights = :clean_no_weights
+                    WHERE domain = :domain AND row_hash = :row_hash
+                """),
                     update_rows,
                 )
             conn.commit()
             logger.info(
-                f"[CACHE] [{domain.upper()}] Saved computed metadata for {len(changed_df)} rows directly to SQLite."
+                f"[CACHE] [{domain.upper()}] Saved computed metadata for {len(changed_df)} rows directly to the database."
             )
         except Exception as db_err:
             conn.rollback()
             logger.error(
-                f"[CACHE] [{domain.upper()}] Failed to commit NLP metadata to SQLite: {db_err}"
+                f"[CACHE] [{domain.upper()}] Failed to commit NLP metadata to the database: {db_err}"
             )
         finally:
             conn.close()

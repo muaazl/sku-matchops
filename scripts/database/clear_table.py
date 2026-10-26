@@ -1,7 +1,8 @@
 import argparse
 import os
-import sqlite3
 import sys
+
+from sqlalchemy import inspect, text
 
 # Add project root to python path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -9,47 +10,36 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from engine.config import DB_PATH
+from engine.core.db import get_engine
 
 
 def clear_table(table_name):
-    if not os.path.exists(DB_PATH):
-        print(f"Error: Database file does not exist at {os.path.abspath(DB_PATH)}")
+    engine = get_engine()
+    print(f"Connecting to database at {engine.url.render_as_string(hide_password=True)}")
+
+    # Validate that the table exists (prevents SQL injection and typos)
+    tables = inspect(engine).get_table_names()
+    if table_name not in tables:
+        print(f"Error: Table '{table_name}' does not exist in the database.")
+        print(f"Available tables: {', '.join(tables)}")
         sys.exit(1)
 
-    print(f"Connecting to database at {os.path.abspath(DB_PATH)}")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
     try:
-        # Validate that the table exists (prevents SQL injection and typos)
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = [row[0] for row in cursor.fetchall()]
+        with engine.begin() as conn:
+            # Get count before deletion
+            row_count = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
 
-        if table_name not in tables:
-            print(f"Error: Table '{table_name}' does not exist in the database.")
-            print(f"Available tables: {', '.join(tables)}")
-            sys.exit(1)
+            if row_count == 0:
+                print(f"Table '{table_name}' is already empty. No action taken.")
+                return
 
-        # Get count before deletion
-        cursor.execute(f"SELECT COUNT(*) FROM {table_name};")
-        row_count = cursor.fetchone()[0]
-
-        if row_count == 0:
-            print(f"Table '{table_name}' is already empty. No action taken.")
-            return
-
-        # Delete rows
-        cursor.execute(f"DELETE FROM {table_name};")
-        conn.commit()
+            # Delete rows
+            conn.execute(text(f"DELETE FROM {table_name}"))
 
         print(f"Successfully deleted {row_count} rows from table '{table_name}'.")
 
     except Exception as e:
         print(f"Error clearing table '{table_name}': {e}")
-        conn.rollback()
-    finally:
-        conn.close()
 
 
 if __name__ == "__main__":

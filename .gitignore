@@ -63,6 +63,7 @@ data/*.db-shm
 data/meilisearch/
 data/meilisearch_data/
 data/qdrant/
+data/postgres/
 data/cache/
 
 # Models, Engine Caching, Vector Stores & Exports

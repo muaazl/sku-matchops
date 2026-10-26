@@ -1,13 +1,18 @@
 import functools
+import hashlib
+import json
 import logging
 
-from engine.config import DB_PATH
-from engine.core.db import ensure_db_initialized
+from sqlalchemy import text
+
+from engine.core.db import get_connection
 
 logger = logging.getLogger("matchops.rules_loader")
 
 # In-memory cache: { domain: { module: [ rule_dicts ] } }
 _RULES_CACHE = None
+# Fingerprint of the loaded active rule set; part of the processed_skus idempotency key
+_RULES_VERSION = "none"
 
 
 class Rule:
@@ -26,29 +31,34 @@ class Rule:
 
 def load_rules_from_db():
     """Loads all active rules from the database into the in-memory cache."""
-    global _RULES_CACHE
+    global _RULES_CACHE, _RULES_VERSION
     try:
-        conn = ensure_db_initialized(DB_PATH)
+        with get_connection() as conn:
+            rules_rows = conn.execute(
+                text("""
+                SELECT id, rule_id, domain, priority, description, reasoning, condition_logic, is_active
+                FROM rules WHERE is_active = 1
+                ORDER BY priority ASC, rule_id ASC
+            """)
+            ).fetchall()
+            cond_rows = conn.execute(
+                text(
+                    "SELECT rule_id, condition_group, condition_type, value, negate FROM conditions ORDER BY id"
+                )
+            ).fetchall()
+            act_rows = conn.execute(
+                text("SELECT rule_id, action_type, value FROM actions ORDER BY id")
+            ).fetchall()
     except Exception as e:
-        logger.warning(
-            f"Could not initialize rules database at {DB_PATH}: {e}. Rules engine will be empty."
-        )
+        logger.warning(f"Could not load rules from the database: {e}. Rules engine will be empty.")
         _RULES_CACHE = {}
+        _RULES_VERSION = "none"
         return
-
-    cursor = conn.cursor()
-
-    # 1. Load active rules
-    cursor.execute("""
-        SELECT id, rule_id, domain, priority, description, reasoning, condition_logic, is_active
-        FROM rules WHERE is_active = 1
-        ORDER BY priority ASC
-    """)
-    rules_rows = cursor.fetchall()
 
     rules_map = {}
     new_cache = {}
 
+    # 1. Active rules
     for row in rules_rows:
         rule = Rule(row)
         rules_map[rule.rule_id] = rule
@@ -58,9 +68,8 @@ def load_rules_from_db():
 
         new_cache[rule.domain].append(rule)
 
-    # 2. Load conditions
-    cursor.execute("SELECT rule_id, condition_group, condition_type, value, negate FROM conditions")
-    for row in cursor.fetchall():
+    # 2. Conditions
+    for row in cond_rows:
         rule_id = row[0]
         if rule_id in rules_map:
             rules_map[rule_id].conditions.append(
@@ -72,16 +81,20 @@ def load_rules_from_db():
                 }
             )
 
-    # 3. Load actions
-    cursor.execute("SELECT rule_id, action_type, value FROM actions")
-    for row in cursor.fetchall():
+    # 3. Actions
+    for row in act_rows:
         rule_id = row[0]
         if rule_id in rules_map:
             rules_map[rule_id].actions.append({"action_type": row[1], "value": row[2]})
 
-    conn.close()
-
     _RULES_CACHE = new_cache
+    fingerprint = [
+        [r.rule_id, r.domain, r.priority, r.condition_logic, r.conditions, r.actions]
+        for r in rules_map.values()
+    ]
+    _RULES_VERSION = hashlib.sha256(
+        json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
     logger.info(f"Loaded {len(rules_map)} active rules into memory.")
 
 
@@ -104,6 +117,13 @@ def get_rules(domain: str):
     # Sort by priority
     rules.sort(key=lambda r: r.priority)
     return rules
+
+
+def get_rules_version() -> str:
+    """Returns the fingerprint of the active rule set currently loaded in memory."""
+    if _RULES_CACHE is None:
+        load_rules_from_db()
+    return _RULES_VERSION
 
 
 def refresh_rules_cache():

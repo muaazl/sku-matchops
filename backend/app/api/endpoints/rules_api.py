@@ -1,6 +1,5 @@
-import sqlite3
-
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import Connection
 
 from backend.app.core.db import get_db_connection
 from backend.app.schemas.models import (
@@ -19,12 +18,12 @@ router = APIRouter()
 
 
 @router.get("/rules", response_model=list[dict])
-def get_rules(domain: str | None = None, db: sqlite3.Connection = Depends(get_db_connection)):
+def get_rules(domain: str | None = None, db: Connection = Depends(get_db_connection)):
     return rules_service.get_rules_list(db, domain=domain)
 
 
 @router.post("/rules", response_model=RuleOperationResponse)
-def create_rule(rule: RuleModel, db: sqlite3.Connection = Depends(get_db_connection)):
+def create_rule(rule: RuleModel, db: Connection = Depends(get_db_connection)):
     try:
         new_id = rules_service.create_rule_entry(db, rule)
         return RuleOperationResponse(message=f"Rule {new_id} created successfully.", rule_id=new_id)
@@ -33,7 +32,7 @@ def create_rule(rule: RuleModel, db: sqlite3.Connection = Depends(get_db_connect
 
 
 @router.put("/rules/reorder", response_model=RuleOperationResponse)
-def reorder_rules(payload: RuleReorderRequest, db: sqlite3.Connection = Depends(get_db_connection)):
+def reorder_rules(payload: RuleReorderRequest, db: Connection = Depends(get_db_connection)):
     ordered_ids = payload.ordered_rule_ids
     if not ordered_ids:
         return RuleOperationResponse(message="No order specified.")
@@ -85,7 +84,7 @@ def test_rule_draft(request: RuleDraftTestRequest):
 
 
 @router.put("/rules/{rule_id}", response_model=RuleOperationResponse)
-def update_rule(rule_id: str, rule: RuleModel, db: sqlite3.Connection = Depends(get_db_connection)):
+def update_rule(rule_id: str, rule: RuleModel, db: Connection = Depends(get_db_connection)):
     try:
         updated = rules_service.update_rule_entry(db, rule_id, rule)
         if not updated:
@@ -100,7 +99,7 @@ def update_rule(rule_id: str, rule: RuleModel, db: sqlite3.Connection = Depends(
 
 
 @router.delete("/rules/{rule_id}", response_model=RuleOperationResponse)
-def delete_rule(rule_id: str, db: sqlite3.Connection = Depends(get_db_connection)):
+def delete_rule(rule_id: str, db: Connection = Depends(get_db_connection)):
     try:
         deleted = rules_service.delete_rule_entry(db, rule_id)
         if not deleted:
@@ -115,9 +114,7 @@ def delete_rule(rule_id: str, db: sqlite3.Connection = Depends(get_db_connection
 
 
 @router.post("/rules/{rule_id}/test")
-def test_rule(
-    rule_id: str, request: RuleTestRequest, db: sqlite3.Connection = Depends(get_db_connection)
-):
+def test_rule(rule_id: str, request: RuleTestRequest, db: Connection = Depends(get_db_connection)):
     rule_dict = rules_service.get_rule_by_id(db, rule_id)
     if not rule_dict:
         raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found.")

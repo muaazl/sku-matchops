@@ -3,6 +3,7 @@ import re
 
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from sqlalchemy import text
 
 from backend.app.services.catalog_service import (
     check_changes_for_domain,
@@ -16,7 +17,7 @@ from backend.app.services.catalog_service import (
 )
 from backend.app.services.meilisearch_service import get_meili_client, is_meili_healthy
 from engine import config as engine_config
-from engine.core.db import ensure_db_initialized
+from engine.core.db import get_connection
 
 logger = logging.getLogger("matchops.catalog_api")
 router = APIRouter()
@@ -75,27 +76,33 @@ def get_catalog_summary_stats(domain: str = "market"):
             }
         except Exception as meili_err:
             logger.warning(
-                f"[STATS] Failed to fetch summary stats from Meilisearch: {meili_err}. Falling back to SQLite."
+                f"[STATS] Failed to fetch summary stats from Meilisearch: {meili_err}. Falling back to the database."
             )
 
-    # 2. Fast SQLite query fallback
-    conn = ensure_db_initialized()
+    # 2. Fast database query fallback
+    conn = get_connection()
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM catalog_items WHERE domain = ?", (domain,))
-        cat_count = cur.fetchone()[0]
+        p = {"domain": domain}
+        cat_count = conn.execute(
+            text("SELECT COUNT(*) FROM catalog_items WHERE domain = :domain"), p
+        ).scalar()
 
-        cur.execute(
-            "SELECT tag_type, COUNT(*) FROM classifier_dictionaries WHERE domain = ? GROUP BY tag_type",
-            (domain,),
+        dict_counts = dict(
+            conn.execute(
+                text(
+                    "SELECT tag_type, COUNT(*) FROM classifier_dictionaries WHERE domain = :domain GROUP BY tag_type"
+                ),
+                p,
+            ).fetchall()
         )
-        dict_counts = dict(cur.fetchall())
 
-        cur.execute("SELECT COUNT(*) FROM brand_flavors WHERE domain = ?", (domain,))
-        brand_count = cur.fetchone()[0]
+        brand_count = conn.execute(
+            text("SELECT COUNT(*) FROM brand_flavors WHERE domain = :domain"), p
+        ).scalar()
 
-        cur.execute("SELECT COUNT(*) FROM bt_gk_map WHERE domain = ?", (domain,))
-        map_count = cur.fetchone()[0]
+        map_count = conn.execute(
+            text("SELECT COUNT(*) FROM bt_gk_map WHERE domain = :domain"), p
+        ).scalar()
 
         return {
             "domain": domain,
@@ -383,15 +390,15 @@ def search_catalog(
             }
         except Exception as e:
             logger.warning(
-                f"[MEILI] Dictionary search failed: {e}. Falling back to SQLite direct query."
+                f"[MEILI] Dictionary search failed: {e}. Falling back to direct database query."
             )
 
-    # Direct SQLite Fallback (Zero catalog loading)
-    conn = ensure_db_initialized()
+    # Direct database fallback (Zero catalog loading)
+    conn = get_connection()
     try:
-        cur = conn.cursor()
         offset = (page - 1) * page_size
         q_param = f"%{query.strip().lower()}%" if query else None
+        p = {"domain": domain, "q": q_param, "limit": page_size, "offset": offset}
 
         if dataset in ("gk", "bt", "category"):
             tag_type = "region" if (domain == "food" and dataset == "category") else dataset
@@ -402,28 +409,19 @@ def search_catalog(
                 sort_col = "catalog_count"
                 order_dir = "ASC" if sort_by and sort_order.lower() == "asc" else "DESC"
 
+            p["tag_type"] = tag_type
+            where = "WHERE domain = :domain AND tag_type = :tag_type"
             if q_param:
-                cur.execute(
-                    "SELECT COUNT(*) FROM classifier_dictionaries WHERE domain = ? AND tag_type = ? AND LOWER(tag) LIKE ?",
-                    (domain, tag_type, q_param),
-                )
-                total = cur.fetchone()[0]
-                cur.execute(
-                    f"SELECT id, tag, catalog_count FROM classifier_dictionaries WHERE domain = ? AND tag_type = ? AND LOWER(tag) LIKE ? ORDER BY {sort_col} {order_dir} LIMIT ? OFFSET ?",
-                    (domain, tag_type, q_param, page_size, offset),
-                )
-            else:
-                cur.execute(
-                    "SELECT COUNT(*) FROM classifier_dictionaries WHERE domain = ? AND tag_type = ?",
-                    (domain, tag_type),
-                )
-                total = cur.fetchone()[0]
-                cur.execute(
-                    f"SELECT id, tag, catalog_count FROM classifier_dictionaries WHERE domain = ? AND tag_type = ? ORDER BY {sort_col} {order_dir} LIMIT ? OFFSET ?",
-                    (domain, tag_type, page_size, offset),
-                )
-
-            rows = cur.fetchall()
+                where += " AND LOWER(tag) LIKE :q"
+            total = conn.execute(
+                text(f"SELECT COUNT(*) FROM classifier_dictionaries {where}"), p
+            ).scalar()
+            rows = conn.execute(
+                text(
+                    f"SELECT id, tag, catalog_count FROM classifier_dictionaries {where} ORDER BY {sort_col} {order_dir} LIMIT :limit OFFSET :offset"
+                ),
+                p,
+            ).fetchall()
             results = [{"id": f"{dataset}_{r[0]}", "name": r[1], "count": r[2]} for r in rows]
 
         elif dataset == "brands":
@@ -437,25 +435,16 @@ def search_catalog(
                 sort_col = "catalog_count"
                 order_dir = "ASC" if sort_by and sort_order.lower() == "asc" else "DESC"
 
+            where = "WHERE domain = :domain"
             if q_param:
-                cur.execute(
-                    "SELECT COUNT(*) FROM brand_flavors WHERE domain = ? AND (LOWER(name) LIKE ? OR LOWER(COALESCE(aliases, '')) LIKE ?)",
-                    (domain, q_param, q_param),
-                )
-                total = cur.fetchone()[0]
-                cur.execute(
-                    f"SELECT id, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, catalog_count FROM brand_flavors WHERE domain = ? AND (LOWER(name) LIKE ? OR LOWER(COALESCE(aliases, '')) LIKE ?) ORDER BY {sort_col} {order_dir} LIMIT ? OFFSET ?",
-                    (domain, q_param, q_param, page_size, offset),
-                )
-            else:
-                cur.execute("SELECT COUNT(*) FROM brand_flavors WHERE domain = ?", (domain,))
-                total = cur.fetchone()[0]
-                cur.execute(
-                    f"SELECT id, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, catalog_count FROM brand_flavors WHERE domain = ? ORDER BY {sort_col} {order_dir} LIMIT ? OFFSET ?",
-                    (domain, page_size, offset),
-                )
-
-            rows = cur.fetchall()
+                where += " AND (LOWER(name) LIKE :q OR LOWER(COALESCE(aliases, '')) LIKE :q)"
+            total = conn.execute(text(f"SELECT COUNT(*) FROM brand_flavors {where}"), p).scalar()
+            rows = conn.execute(
+                text(
+                    f"SELECT id, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, catalog_count FROM brand_flavors {where} ORDER BY {sort_col} {order_dir} LIMIT :limit OFFSET :offset"
+                ),
+                p,
+            ).fetchall()
             results = []
             for r in rows:
                 item = {
@@ -485,25 +474,16 @@ def search_catalog(
                 sort_col = "catalog_count"
                 order_dir = "ASC" if sort_by and sort_order.lower() == "asc" else "DESC"
 
+            where = "WHERE domain = :domain"
             if q_param:
-                cur.execute(
-                    "SELECT COUNT(*) FROM bt_gk_map WHERE domain = ? AND (LOWER(basictype) LIKE ? OR LOWER(generic_keywords) LIKE ?)",
-                    (domain, q_param, q_param),
-                )
-                total = cur.fetchone()[0]
-                cur.execute(
-                    f"SELECT id, basictype, generic_keywords, gk_count, catalog_count FROM bt_gk_map WHERE domain = ? AND (LOWER(basictype) LIKE ? OR LOWER(generic_keywords) LIKE ?) ORDER BY {sort_col} {order_dir} LIMIT ? OFFSET ?",
-                    (domain, q_param, q_param, page_size, offset),
-                )
-            else:
-                cur.execute("SELECT COUNT(*) FROM bt_gk_map WHERE domain = ?", (domain,))
-                total = cur.fetchone()[0]
-                cur.execute(
-                    f"SELECT id, basictype, generic_keywords, gk_count, catalog_count FROM bt_gk_map WHERE domain = ? ORDER BY {sort_col} {order_dir} LIMIT ? OFFSET ?",
-                    (domain, page_size, offset),
-                )
-
-            rows = cur.fetchall()
+                where += " AND (LOWER(basictype) LIKE :q OR LOWER(generic_keywords) LIKE :q)"
+            total = conn.execute(text(f"SELECT COUNT(*) FROM bt_gk_map {where}"), p).scalar()
+            rows = conn.execute(
+                text(
+                    f"SELECT id, basictype, generic_keywords, gk_count, catalog_count FROM bt_gk_map {where} ORDER BY {sort_col} {order_dir} LIMIT :limit OFFSET :offset"
+                ),
+                p,
+            ).fetchall()
             results = [
                 {
                     "id": f"map_{r[0]}",

@@ -1,9 +1,9 @@
 import json
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import Connection, text
 
 from backend.app.api.endpoints.engine_callbacks import _job_progress
 from backend.app.core.db import get_db_connection
@@ -59,6 +59,25 @@ def _enrich_job_dict(job_dict: dict) -> dict:
     return job_dict
 
 
+_TIMEFRAME_INTERVALS = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}
+
+
+def _stats_filter(domain: str | None, timeframe: str | None) -> tuple[str, dict]:
+    """WHERE clause + params shared by the processed_skus dashboard aggregates."""
+    where_clauses = ["1=1"]
+    params = {}
+
+    if domain and domain.lower() != "all":
+        where_clauses.append("domain = :domain")
+        params["domain"] = domain.lower()
+
+    if timeframe in _TIMEFRAME_INTERVALS:
+        where_clauses.append("created_at >= now() - CAST(:window AS interval)")
+        params["window"] = _TIMEFRAME_INTERVALS[timeframe]
+
+    return " AND ".join(where_clauses), params
+
+
 @router.get("/jobs", response_model=list[JobResponse])
 def get_jobs(
     response: Response,
@@ -75,50 +94,42 @@ def get_jobs(
     # change behavior in practice. Pass limit=0 (as some callers already do for
     # /processed-skus) to explicitly request every row with no cap.
     limit: int | None = 10000,
-    db: sqlite3.Connection = Depends(get_db_connection),
+    db: Connection = Depends(get_db_connection),
 ):
-    query = "SELECT * FROM jobs WHERE 1=1"
-    count_query = "SELECT COUNT(*) FROM jobs WHERE 1=1"
-    params = []
+    where = "WHERE 1=1"
+    params = {}
 
     if status:
-        query += " AND status = ?"
-        count_query += " AND status = ?"
-        params.append(status)
+        where += " AND status = :status"
+        params["status"] = status
     if type:
-        query += " AND type = ?"
-        count_query += " AND type = ?"
-        params.append(type)
+        where += " AND type = :type"
+        params["type"] = type
     if created_by:
-        query += " AND created_by = ?"
-        count_query += " AND created_by = ?"
-        params.append(created_by)
+        where += " AND created_by = :created_by"
+        params["created_by"] = created_by
     if date_from:
-        query += " AND started_at >= ?"
-        count_query += " AND started_at >= ?"
-        params.append(date_from)
+        where += " AND started_at >= CAST(:date_from AS timestamptz)"
+        params["date_from"] = date_from
     if date_to:
-        query += " AND started_at <= ?"
-        count_query += " AND started_at <= ?"
-        params.append(date_to)
+        where += " AND started_at <= CAST(:date_to AS timestamptz)"
+        params["date_to"] = date_to
     if domain:
-        query += " AND domain = ?"
-        count_query += " AND domain = ?"
-        params.append(domain)
+        where += " AND domain = :domain"
+        params["domain"] = domain
     if sheet_name:
-        query += " AND (sheet_name LIKE ? OR target_sheet LIKE ?)"
-        count_query += " AND (sheet_name LIKE ? OR target_sheet LIKE ?)"
-        params.extend([f"%{sheet_name}%", f"%{sheet_name}%"])
+        where += " AND (sheet_name LIKE :sheet_name OR target_sheet LIKE :sheet_name)"
+        params["sheet_name"] = f"%{sheet_name}%"
 
-    total_count = db.execute(count_query, params).fetchone()[0]
+    total_count = db.execute(text(f"SELECT COUNT(*) FROM jobs {where}"), params).scalar()
     response.headers["X-Total-Count"] = str(total_count)
 
-    query += " ORDER BY started_at DESC"
+    query = f"SELECT * FROM jobs {where} ORDER BY started_at DESC"
     if limit is not None and limit > 0:
-        query += " LIMIT ? OFFSET ?"
-        params.extend([limit, (page - 1) * limit])
+        query += " LIMIT :limit OFFSET :offset"
+        params.update(limit=limit, offset=(page - 1) * limit)
 
-    rows = db.execute(query, params).fetchall()
+    rows = db.execute(text(query), params).mappings().fetchall()
 
     jobs = []
     for row in rows:
@@ -131,27 +142,13 @@ def get_jobs(
 def get_dashboard_stats(
     domain: str | None = "all",
     timeframe: str | None = "30d",
-    db: sqlite3.Connection = Depends(get_db_connection),
+    db: Connection = Depends(get_db_connection),
 ):
     """
     Computes aggregate metrics from processed_skus for dashboard cards and charts.
     Fast indexed queries (< 10ms).
     """
-    where_clauses = ["1=1"]
-    params = []
-
-    if domain and domain.lower() != "all":
-        where_clauses.append("domain = ?")
-        params.append(domain.lower())
-
-    if timeframe == "24h":
-        where_clauses.append("created_at >= datetime('now', '-24 hours')")
-    elif timeframe == "7d":
-        where_clauses.append("created_at >= datetime('now', '-7 days')")
-    elif timeframe == "30d":
-        where_clauses.append("created_at >= datetime('now', '-30 days')")
-
-    where_str = " AND ".join(where_clauses)
+    where_str, params = _stats_filter(domain, timeframe)
 
     # 1. Total processed and confidence breakdown
     stat_query = f"""
@@ -164,7 +161,7 @@ def get_dashboard_stats(
         FROM processed_skus
         WHERE {where_str}
     """
-    stat_row = db.execute(stat_query, params).fetchone()
+    stat_row = db.execute(text(stat_query), params).fetchone()
 
     total_skus = stat_row[0] or 0
     raw_avg = stat_row[1] or 0.0
@@ -185,7 +182,7 @@ def get_dashboard_stats(
         GROUP BY match_source
         ORDER BY count DESC
     """
-    source_rows = db.execute(source_query, params).fetchall()
+    source_rows = db.execute(text(source_query), params).fetchall()
     match_sources = [
         {
             "source": r[0] or "Unknown",
@@ -201,7 +198,7 @@ def get_dashboard_stats(
         FROM processed_skus
         GROUP BY domain
     """
-    dom_rows = db.execute(dom_query).fetchall()
+    dom_rows = db.execute(text(dom_query)).fetchall()
     domain_breakdown = [{"domain": r[0] or "Unknown", "count": r[1]} for r in dom_rows]
 
     # 4. Volume Trend (by hour or date)
@@ -209,13 +206,13 @@ def get_dashboard_stats(
     is_24h = timeframe == "24h"
     if is_24h:
         trend_query = f"""
-            SELECT strftime('%Y-%m-%d %H:00', created_at) as hr, COUNT(*) as cnt, AVG(confidence) as avg_c
+            SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:00') as hr, COUNT(*) as cnt, AVG(confidence) as avg_c
             FROM processed_skus
             WHERE {where_str}
             GROUP BY hr
             ORDER BY hr ASC
         """
-        trend_rows = db.execute(trend_query, params).fetchall()
+        trend_rows = db.execute(text(trend_query), params).fetchall()
         t_map = {r[0]: (r[1], r[2] or 0.0) for r in trend_rows}
 
         now = datetime.now(UTC)
@@ -228,13 +225,13 @@ def get_dashboard_stats(
             volume_trend.append({"label": label, "skus": cnt, "avgConfidence": c_pct})
     else:
         trend_query = f"""
-            SELECT date(created_at) as dt, COUNT(*) as cnt, AVG(confidence) as avg_c
+            SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') as dt, COUNT(*) as cnt, AVG(confidence) as avg_c
             FROM processed_skus
             WHERE {where_str}
             GROUP BY dt
             ORDER BY dt ASC
         """
-        trend_rows = db.execute(trend_query, params).fetchall()
+        trend_rows = db.execute(text(trend_query), params).fetchall()
         t_map = {r[0]: (r[1], r[2] or 0.0) for r in trend_rows}
 
         days = 7 if timeframe == "7d" else 30
@@ -249,17 +246,21 @@ def get_dashboard_stats(
 
     # 5. Legacy/Job counts for backward compatibility
     active_jobs = db.execute(
-        "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
-    ).fetchone()[0]
+        text("SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')")
+    ).scalar()
     completed_7d = db.execute(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'completed' AND started_at >= datetime('now', '-7 days')"
-    ).fetchone()[0]
+        text(
+            "SELECT COUNT(*) FROM jobs WHERE status = 'completed' AND started_at >= now() - interval '7 days'"
+        )
+    ).scalar()
     failed_7d = db.execute(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'failed' AND started_at >= datetime('now', '-7 days')"
-    ).fetchone()[0]
+        text(
+            "SELECT COUNT(*) FROM jobs WHERE status = 'failed' AND started_at >= now() - interval '7 days'"
+        )
+    ).scalar()
     requests_24h = db.execute(
-        "SELECT COUNT(*) FROM api_requests WHERE created_at >= datetime('now', '-24 hours')"
-    ).fetchone()[0]
+        text("SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'")
+    ).scalar()
 
     return {
         "stats": {
@@ -306,27 +307,13 @@ def get_dashboard_stats(
 def get_tag_stats(
     domain: str | None = "all",
     timeframe: str | None = "30d",
-    db: sqlite3.Connection = Depends(get_db_connection),
+    db: Connection = Depends(get_db_connection),
 ):
     """
     Computes Basic Type / Region-Category / tag-status breakdowns from processed_skus,
     for the tagging-strategy charts on the Dashboard and Guide pages.
     """
-    where_clauses = ["1=1"]
-    params = []
-
-    if domain and domain.lower() != "all":
-        where_clauses.append("domain = ?")
-        params.append(domain.lower())
-
-    if timeframe == "24h":
-        where_clauses.append("created_at >= datetime('now', '-24 hours')")
-    elif timeframe == "7d":
-        where_clauses.append("created_at >= datetime('now', '-7 days')")
-    elif timeframe == "30d":
-        where_clauses.append("created_at >= datetime('now', '-30 days')")
-
-    where_str = " AND ".join(where_clauses)
+    where_str, params = _stats_filter(domain, timeframe)
 
     # 1. Basic Type distribution (top 10)
     bt_query = f"""
@@ -337,20 +324,19 @@ def get_tag_stats(
         ORDER BY count DESC
         LIMIT 10
     """
-    bt_rows = db.execute(bt_query, params).fetchall()
+    bt_rows = db.execute(text(bt_query), params).fetchall()
     basic_type_distribution = [{"basicType": r[0], "count": r[1]} for r in bt_rows]
 
     # 2. Region (food) / Category (market) distribution, top 10
     tag_query = f"""
         SELECT COALESCE(NULLIF(region, ''), NULLIF(category, '')) as tag, COUNT(*) as count
         FROM processed_skus
-        WHERE {where_str}
+        WHERE {where_str} AND COALESCE(NULLIF(region, ''), NULLIF(category, '')) IS NOT NULL
         GROUP BY tag
-        HAVING tag IS NOT NULL
         ORDER BY count DESC
         LIMIT 10
     """
-    tag_rows = db.execute(tag_query, params).fetchall()
+    tag_rows = db.execute(text(tag_query), params).fetchall()
     region_distribution = [{"tag": r[0], "count": r[1]} for r in tag_rows]
 
     # 3. Tag status breakdown (AUTO/REVIEW/LOW), derived from the stored per-tag
@@ -363,13 +349,13 @@ def get_tag_stats(
     def status_breakdown(column: str) -> dict:
         q = f"""
             SELECT
-                SUM(CASE WHEN {column} >= ? THEN 1 ELSE 0 END) as auto_count,
-                SUM(CASE WHEN {column} >= ? AND {column} < ? THEN 1 ELSE 0 END) as review_count,
-                SUM(CASE WHEN {column} < ? THEN 1 ELSE 0 END) as low_count
+                SUM(CASE WHEN {column} >= :auto_t THEN 1 ELSE 0 END) as auto_count,
+                SUM(CASE WHEN {column} >= :review_t AND {column} < :auto_t THEN 1 ELSE 0 END) as review_count,
+                SUM(CASE WHEN {column} < :review_t THEN 1 ELSE 0 END) as low_count
             FROM processed_skus
             WHERE {where_str} AND {column} IS NOT NULL
         """
-        row = db.execute(q, [auto_t, review_t, auto_t, review_t] + params).fetchone()
+        row = db.execute(text(q), {"auto_t": auto_t, "review_t": review_t, **params}).fetchone()
         return {"auto": row[0] or 0, "review": row[1] or 0, "low": row[2] or 0}
 
     tag_status_breakdown = [
@@ -387,8 +373,8 @@ def get_tag_stats(
 
 
 @router.get("/jobs/{id}", response_model=JobResponse)
-def get_job(id: str, db: sqlite3.Connection = Depends(get_db_connection)):
-    row = db.execute("SELECT * FROM jobs WHERE id = ?", (id,)).fetchone()
+def get_job(id: str, db: Connection = Depends(get_db_connection)):
+    row = db.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": id}).mappings().fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -397,14 +383,16 @@ def get_job(id: str, db: sqlite3.Connection = Depends(get_db_connection)):
 
 
 @router.post("/jobs/{id}/cancel")
-def cancel_job(id: str, db: sqlite3.Connection = Depends(get_db_connection)):
+def cancel_job(id: str, db: Connection = Depends(get_db_connection)):
     db.execute(
-        "UPDATE jobs SET status = 'cancelled', cancel_requested = 1, completed_at = datetime('now') WHERE id = ? AND status IN ('queued', 'running')",
-        (id,),
+        text(
+            "UPDATE jobs SET status = 'cancelled', cancel_requested = 1, completed_at = now() WHERE id = :id AND status IN ('queued', 'running')"
+        ),
+        {"id": id},
     )
     db.execute(
-        "UPDATE batches SET status = 'cancelled', completed_at = datetime('now') WHERE id = ?",
-        (id,),
+        text("UPDATE batches SET status = 'cancelled', completed_at = now() WHERE id = :id"),
+        {"id": id},
     )
     db.commit()
 
@@ -414,8 +402,8 @@ def cancel_job(id: str, db: sqlite3.Connection = Depends(get_db_connection)):
 
 
 @router.post("/jobs/{id}/retry")
-def retry_job(id: str, db: sqlite3.Connection = Depends(get_db_connection)):
-    row = db.execute("SELECT * FROM jobs WHERE id = ?", (id,)).fetchone()
+def retry_job(id: str, db: Connection = Depends(get_db_connection)):
+    row = db.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": id}).mappings().fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 

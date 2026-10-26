@@ -16,6 +16,11 @@ numpy>=1.24
 joblib>=1.3
 openpyxl>=3.1.0
 
+# Database (PostgreSQL)
+sqlalchemy>=2.0,<2.1
+psycopg[binary]>=3.1
+alembic>=1.13
+
 # Utilities
 rich>=13.0
 meilisearch>=0.30.0

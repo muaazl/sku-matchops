@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -119,9 +120,9 @@ class JobResponse(BaseModel):
     eta_seconds: int | None = None
     error_message: str | None = None
     created_by: str | None = None
-    started_at: str | None = None
-    updated_at: str | None = None
-    completed_at: str | None = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+    completed_at: datetime | None = None
     domain: str | None = None
     sheet_name: str | None = None
     target_sheet: str | None = None
@@ -232,7 +233,7 @@ class BatchResponse(BaseModel):
     domain: str | None = None
     status: str | None = None
     created_by: str | None = None
-    created_at: str | None = None
+    created_at: datetime | None = None
 
 
 class ProcessedSkuResponse(BaseModel):
@@ -255,7 +256,7 @@ class ProcessedSkuResponse(BaseModel):
     input_price: float | None = None
     input_description: str | None = None
     input_category: str | None = None
-    created_at: str | None = None
+    created_at: datetime | None = None
 
 
 class ApiRequestResponse(BaseModel):
@@ -265,7 +266,7 @@ class ApiRequestResponse(BaseModel):
     status_code: int
     duration_ms: int | None = None
     ip_address: str | None = None
-    created_at: str | None = None
+    created_at: datetime | None = None
 
 
 class ApiRequestDetailResponse(ApiRequestResponse):
