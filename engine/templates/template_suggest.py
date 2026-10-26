@@ -27,7 +27,7 @@ _catalog_records_cache: dict[str, tuple] = {}
 
 
 def get_catalog_and_brands(domain: str):
-    """Load catalog and brands/flavors from local Feather cache or SQLite database."""
+    """Load catalog and brands/flavors from local Feather cache or PostgreSQL database."""
     return DataIngestion.load_catalog(config.GOOGLE_SHEET_ID, domain, force_fetch=False)
 
 
@@ -44,7 +44,7 @@ def get_catalog_records(domain: str, cat_df: pd.DataFrame | None = None) -> list
 
 
 def get_classifier_dicts(domain: str) -> dict[str, Any]:
-    """Load classifier dictionaries (GK, BT, category/region tags) from local cache or SQLite."""
+    """Load classifier dictionaries (GK, BT, category/region tags) from local cache or PostgreSQL."""
     return DataIngestion.load_classifier_dictionaries(
         config.GOOGLE_SHEET_ID, domain, force_fetch=False
     )

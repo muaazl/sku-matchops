@@ -20,12 +20,12 @@ _build_in_progress = False
 
 
 def get_catalog_and_brands(domain: str):
-    """Load catalog and brands/flavors from local Feather cache or SQLite database."""
+    """Load catalog and brands/flavors from local Feather cache or PostgreSQL database."""
     return DataIngestion.load_catalog(engine_config.GOOGLE_SHEET_ID, domain, force_fetch=False)
 
 
 def get_classifier_dicts(domain: str) -> dict[str, Any]:
-    """Load classifier dictionaries (GK, BT, category/region tags) from local cache or SQLite."""
+    """Load classifier dictionaries (GK, BT, category/region tags) from local cache or PostgreSQL."""
     dicts_cache = os.path.join(engine_config.CACHE_DIR, f"{domain}_classifier_dicts.json")
     if os.path.exists(dicts_cache):
         try:
@@ -34,7 +34,7 @@ def get_classifier_dicts(domain: str) -> dict[str, Any]:
         except Exception as e:
             logger.warning(f"Failed to read dict cache for domain {domain}: {e}")
 
-    # Load from SQLite or local cache with force_fetch=False (never downloads from Google Sheets)
+    # Load from PostgreSQL or local cache with force_fetch=False (never downloads from Google Sheets)
     dicts = DataIngestion.load_classifier_dictionaries(
         engine_config.GOOGLE_SHEET_ID, domain, force_fetch=False
     )
@@ -48,7 +48,7 @@ def get_classifier_dicts(domain: str) -> dict[str, Any]:
 
 
 def get_bt_gk_cache(domain: str) -> dict[str, Any]:
-    """Load the cached BT-GK map and umbrella tags from pkl file, or reconstruct from SQLite."""
+    """Load the cached BT-GK map and umbrella tags from pkl file, or reconstruct from PostgreSQL."""
     cache_path = os.path.join(engine_config.CACHE_DIR, f"{domain}_bt_gk_cache.pkl")
     if os.path.exists(cache_path):
         try:

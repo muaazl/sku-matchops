@@ -1,4 +1,4 @@
-"""Phase 3: Redis distributed job queue - priority tiers, concurrency, retries/DLQ, lease recovery."""
+"""Redis distributed job queue - priority tiers, concurrency, retries/DLQ, lease recovery."""
 
 import json
 import os

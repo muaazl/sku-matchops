@@ -146,7 +146,7 @@ def search_catalog(
         )
 
     # =========================================================================
-    # 1. CATALOG DATASET (Uses Meilisearch with fallback to Pandas/SQLite)
+    # 1. CATALOG DATASET (Uses Meilisearch with fallback to Pandas/PostgreSQL)
     # =========================================================================
     if dataset == "catalog":
         if is_meili_healthy():
@@ -331,7 +331,7 @@ def search_catalog(
 
     # =========================================================================
     # 2. DICTIONARIES DATASETS (gk, bt, category, brands, bt_gk_map)
-    # Fast path: Meilisearch (<2ms) -> Fast fallback: Direct SQLite (<1ms)
+    # Fast path: Meilisearch (<2ms) -> Fast fallback: Direct PostgreSQL
     # NEVER loads the 80,000 catalog rows into memory!
     # =========================================================================
     if is_meili_healthy():

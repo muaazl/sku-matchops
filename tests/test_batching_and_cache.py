@@ -1,4 +1,4 @@
-"""Phase 2: ONNX/Qdrant micro-batching with order preservation, Redis-backed rule caching, evaluator."""
+"""ONNX/Qdrant micro-batching with order preservation, Redis-backed rule caching, evaluator."""
 
 import os
 import time

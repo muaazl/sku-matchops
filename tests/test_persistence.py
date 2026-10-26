@@ -1,4 +1,4 @@
-"""Phase 1 persistence: PostgreSQL schema, bulk batch inserts, and idempotent re-delivery."""
+"""Persistence: PostgreSQL schema, bulk batch inserts, and idempotent re-delivery."""
 
 import json
 import uuid

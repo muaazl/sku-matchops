@@ -147,7 +147,7 @@ def sync_dataframe_to_meili(
 def sync_dictionaries_to_meili(domain: str, clear_existing: bool = True):
     """
     Syncs classifier dictionaries, brands, and BT-GK map with precomputed counts
-    from SQLite into the Meilisearch dictionary index.
+    from PostgreSQL into the Meilisearch dictionary index.
     """
     if not is_meili_healthy():
         logger.warning(

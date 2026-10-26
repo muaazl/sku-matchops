@@ -159,13 +159,12 @@ If you prefer running the Python and Node services directly on your host machine
 - Python 3.10+ (Python 3.11 recommended)
 - `uv` (recommended for ultra-fast pip installs) or `pip`
 - Node.js 18+ and `pnpm` (install via `npm install -g pnpm`)
-- Running instances of **PostgreSQL** (`localhost:5432`), **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these database containers using Docker:
+- Running instances of **PostgreSQL** (`localhost:5432`), **Redis** (`localhost:6379`, job queue + rule cache), **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these containers using Docker:
   ```bash
-  docker compose up -d postgres qdrant meilisearch
+  docker compose up -d postgres redis qdrant meilisearch
   alembic upgrade head   # create/upgrade the schema (DATABASE_URL from .env)
   ```
-- Upgrading from the SQLite version? Copy your existing data once with
-  `python -m scripts.database.migrate --sqlite data/sku-matchops.db`.
+- Optional: `docker compose up -d pgadmin` for a Postgres web UI at http://localhost:5050.
 
 ### 2. Python Environment Setup
 ```bash

@@ -3,7 +3,7 @@
 generate_market_keywords.py
 
 Generates search autocomplete generic keywords for Market categories using:
-1. Low/medium confidence SKU extraction from SQLite (jobs 578-596).
+1. Low/medium confidence SKU extraction from PostgreSQL (jobs 578-596).
 2. Local BGE-M3 ONNX dense vector embedding & semantic deduplication to isolate distinct products.
 3. Dynamic few-shot catalog example mining for targeted categories.
 4. Gemini 2.5 Flash with structured Pydantic schema and exponential backoff retry.

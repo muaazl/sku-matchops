@@ -1,4 +1,4 @@
-"""Phase 4: JWT/RBAC, multi-tenant isolation, migration 0002, observability, golden regression."""
+"""JWT/RBAC, multi-tenant isolation, migration 0002, observability, golden regression."""
 
 import io
 import json
@@ -81,14 +81,14 @@ RULE = {
     "rule_id": "ignored",
     "domain": "market",
     "priority": 900,
-    "description": "phase4 test rule",
+    "description": "tenant test rule",
     "reasoning": "rbac test",
     "condition_logic": "AND",
     "is_active": 1,
     "conditions": [
         {"condition_group": 1, "condition_type": "sku_contains", "value": "zzqq", "negate": 0}
     ],
-    "actions": [{"action_type": "add_gk", "value": "Phase4"}],
+    "actions": [{"action_type": "add_gk", "value": "TenantTag"}],
 }
 
 
@@ -340,7 +340,7 @@ def test_rules_are_isolated_per_tenant_including_in_the_engine(app_client, tenan
     with loader.pinned_rules(snap_a):
         assert run_rules_engine(dict(record))["gk"] == []
     with loader.pinned_rules(snap_b):
-        assert run_rules_engine(dict(record))["gk"] == ["Phase4"]
+        assert run_rules_engine(dict(record))["gk"] == ["TenantTag"]
 
 
 def test_new_jobs_and_results_are_stamped_with_the_tenant(
@@ -697,7 +697,7 @@ def test_golden_regression(golden_rules):
     assert accuracy >= GOLDEN["min_accuracy"], f"accuracy {accuracy:.1%} below threshold:\n{misses}"
 
 
-# ---------------------------------------------------------------- HTTP fallback context (Phase 5)
+# ---------------------------------------------------------------- HTTP fallback context
 
 
 def test_http_fallback_preserves_tenant_and_trace(monkeypatch):
@@ -750,7 +750,7 @@ def test_http_fallback_defaults_when_context_missing():
         assert bound != "-" and len(bound) == 32  # placeholder gets a real trace id
 
 
-# ---------------------------------------------------------------- system status (Phase 5)
+# ---------------------------------------------------------------- system status
 
 
 def test_system_status_is_tenant_scoped(app_client, tenants, tenant_data, auth_on, monkeypatch):

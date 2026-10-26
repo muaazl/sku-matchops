@@ -3,7 +3,7 @@ SKU MatchOps - Catalog Sync Script
 
 Keeps three independent things up to date, each with an explicit mode:
 
-  --db      SQLite (catalog_items, brand_flavors, classifier_dictionaries, bt_gk_map) —
+  --db      PostgreSQL (catalog_items, brand_flavors, classifier_dictionaries, bt_gk_map) —
             local to this checkout, populated from Google Sheets.
   --cache   Local disk cache files (Feather mmap, BT-GK pickle, dictionary JSON,
             catalog metadata pickle) — local to this checkout, derived from --db.
@@ -19,7 +19,7 @@ Each target takes a mode:
 Examples:
   python -m scripts.catalog.sync                          # sync everything (default)
   python -m scripts.catalog.sync --qdrant rebuild          # only rebuild Qdrant + classifier
-  python -m scripts.catalog.sync --db rebuild --cache sync # rebuild SQLite, sync local cache
+  python -m scripts.catalog.sync --db rebuild --cache sync # rebuild the DB tables, sync local cache
   python -m scripts.catalog.sync --sample                 # offline demo mode (full rebuild)
 
 Why --qdrant sync is safe to run from a different checkout pointed at the same shared
@@ -412,7 +412,7 @@ def main():
         "--db",
         choices=["sync", "rebuild"],
         default=None,
-        help="SQLite catalog tables. sync=incremental import, rebuild=wipe+reimport.",
+        help="PostgreSQL catalog tables. sync=incremental import, rebuild=wipe+reimport.",
     )
     parser.add_argument(
         "--cache",

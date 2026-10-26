@@ -121,7 +121,7 @@ def setup_indexes():
 def check_and_sync_meilisearch():
     """
     Called on startup. Checks connection, ensures indexes settings are initialized,
-    and seeds indexes from the cached Feather files or SQLite if currently empty.
+    and seeds indexes from the cached Feather files or PostgreSQL if currently empty.
     """
     logger.info("[MEILI] Executing startup verification...")
     if not is_meili_healthy():
@@ -176,7 +176,7 @@ def check_and_sync_meilisearch():
             logger.info(f"[MEILI] Index '{dict_index_name}' contains {dict_doc_count} documents.")
             if dict_doc_count == 0:
                 logger.info(
-                    f"[MEILI] Dictionary index '{dict_index_name}' is empty. Seeding from SQLite..."
+                    f"[MEILI] Dictionary index '{dict_index_name}' is empty. Seeding from PostgreSQL..."
                 )
                 sync_dictionaries_to_meili(domain)
         except Exception as dict_err:

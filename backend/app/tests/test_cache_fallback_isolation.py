@@ -98,8 +98,8 @@ class TestCacheFallbackIsolation(unittest.TestCase):
             shutil.rmtree(self.test_dir, ignore_errors=True)
 
     @patch("requests.get")
-    def test_load_catalog_uses_sqlite_without_network(self, mock_get):
-        """Verify load_catalog loads from SQLite without touching Google Sheets over network."""
+    def test_load_catalog_uses_database_without_network(self, mock_get):
+        """Verify load_catalog loads from PostgreSQL without touching Google Sheets over network."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
         cat_df, brands_df = DataIngestion.load_catalog(
@@ -107,7 +107,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         )
 
         self.assertFalse(
-            mock_get.called, "requests.get should NEVER be called when SQLite cache is hot!"
+            mock_get.called, "requests.get should NEVER be called when database cache is hot!"
         )
         self.assertEqual(len(cat_df), 1)
         self.assertEqual(len(brands_df), 1)
@@ -176,8 +176,8 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.assertTrue(mock_get.called, "requests.get SHOULD be called when force_fetch=True!")
 
     @patch("requests.get")
-    def test_get_classifier_dicts_uses_sqlite_without_network(self, mock_get):
-        """Verify get_classifier_dicts reads from SQLite without calling Google Sheets."""
+    def test_get_classifier_dicts_uses_database_without_network(self, mock_get):
+        """Verify get_classifier_dicts reads from PostgreSQL without calling Google Sheets."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
         dicts = get_classifier_dicts(config.DOMAIN_MARKET)
@@ -189,7 +189,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
 
     @patch("requests.get")
     def test_flavor_rules_cache_evaluates_without_network(self, mock_get):
-        """Verify _get_flavor_cache compiles flavor rules from SQLite without calling Google Sheets."""
+        """Verify _get_flavor_cache compiles flavor rules from PostgreSQL without calling Google Sheets."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
         flavor_cache = _load_flavor_data()
@@ -198,8 +198,8 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.assertIn("flavors_dict", flavor_cache)
         self.assertIn("chicken", flavor_cache["meat_flavors"])
 
-    def test_get_bt_gk_cache_reconstructs_from_sqlite(self):
-        """Verify get_bt_gk_cache reconstructs bt_gk_map from SQLite when .pkl is absent."""
+    def test_get_bt_gk_cache_reconstructs_from_database(self):
+        """Verify get_bt_gk_cache reconstructs bt_gk_map from PostgreSQL when .pkl is absent."""
         bt_gk_data = get_bt_gk_cache(config.DOMAIN_MARKET)
         self.assertIn("bt_gk_map", bt_gk_data)
         self.assertIn("Butter", bt_gk_data["bt_gk_map"])

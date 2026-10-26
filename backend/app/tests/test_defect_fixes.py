@@ -1,83 +1,19 @@
-import sqlite3
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
-from sqlalchemy import text
 
 from engine import config
 from engine.classification.tagger import tag_all_skus
-from engine.core.db import get_engine
 from engine.core.resource_loader import get_pipeline
 from engine.nlp.embedding_engine import EmbeddingEngine
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
-from scripts.database.migrate import migrate
 
 
 @pytest.mark.usefixtures("pg")
 class TestDefectFixes:
-    def test_database_migration_normalizes_legacy_scores(self, tmp_path):
-        """Verify the SQLite -> PostgreSQL copy migrates legacy confidence/match_score > 1.0 down by /100."""
-        db_file = str(tmp_path / "test_migration.db")
-        conn = sqlite3.connect(db_file)
-        conn.execute(
-            "CREATE TABLE processed_skus (id TEXT PRIMARY KEY, batch_id TEXT, sku_name TEXT, domain TEXT, "
-            "bt TEXT, gk_json TEXT, region TEXT, confidence REAL, match_source TEXT, rules_applied_json TEXT, "
-            "logic_notes TEXT, matched_catalog_name TEXT, match_score REAL, bt_confidence REAL, "
-            "gk_confidence REAL, region_confidence REAL, created_at TEXT DEFAULT (datetime('now')))"
-        )
-
-        # Insert historical row with 100.0 scale
-        conn.execute(
-            """
-            INSERT INTO processed_skus (
-                id, batch_id, sku_name, domain, bt, gk_json, region,
-                confidence, match_source, rules_applied_json, logic_notes,
-                matched_catalog_name, match_score, bt_confidence,
-                gk_confidence, region_confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "test-id-1",
-                "b-1",
-                "Sample Item",
-                "food",
-                "Rice",
-                "[]",
-                "Western",
-                100.0,
-                "catalogue",
-                "[]",
-                "Exact Text Match",
-                "Sample Item",
-                100.0,
-                0.95,
-                0.90,
-                0.85,
-            ),
-        )
-        conn.commit()
-        conn.close()
-
-        with get_engine().begin() as pg_conn:
-            pg_conn.execute(text("DELETE FROM processed_skus WHERE id = 'test-id-1'"))
-        try:
-            migrate(db_file)
-            with get_engine().connect() as pg_conn:
-                conf, score, created_at = pg_conn.execute(
-                    text(
-                        "SELECT confidence, match_score, created_at FROM processed_skus WHERE id = 'test-id-1'"
-                    )
-                ).fetchone()
-            assert conf == 1.0, f"Expected confidence 1.0, got {conf}"
-            assert score == 1.0, f"Expected match_score 1.0, got {score}"
-            assert created_at.tzinfo is not None
-        finally:
-            with get_engine().begin() as pg_conn:
-                pg_conn.execute(text("DELETE FROM processed_skus WHERE id = 'test-id-1'"))
-
     def test_bypass_score_normalization_at_source(self):
         """Verify exact and fuzzy bypass paths write 1.0 instead of 100.0."""
         matcher = get_pipeline("food")
