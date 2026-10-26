@@ -21,19 +21,17 @@ export const useStore = create(
       },
 
       // MatchOps app session (separate from the merchant-portal token above). Credentials live
-      // in sessionStorage only; the active tenant is remembered across sessions.
+      // in sessionStorage only. The tenant comes from the signed-in account (server side).
       authToken: '',
       apiKey: '',
-      tenantId: 'default',
-      setSession: ({ token = '', apiKey = '', tenantId }) => {
-        set({ authToken: token, apiKey, ...(tenantId && { tenantId }) });
+      setSession: ({ token = '', apiKey = '' }) => {
+        set({ authToken: token, apiKey });
         sessionStorage.setItem('matchops_auth', JSON.stringify({ token, apiKey }));
       },
       clearSession: () => {
-        set({ authToken: '', apiKey: '', tenantId: 'default' });
+        set({ authToken: '', apiKey: '' });
         sessionStorage.removeItem('matchops_auth');
       },
-      setTenantId: (tenantId) => set({ tenantId: tenantId || 'default' }),
     }),
     {
       name: 'app-storage', // unique name
@@ -41,7 +39,6 @@ export const useStore = create(
       partialize: (state) => ({
         merchantId: state.merchantId,
         portalUrl: state.portalUrl,
-        tenantId: state.tenantId,
         // Do not persist bearerToken / authToken / apiKey in localStorage
       }),
     }

@@ -119,6 +119,22 @@ def test_cross_encoder_is_micro_batched_and_ordered(onnx_batch_32, n):
     assert eng.cross_session.batch_sizes == _expected_batches(n, 32)
 
 
+def test_classifier_embed_cache_keeps_one_file_per_input_set(tmp_path):
+    calls = []
+    clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+    clf.cache_dir = str(tmp_path)
+    clf.model = SimpleNamespace(
+        encode=lambda texts: calls.append(list(texts)) or {"dense": np.ones((len(texts), 2))}
+    )
+
+    clf._embed_cached(["a", "b"], "food_bt")
+    clf._embed_cached(["c"], "food_bt")  # e.g. the test DB's dictionaries
+    clf._embed_cached(["a", "b"], "food_bt")  # the app's set must still be cached
+
+    assert calls == [["a", "b"], ["c"]]
+    assert len(list(tmp_path.glob("food_bt_*.pkl"))) == 2
+
+
 def test_onnx_batch_size_is_env_configurable():
     import subprocess
     import sys

@@ -177,7 +177,13 @@ processed_skus = Table(
     Index("idx_processed_skus_created_at", "created_at"),
     Index("idx_processed_skus_batch_id", "batch_id"),
     Index("idx_processed_skus_domain_created", "domain", "created_at"),
-    Index("idx_processed_skus_tenant_created", "tenant_id", "created_at"),
+    # Covering: the tenant-scoped dashboard aggregates are answered from the index alone
+    Index(
+        "idx_processed_skus_tenant_stats",
+        "tenant_id",
+        "created_at",
+        postgresql_include=["domain", "confidence", "match_source"],
+    ),
 )
 
 # 4. Request Audit Log

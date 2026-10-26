@@ -33,7 +33,10 @@ DEFAULT_APPS_SCRIPT_URL = os.getenv(
     "APPS_SCRIPT_URL",
     "https://script.google.com/macros/s/AKfycbx-COA5Dy5LR0lvi9Q2eaWpF3pjM5JL33NxhPKn8FcjqbnRhn9an1BXhVpVN1M38m1H/exec",
 )
-DEFAULT_BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+# 127.0.0.1, not localhost: on Windows localhost tries IPv6 first and stalls ~2s per connection
+DEFAULT_BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+# CLI task name -> Gateway route (same mapping as the Apps Script)
+TASK_ENDPOINTS = {"pipeline": "pipeline", "matcher": "match", "classifier": "classify"}
 DEFAULT_API_KEY = os.getenv("MATCHOPS_API_KEY", "meilimasterkey")
 
 
@@ -272,7 +275,7 @@ def run_single_job(
         return False
 
     # 3. Enqueue to backend
-    endpoint = f"{backend_url.rstrip('/')}/{task.lower()}"
+    endpoint = f"{backend_url.rstrip('/')}/{TASK_ENDPOINTS[task.lower()]}"
     payload = {
         "skus": skus,
         "domain": domain.lower(),

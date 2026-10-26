@@ -1,7 +1,7 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { SnackbarProvider } from 'notistack';
 import { vi } from 'vitest';
 import * as api from '../api';
@@ -10,6 +10,10 @@ import Dashboard from '../pages/Dashboard';
 import RulesEngine from '../pages/RulesEngine';
 import QueueDlq from '../pages/QueueDlq';
 import SkuSidebar from '../SkuSidebar';
+import Layout from '../Layout';
+import RequireLogin from './RequireLogin';
+import { NAV_ITEMS } from '../SkuSidebar';
+import { ColorModeProvider } from '../../context/color-context';
 
 vi.mock('../hooks/useAuth', () => ({ useAuth: vi.fn() }));
 vi.mock('./Charts', () => {
@@ -54,20 +58,28 @@ vi.mock('../api', () => ({
   ]),
   replayDeadLetter: vi.fn(async () => ({ job_id: '42', task_id: 'new-task' })),
   login: vi.fn(),
+  getModelsStatus: vi.fn(async () => ({ all_models_ready: true })),
+  loadModels: vi.fn(),
 }));
 
 const ROLES = {
-  admin: { role: 'admin', isAdmin: true, canEditRules: true, isPlatformAdmin: true },
-  rule_engineer: { role: 'rule_engineer', isAdmin: false, canEditRules: true, isPlatformAdmin: false },
-  reviewer: { role: 'reviewer', isAdmin: false, canEditRules: false, isPlatformAdmin: false },
+  admin: { role: 'admin', isAdmin: true, canEditRules: true },
+  rule_engineer: { role: 'rule_engineer', isAdmin: false, canEditRules: true },
+  reviewer: { role: 'reviewer', isAdmin: false, canEditRules: false },
 };
+const PUBLIC_PAGES = ['Dashboard', 'Jobs', 'Requests', 'Interactive', 'SKU Results', 'Catalog Search', 'Logs'];
 
-function renderAs(role, ui) {
-  useAuth.mockReturnValue({ me: { username: `${role}_user`, tenant_id: 'default' }, signedIn: true, ...ROLES[role] });
+// role 'anonymous' = logged out
+function renderAs(role, ui, { path = '/' } = {}) {
+  useAuth.mockReturnValue(
+    role === 'anonymous'
+      ? { me: undefined, signedIn: false, isAdmin: false, canEditRules: false }
+      : { me: { username: `${role}_user` }, signedIn: true, ...ROLES[role] }
+  );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[path]}>
         <SnackbarProvider>{ui}</SnackbarProvider>
       </MemoryRouter>
     </QueryClientProvider>
@@ -76,22 +88,78 @@ function renderAs(role, ui) {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('Dashboard system health', () => {
-  it('renders System Health above the KPI cards for admins', async () => {
-    renderAs('admin', <Dashboard />);
-    const health = await screen.findByText('System health');
-    const firstKpi = screen.getByText('Avg match confidence');
-    // DOCUMENT_POSITION_FOLLOWING: the KPI card comes after the health section
-    expect(health.compareDocumentPosition(firstKpi) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(await screen.findByText('1,234')).toBeTruthy();
-    expect(screen.getByText('abc123')).toBeTruthy();
-  });
-
-  it.each(['reviewer', 'rule_engineer'])('shows only the regular cards for %s', async (role) => {
+describe('Dashboard', () => {
+  it.each(['admin', 'reviewer', 'rule_engineer'])('has no system health section for %s', async (role) => {
     renderAs(role, <Dashboard />);
     expect(await screen.findByText('Avg match confidence')).toBeTruthy();
     expect(screen.queryByText('System health')).toBeNull();
     expect(api.getSystemStatus).not.toHaveBeenCalled();
+  });
+});
+
+const renderLayout = (role) =>
+  renderAs(
+    role,
+    <ColorModeProvider initialMode="light">
+      <Layout />
+    </ColorModeProvider>
+  );
+
+describe('Top bar session control', () => {
+  it('offers Sign in when logged out', async () => {
+    renderLayout('anonymous');
+    const header = screen.getByRole('banner');
+    expect(within(header).queryByRole('button', { name: 'Log out' })).toBeNull();
+    fireEvent.click(within(header).getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByLabelText('Username')).toBeTruthy();
+  });
+
+  it.each(['admin', 'reviewer'])('shows the role and a direct Log out for %s', (role) => {
+    renderLayout(role);
+    const header = screen.getByRole('banner');
+    expect(within(header).getByText(role)).toBeTruthy();
+    expect(within(header).queryByRole('button', { name: 'Sign in' })).toBeNull();
+    expect(within(header).queryByRole('button', { name: /switch user|accessibility/i })).toBeNull();
+    fireEvent.click(within(header).getByRole('button', { name: 'Log out' }));
+    expect(screen.queryByLabelText('Username')).toBeNull(); // no dialog, logs out immediately
+  });
+});
+
+describe('Page access', () => {
+  const navTitles = () => NAV_ITEMS.map((i) => i.title).filter((t) => screen.queryByText(t));
+
+  it('shows only the public pages when logged out', () => {
+    renderAs('anonymous', <SkuSidebar />);
+    expect(navTitles()).toEqual(PUBLIC_PAGES);
+  });
+
+  it('shows the login-only pages (not Queue) to a logged-in reviewer', () => {
+    renderAs('reviewer', <SkuSidebar />);
+    expect(navTitles()).toEqual(NAV_ITEMS.map((i) => i.title).filter((t) => t !== 'Queue & DLQ'));
+  });
+
+  const guarded = (admin) => (
+    <Routes>
+      <Route path="/dashboard" element={<div>dashboard page</div>} />
+      <Route
+        path="/secret"
+        element={
+          <RequireLogin admin={admin}>
+            <div>secret page</div>
+          </RequireLogin>
+        }
+      />
+    </Routes>
+  );
+
+  it.each([
+    ['anonymous', false, 'dashboard page'],
+    ['reviewer', false, 'secret page'],
+    ['reviewer', true, 'dashboard page'],
+    ['admin', true, 'secret page'],
+  ])('typing the URL as %s (admin page: %s) lands on the %s', (role, admin, expected) => {
+    renderAs(role, guarded(admin), { path: '/secret' });
+    expect(screen.getByText(expected)).toBeTruthy();
   });
 });
 
@@ -113,12 +181,16 @@ describe('RBAC gating', () => {
     unmount();
     renderAs('reviewer', <SkuSidebar />);
     expect(screen.queryByText('Queue & DLQ')).toBeNull();
-    // A reviewer can still reach the switch-user dialog (e.g. back to admin)
-    expect(screen.getByRole('button', { name: 'Switch user or tenant' })).toBeTruthy();
   });
 });
 
-describe('DLQ replay', () => {
+describe('Queue & DLQ', () => {
+  it('shows live queue counts to admins', async () => {
+    renderAs('admin', <QueueDlq />);
+    expect(await screen.findByText('5')).toBeTruthy(); // bulk waiting
+    expect(screen.getByText('Running now')).toBeTruthy();
+  });
+
   it('replays a dead-lettered task after confirmation', async () => {
     renderAs('admin', <QueueDlq />);
     fireEvent.click(await screen.findByRole('button', { name: 'Replay' }));
@@ -132,5 +204,6 @@ describe('DLQ replay', () => {
     expect(screen.getByText(/dead-letter queue is available to admins/i)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Replay' })).toBeNull();
     expect(api.getDeadLetters).not.toHaveBeenCalled();
+    expect(api.getSystemStatus).not.toHaveBeenCalled();
   });
 });

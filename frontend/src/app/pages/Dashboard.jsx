@@ -16,18 +16,7 @@ import {
   ToggleButtonGroup,
   Chip,
 } from '@mui/material';
-import {
-  CheckCircle2,
-  XCircle,
-  Activity,
-  Zap,
-  BookOpen,
-  Database,
-  Gauge,
-  Layers,
-  Inbox,
-  Fingerprint,
-} from 'lucide-react';
+import { CheckCircle2, XCircle, Activity, Zap, BookOpen } from 'lucide-react';
 import { PageContainer, PageHeader } from '../components/ui';
 import {
   ConfidenceDoughnutChart,
@@ -37,10 +26,9 @@ import {
   RegionDistributionChart,
 } from '../components/Charts';
 import { useQuery } from '@tanstack/react-query';
-import { getDashboardStats, getTagStats, getSystemStatus } from '../api';
-import { useAuth } from '../hooks/useAuth';
+import { getDashboardStats, getTagStats } from '../api';
 
-function StatCard({ icon: Icon, label, value, subtext, color }) {
+export function StatCard({ icon: Icon, label, value, subtext, color }) {
   return (
     <Card sx={{ height: '100%' }}>
       <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -74,52 +62,6 @@ function StatCard({ icon: Icon, label, value, subtext, color }) {
         </Box>
       </CardContent>
     </Card>
-  );
-}
-
-// Live operational counters (GET /system/status) in the same card style as the KPI row.
-function SystemHealthRow() {
-  const { data, isError } = useQuery({
-    queryKey: ['system-status'],
-    queryFn: getSystemStatus,
-    refetchInterval: 15000,
-  });
-  const fmt = (n) => (n === null || n === undefined ? '—' : Number(n).toLocaleString());
-  const depth = data?.queue_depth;
-  const queueText = (n) => (data?.queue_online ? fmt(n) : 'offline');
-  const items = [
-    { icon: Database, label: 'Processed SKUs', value: fmt(data?.processed_skus), color: 'primary' },
-    { icon: Gauge, label: 'Realtime queue', value: queueText(depth?.realtime), color: 'info' },
-    {
-      icon: Layers,
-      label: 'Bulk queue',
-      value: queueText(depth?.bulk),
-      subtext: depth ? `${depth.inflight} in flight · ${depth.delayed} retrying` : undefined,
-      color: 'secondary',
-    },
-    { icon: Inbox, label: 'Dead-lettered jobs', value: fmt(data?.dlq_size), color: data?.dlq_size ? 'error' : 'success' },
-    { icon: Fingerprint, label: 'Active rule version', value: data?.rule_version ?? '—', color: 'warning' },
-  ];
-
-  return (
-    <Box aria-label="System health">
-      <Typography variant="subtitle1" sx={{ mb: 1.5 }}>
-        System health
-      </Typography>
-      {isError ? (
-        <Typography variant="body2" color="error">
-          System status unavailable.
-        </Typography>
-      ) : (
-        <Grid container spacing={3}>
-          {items.map((item) => (
-            <Grid key={item.label} size={{ xs: 12, sm: 6, md: 'grow' }}>
-              <StatCard {...item} />
-            </Grid>
-          ))}
-        </Grid>
-      )}
-    </Box>
   );
 }
 
@@ -164,7 +106,6 @@ export default function Dashboard() {
   const regionDistribution = tagData?.regionDistribution || [];
 
   const isLoading = statsLoading || tagLoading;
-  const { isAdmin } = useAuth();
 
   return (
     <PageContainer>
@@ -205,9 +146,6 @@ export default function Dashboard() {
       {isLoading && <LinearProgress sx={{ mb: 3, borderRadius: 2 }} />}
 
       <Stack spacing={3}>
-        {/* Row 0: System health — admins only (queue depths span every tenant) */}
-        {isAdmin && <SystemHealthRow />}
-
         {/* Row 1: KPI Stat Cards */}
         <Grid container spacing={3}>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>

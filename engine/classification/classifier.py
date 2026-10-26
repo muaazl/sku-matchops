@@ -184,8 +184,9 @@ class ZeroShotClassifier:
     def _embed_cached(self, texts: list[str], cache_key: str) -> np.ndarray:
         """Embed a list of texts with disk caching."""
         os.makedirs(self.cache_dir, exist_ok=True)
-        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pkl")
         fingerprint = hashlib.md5("|".join(texts).encode()).hexdigest()
+        # One file per input set, so different dictionaries (e.g. the test DB's) never evict each other
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}_{fingerprint[:12]}.pkl")
 
         if os.path.exists(cache_file):
             try:

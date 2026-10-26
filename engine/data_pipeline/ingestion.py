@@ -1087,7 +1087,9 @@ class DataIngestion:
             try:
                 rows = conn.execute(
                     text(
-                        "SELECT tag_type, tag FROM classifier_dictionaries WHERE domain = :domain"
+                        # Stable order: the classifier's embedding cache is fingerprinted on it
+                        "SELECT tag_type, tag FROM classifier_dictionaries WHERE domain = :domain "
+                        "ORDER BY id"
                     ),
                     p,
                 ).fetchall()

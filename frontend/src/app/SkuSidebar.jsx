@@ -26,18 +26,17 @@ import {
   StyledSidebarFooterList,
 } from '../components/Sidebar/SidebarStyled';
 import { Logo } from '../components/Logo';
-import SessionControl from './components/SessionControl';
 import { useAuth } from './hooks/useAuth';
 
 export const NAV_ITEMS = [
   { title: 'Dashboard', icon: LayoutDashboard, to: '/dashboard' },
   { title: 'Jobs', icon: ListChecks, to: '/jobs' },
   { title: 'Requests', icon: Radio, to: '/requests' },
-  { title: 'Collections', icon: Boxes, to: '/collections' },
-  { title: 'Process SKUs', icon: Upload, to: '/process-skus' },
+  { title: 'Collections', icon: Boxes, to: '/collections', loginOnly: true },
+  { title: 'Process SKUs', icon: Upload, to: '/process-skus', loginOnly: true },
   { title: 'Interactive', icon: Wand2, to: '/interactive' },
   { title: 'SKU Results', icon: History, to: '/sku-results' },
-  { title: 'Rules Engine', icon: SlidersHorizontal, to: '/rules' },
+  { title: 'Rules Engine', icon: SlidersHorizontal, to: '/rules', loginOnly: true },
   { title: 'Catalog Search', icon: Search, to: '/catalog' },
   { title: 'Queue & DLQ', icon: Inbox, to: '/queue', adminOnly: true },
   { title: 'Logs', icon: Terminal, to: '/logs' },
@@ -46,7 +45,7 @@ export const NAV_ITEMS = [
 export default function SkuSidebar() {
   const location = useLocation();
   const isActive = (linkTo) => location.pathname === linkTo || location.pathname.startsWith(linkTo + '/');
-  const { isAdmin } = useAuth();
+  const { signedIn, isAdmin } = useAuth();
 
   return (
     <Drawer variant="permanent">
@@ -55,14 +54,13 @@ export default function SkuSidebar() {
       </DrawerHeader>
       <Divider />
       <StyledList>
-        {NAV_ITEMS.filter((item) => isAdmin || !item.adminOnly).map(({ title, icon: Icon, to }) => (
-          <SidebarItem key={to} title={title} icon={<Icon size="16px" />} linkTo={to} active={isActive(to)} />
-        ))}
+        {NAV_ITEMS.filter((item) => (signedIn || !item.loginOnly) && (isAdmin || !item.adminOnly)).map(
+          ({ title, icon: Icon, to }) => (
+            <SidebarItem key={to} title={title} icon={<Icon size="16px" />} linkTo={to} active={isActive(to)} />
+          )
+        )}
       </StyledList>
       <StyledSidebarFooterList>
-        <StyledSidebarFooterListItem>
-          <SessionControl />
-        </StyledSidebarFooterListItem>
         <StyledSidebarFooterListItem>
           <StyledSidebarFooterText
             variant="caption"

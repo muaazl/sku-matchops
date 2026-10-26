@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-db_query.py - Universal database query & export tool for sku-matchops.
+query.py - Query & export tool for the sku-matchops PostgreSQL database (uses DATABASE_URL).
 
 Features:
   1. Job Summary: Sheet Name, Total SKUs, High Conf SKUs, Match Rate, etc.
@@ -810,7 +810,7 @@ def interactive_menu(conn: Connection):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="High-level database query & export tool for sku-matchops.db"
+        description="Query & export tool for the sku-matchops PostgreSQL database (DATABASE_URL)"
     )
     # Mode flags
     parser.add_argument(

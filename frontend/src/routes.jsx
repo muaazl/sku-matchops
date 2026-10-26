@@ -1,6 +1,7 @@
 import React, { lazy } from 'react';
 import { Navigate } from 'react-router-dom';
 import Layout from './app/Layout';
+import RequireLogin from './app/components/RequireLogin';
 
 /**
  * Route-based code splitting configuration.
@@ -30,14 +31,43 @@ const routes = () => [
       { path: 'jobs', element: <Jobs /> },
       { path: 'jobs/:jobId', element: <Jobs /> },
       { path: 'requests', element: <Requests /> },
-      { path: 'collections', element: <Collections /> },
-      { path: 'process-skus', element: <ProcessSKUs /> },
+      // Logged-in only: Collections, Process SKUs, Rules Engine; Queue & DLQ is admin-only
+      {
+        path: 'collections',
+        element: (
+          <RequireLogin>
+            <Collections />
+          </RequireLogin>
+        ),
+      },
+      {
+        path: 'process-skus',
+        element: (
+          <RequireLogin>
+            <ProcessSKUs />
+          </RequireLogin>
+        ),
+      },
       { path: 'interactive', element: <Interactive /> },
       { path: 'sku-results', element: <SkuResults /> },
-      { path: 'rules', element: <RulesEngine /> },
+      {
+        path: 'rules',
+        element: (
+          <RequireLogin>
+            <RulesEngine />
+          </RequireLogin>
+        ),
+      },
       { path: 'catalog', element: <CatalogSearch /> },
       { path: 'logs', element: <Logs /> },
-      { path: 'queue', element: <QueueDlq /> },
+      {
+        path: 'queue',
+        element: (
+          <RequireLogin admin>
+            <QueueDlq />
+          </RequireLogin>
+        ),
+      },
       { path: 'guide', element: <Guide /> },
       { path: '*', element: <Navigate to="/dashboard" replace /> },
     ],

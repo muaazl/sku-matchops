@@ -2,10 +2,11 @@ import axios from 'axios';
 import { useStore } from './store';
 
 // ── Dynamic Backend URL Resolution ──────────────────────────────────────────
-// Locally: uses localhost:8000 (no tunnel needed).
+// Locally: uses 127.0.0.1:8000 (no tunnel needed).
 // On Vercel: fetches the tunnel URL from the _config tab of the catalog sheet
 
-const LOCAL_BACKEND = 'http://localhost:8000';
+// 127.0.0.1, not localhost: the gateway listens on IPv4 only and Windows waits ~2s on ::1 first
+const LOCAL_BACKEND = 'http://127.0.0.1:8000';
 const SHEET_ID = import.meta.env.VITE_GOOGLE_SHEET_ID || '';
 const CONFIG_CSV_URL = SHEET_ID
   ? `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=_config`
@@ -16,7 +17,7 @@ let _resolvedBaseUrl = import.meta.env.VITE_API_URL || null;
 /**
  * Resolves the backend API base URL.
  * - If VITE_API_URL is set, uses that.
- * - If running on localhost, uses localhost:8000.
+ * - If running on localhost, uses 127.0.0.1:8000.
  * - Otherwise (Vercel), fetches from the Google Sheets _config CSV.
  */
 async function resolveBaseUrl() {
@@ -63,17 +64,16 @@ const api = axios.create({
 });
 
 // Request interceptor: ensures every request uses the resolved tunnel URL and carries the
-// active session (Bearer JWT, else API key) and tenant.
+// active session (Bearer JWT, else API key). No X-Tenant-ID: the server uses the account's tenant.
 api.interceptors.request.use(async (config) => {
   const base = await resolveBaseUrl();
   config.baseURL = base;
-  const { authToken, apiKey, tenantId } = useStore.getState();
+  const { authToken, apiKey } = useStore.getState();
   if (authToken) {
     config.headers.Authorization = `Bearer ${authToken}`;
   } else if (apiKey) {
     config.headers['X-API-Key'] = apiKey;
   }
-  config.headers['X-Tenant-ID'] = tenantId || 'default';
   return config;
 });
 

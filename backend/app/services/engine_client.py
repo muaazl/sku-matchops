@@ -19,8 +19,8 @@ from engine.pipeline.task_queue import get_task_queue
 
 logger = logging.getLogger("matchops.engine_client")
 
-ENGINE_URL = os.getenv("ENGINE_URL", "http://localhost:8001").rstrip("/")
-BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://localhost:8000").rstrip("/")
+ENGINE_URL = os.getenv("ENGINE_URL", "http://127.0.0.1:8001").rstrip("/")
+BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://127.0.0.1:8000").rstrip("/")
 
 # Set up requests session with connection pooling and light retry policy.
 # allowed_methods must explicitly include POST: urllib3's default excludes it (only

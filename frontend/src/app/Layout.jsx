@@ -3,8 +3,8 @@ import { useTheme } from '@mui/material/styles';
 import { Box, Toolbar, CssBaseline, AppBar, Typography, Button, CircularProgress } from '@mui/material';
 import { Outlet, useLocation, Link } from 'react-router-dom';
 import ColorModeToggle from '../components/Common/ColorModeToggle';
-import AccessibilityToggle from '../components/Common/AccessibilityToggle';
 import SkuSidebar from './SkuSidebar';
+import SessionControl from './components/SessionControl';
 import { DrawerHeader } from '../components/Sidebar/SidebarStyled';
 import { Logo } from '../components/Logo';
 import { IconModal } from './components/ui';
@@ -200,8 +200,8 @@ export default function Layout() {
                 Load Models
               </Button>
             )}
-            <AccessibilityToggle />
             <ColorModeToggle />
+            <SessionControl />
           </Box>
         </Toolbar>
       </AppBar>

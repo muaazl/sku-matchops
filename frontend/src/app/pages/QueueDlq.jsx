@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { Alert, Box, Button, Chip, Table, TableCell, TableRow, Tooltip, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, Grid, Table, TableCell, TableRow, Tooltip, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSnackbar } from 'notistack';
-import { RotateCcw } from 'lucide-react';
-import { getDeadLetters, replayDeadLetter } from '../api';
+import { Gauge, Inbox, Layers, Loader, RotateCcw } from 'lucide-react';
+import { getDeadLetters, getSystemStatus, replayDeadLetter } from '../api';
+import { StatCard } from './Dashboard';
 import { useAuth } from '../hooks/useAuth';
 import { fmtTime } from '../utils';
 import { ConfirmDialog, PageContainer, PageHeader } from '../components/ui';
@@ -32,6 +33,22 @@ export default function QueueDlq() {
     refetchInterval: 15000,
   });
 
+  const { data: sys } = useQuery({
+    queryKey: ['system-status'],
+    queryFn: getSystemStatus,
+    enabled: isAdmin,
+    refetchInterval: 5000,
+  });
+  const depth = sys?.queue_online ? sys.queue_depth : null;
+  const count = (n) => (depth ? Number(n).toLocaleString() : sys ? 'offline' : '—');
+  const QUEUE_CARDS = [
+    { icon: Gauge, label: 'Waiting · realtime (small jobs)', value: count(depth?.realtime), color: 'info' },
+    { icon: Layers, label: 'Waiting · bulk', value: count(depth?.bulk), color: 'secondary' },
+    { icon: Loader, label: 'Running now', value: count(depth?.inflight), color: 'primary' },
+    { icon: RotateCcw, label: 'Waiting to retry', value: count(depth?.delayed), color: 'warning' },
+    { icon: Inbox, label: 'Dead-lettered', value: count(depth?.dlq), color: depth?.dlq ? 'error' : 'success' },
+  ];
+
   const replay = useMutation({
     mutationFn: replayDeadLetter,
     onSuccess: (res) => {
@@ -47,8 +64,18 @@ export default function QueueDlq() {
     <PageContainer>
       <PageHeader
         title="Queue & Dead Letters"
-        subtitle="Jobs that exhausted their retries. Replay re-queues one with a fresh retry budget."
+        subtitle="Live job queue. Jobs land in the dead-letter list only after crashing or timing out 3 times (uploads: once); an empty list is healthy. Replay re-queues one with a fresh retry budget."
       />
+
+      {isAdmin && (
+        <Grid container spacing={3} sx={{ mb: 3 }}>
+          {QUEUE_CARDS.map((card) => (
+            <Grid key={card.label} size={{ xs: 12, sm: 6, md: 'grow' }}>
+              <StatCard {...card} />
+            </Grid>
+          ))}
+        </Grid>
+      )}
 
       {!isAdmin && role && (
         <Alert severity="info" sx={{ mb: 2 }}>

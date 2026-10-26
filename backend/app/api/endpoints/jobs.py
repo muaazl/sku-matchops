@@ -12,6 +12,10 @@ from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
 from backend.app.services.engine_client import cancel_engine_job
 from backend.app.services.worker import enqueue_job
 from engine import config as engine_config
+from engine.core.models import jobs as jobs_table
+
+# The list never shows the uploaded SKUs (~15 KB a job); /jobs/{id} and retry still read them
+_JOB_LIST_COLUMNS = ", ".join(c.name for c in jobs_table.columns if c.name != "input_skus_json")
 
 router = APIRouter()
 
@@ -138,7 +142,7 @@ def get_jobs(
     total_count = db.execute(text(f"SELECT COUNT(*) FROM jobs {where}"), params).scalar()
     response.headers["X-Total-Count"] = str(total_count)
 
-    query = f"SELECT * FROM jobs {where} ORDER BY started_at DESC"
+    query = f"SELECT {_JOB_LIST_COLUMNS} FROM jobs {where} ORDER BY started_at DESC"
     if limit is not None and limit > 0:
         query += " LIMIT :limit OFFSET :offset"
         params.update(limit=limit, offset=(page - 1) * limit)
