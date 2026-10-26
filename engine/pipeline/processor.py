@@ -164,9 +164,11 @@ def process_request(
 
     start_time = time.time()
     total_skus = len(skus)
+    stage_timings: dict[str, float] = {}
 
     # Food domain flavor entity enrichment
     if domain == config.DOMAIN_FOOD:
+        t_ner_start = time.perf_counter()
         embed_engine, _ = _get_shared_models()
         ner_engine = get_ner_engine(domain)
         if ner_engine:
@@ -209,6 +211,7 @@ def process_request(
                     pass  # name += " veg"
                 # DO NOT mutate sku["name"] if it's just veg, it destroys exact matching downstream.
                 sku["name"] = name
+        stage_timings["food_ner_prepass_ms"] = round((time.perf_counter() - t_ner_start) * 1000, 2)
 
     if task == "matcher":
         emit_progress("embedding", 5.0)
@@ -230,7 +233,9 @@ def process_request(
             eta = max(1, int((elapsed / (p / 100.0)) - elapsed)) if p > 1.0 else None
             emit_progress(stage, p, eta)
 
+        t_matcher_start = time.perf_counter()
         results_df = matcher.process_inputs(input_df, progress_callback=matcher_cb)
+        stage_timings["matcher_core_ms"] = round((time.perf_counter() - t_matcher_start) * 1000, 2)
 
         out = []
         for i in range(len(skus)):
@@ -268,9 +273,12 @@ def process_request(
                 )
 
         emit_progress("writing_results", 95.0)
+        t_tmpl_start = time.perf_counter()
         _apply_template_tag_enrichment(skus, out, domain, mode="matcher")
+        stage_timings["template_enrichment_ms"] = round((time.perf_counter() - t_tmpl_start) * 1000, 2)
+        stage_timings["total_ms"] = round((time.time() - start_time) * 1000, 2)
         emit_progress("done", 100.0, 0)
-        return {"domain": domain, "total": len(out), "results": out}
+        return {"domain": domain, "total": len(out), "results": out, "stage_timings": stage_timings}
 
     elif task == "classifier":
         emit_progress("embedding", 5.0)
@@ -286,6 +294,7 @@ def process_request(
 
         chunk_size = getattr(config, "CLASSIFY_CHUNK_SIZE", 250)
         results = []
+        t_clf_tag_start = time.perf_counter()
 
         for chunk_start in range(0, total_skus, chunk_size):
             check_cancel()
@@ -343,6 +352,8 @@ def process_request(
 
             gc.collect()
 
+        stage_timings["tag_all_skus_ms"] = round((time.perf_counter() - t_clf_tag_start) * 1000, 2)
+
         out = [
             {
                 "suggested_bt": str(res.get("suggested_bt") or ""),
@@ -369,9 +380,12 @@ def process_request(
         ]
 
         emit_progress("writing_results", 95.0)
+        t_tmpl_start = time.perf_counter()
         _apply_template_tag_enrichment(skus, out, domain, mode="classifier")
+        stage_timings["template_enrichment_ms"] = round((time.perf_counter() - t_tmpl_start) * 1000, 2)
 
         emit_progress("applying_rules", 96.0)
+        t_rules_start = time.perf_counter()
         for j, row in enumerate(out):
             check_cancel()
             sku = skus[j]
@@ -402,8 +416,10 @@ def process_request(
             applied = aug_record.get("rules_applied", [])
             row["rules_applied"] = json.dumps(applied) if applied else ""
 
+        stage_timings["rules_engine_ms"] = round((time.perf_counter() - t_rules_start) * 1000, 2)
+        stage_timings["total_ms"] = round((time.time() - start_time) * 1000, 2)
         emit_progress("done", 100.0, 0)
-        return {"domain": domain, "total": len(out), "results": out}
+        return {"domain": domain, "total": len(out), "results": out, "stage_timings": stage_timings}
 
     elif task == "pipeline":
         emit_progress("embedding", 5.0)
@@ -429,7 +445,9 @@ def process_request(
             )
             emit_progress(stage, overall_pct, eta)
 
+        t_pipe_match_start = time.perf_counter()
         match_df = matcher.process_inputs(input_df, progress_callback=matcher_pipeline_cb)
+        stage_timings["pipeline_matcher_ms"] = round((time.perf_counter() - t_pipe_match_start) * 1000, 2)
 
         pipeline_out = []
         escalate_indices = []
@@ -498,6 +516,7 @@ def process_request(
 
             total_esc = len(escalate_indices)
             esc_chunk_size = getattr(config, "CLASSIFY_CHUNK_SIZE", 250)
+            t_esc_clf_start = time.perf_counter()
 
             for esc_start in range(0, total_esc, esc_chunk_size):
                 check_cancel()
@@ -586,13 +605,18 @@ def process_request(
                 import gc
 
                 gc.collect()
+
+            stage_timings["pipeline_escalated_clf_ms"] = round((time.perf_counter() - t_esc_clf_start) * 1000, 2)
         else:
             emit_progress("classifying", 90.0)
 
         # Template Tag Enrichment for Pipeline Mode
+        t_tmpl_start = time.perf_counter()
         _apply_template_tag_enrichment(skus, pipeline_out, domain, mode="pipeline")
+        stage_timings["template_enrichment_ms"] = round((time.perf_counter() - t_tmpl_start) * 1000, 2)
 
         emit_progress("applying_rules", 92.0)
+        t_rules_start = time.perf_counter()
         for j, row in enumerate(pipeline_out):
             check_cancel()
             overall_pct = 92.0 + (((j + 1) / len(pipeline_out)) * 7.0)
@@ -627,6 +651,9 @@ def process_request(
             applied = aug_record.get("rules_applied", [])
             row["rules_applied"] = json.dumps(applied) if applied else ""
 
+        stage_timings["rules_engine_ms"] = round((time.perf_counter() - t_rules_start) * 1000, 2)
+        stage_timings["total_ms"] = round((time.time() - start_time) * 1000, 2)
+
         emit_progress("writing_results", 99.0)
         emit_progress("done", 100.0, 0)
         return {
@@ -634,6 +661,7 @@ def process_request(
             "total": len(pipeline_out),
             "escalated_count": len(escalate_indices),
             "results": pipeline_out,
+            "stage_timings": stage_timings,
         }
 
     else:
