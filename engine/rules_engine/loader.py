@@ -20,8 +20,11 @@ logger = logging.getLogger("matchops.rules_loader")
 _RULES_CACHE = None
 # Fingerprint of the loaded active rule set; part of the processed_skus idempotency key
 _RULES_VERSION = "none"
-# Guards swapping (_RULES_CACHE, _RULES_VERSION) as one pair
+# Per-tenant fingerprints: the rule_version stored with a tenant's job results
+_TENANT_VERSIONS: dict[str, str] = {}
+# Guards swapping (_RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS) as one unit
 _STATE_LOCK = threading.Lock()
+DEFAULT_TENANT = "default"
 
 
 class Rule:
@@ -34,18 +37,20 @@ class Rule:
         self.reasoning = row[5]
         self.condition_logic = row[6]
         self.is_active = row[7]
+        self.tenant_id = row[8] if len(row) > 8 else DEFAULT_TENANT
         self.conditions = []
         self.actions = []
 
 
 def load_rules_from_db():
     """Loads all active rules from the database into the in-memory cache."""
-    global _RULES_CACHE, _RULES_VERSION
+    global _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS
     try:
         with get_connection() as conn:
             rules_rows = conn.execute(
                 text("""
-                SELECT id, rule_id, domain, priority, description, reasoning, condition_logic, is_active
+                SELECT id, rule_id, domain, priority, description, reasoning, condition_logic, is_active,
+                       tenant_id
                 FROM rules WHERE is_active = 1
                 ORDER BY priority ASC, rule_id ASC
             """)
@@ -64,7 +69,7 @@ def load_rules_from_db():
             return
         logger.warning(f"Could not load rules from the database: {e}. Rules engine will be empty.")
         with _STATE_LOCK:
-            _RULES_CACHE, _RULES_VERSION = {}, "none"
+            _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = {}, "none", {}
         return
 
     rules_map = {}
@@ -75,10 +80,7 @@ def load_rules_from_db():
         rule = Rule(row)
         rules_map[rule.rule_id] = rule
 
-        if rule.domain not in new_cache:
-            new_cache[rule.domain] = []
-
-        new_cache[rule.domain].append(rule)
+        new_cache.setdefault(rule.tenant_id, {}).setdefault(rule.domain, []).append(rule)
 
     # 2. Conditions
     for row in cond_rows:
@@ -99,16 +101,24 @@ def load_rules_from_db():
         if rule_id in rules_map:
             rules_map[rule_id].actions.append({"action_type": row[1], "value": row[2]})
 
+    all_rules = list(rules_map.values())
+    # Global fingerprint drives cross-process invalidation; per-tenant ones version job results
+    version = _fingerprint(all_rules)
+    tenant_versions = {
+        t: _fingerprint([r for r in all_rules if r.tenant_id == t]) for t in new_cache
+    }
+    with _STATE_LOCK:
+        _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = new_cache, version, tenant_versions
+    logger.info(f"Loaded {len(rules_map)} active rules into memory.")
+
+
+def _fingerprint(rules: list) -> str:
     fingerprint = [
-        [r.rule_id, r.domain, r.priority, r.condition_logic, r.conditions, r.actions]
-        for r in rules_map.values()
+        [r.rule_id, r.domain, r.priority, r.condition_logic, r.conditions, r.actions] for r in rules
     ]
-    version = hashlib.sha256(
+    return hashlib.sha256(
         json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:16]
-    with _STATE_LOCK:
-        _RULES_CACHE, _RULES_VERSION = new_cache, version
-    logger.info(f"Loaded {len(rules_map)} active rules into memory.")
 
 
 def _rules_for_domain(cache: dict, domain: str) -> list:
@@ -120,9 +130,10 @@ def _rules_for_domain(cache: dict, domain: str) -> list:
 
 @functools.lru_cache(maxsize=128)
 def _cached_rules(domain: str) -> list:
+    """Unpinned lookups (no job context) use the default tenant's rules."""
     if _RULES_CACHE is None:
         load_rules_from_db()
-    return _rules_for_domain(_RULES_CACHE or {}, domain)
+    return _rules_for_domain((_RULES_CACHE or {}).get(DEFAULT_TENANT, {}), domain)
 
 
 @dataclass(frozen=True)
@@ -150,13 +161,17 @@ def get_rules(domain: str):
     return _cached_rules(domain)
 
 
-def snapshot_rules() -> RulesSnapshot:
-    """Captures the current rules and their version as one consistent pair."""
+def snapshot_rules(tenant_id: str = DEFAULT_TENANT) -> RulesSnapshot:
+    """Captures one tenant's current rules and their version as one consistent pair.
+    Other tenants' rules are never visible through the snapshot."""
     if _RULES_CACHE is None:
         load_rules_from_db()
     # Reloads build a brand-new dict and Rule objects, so holding a reference is a stable copy
     with _STATE_LOCK:
-        return RulesSnapshot(version=_RULES_VERSION, _cache=_RULES_CACHE or {})
+        return RulesSnapshot(
+            version=_TENANT_VERSIONS.get(tenant_id) or _fingerprint([]),
+            _cache=(_RULES_CACHE or {}).get(tenant_id, {}),
+        )
 
 
 @contextmanager

@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
+from backend.app.core.config import DEFAULT_TENANT
 from backend.app.core.db import get_engine, get_next_job_id
 from backend.app.schemas.models import BaseRequest
 from backend.app.services.engine_client import dispatch_batch_job
@@ -17,7 +18,7 @@ from backend.app.services.engine_client import dispatch_batch_job
 logger = logging.getLogger("matchops.backend.worker")
 
 
-def enqueue_job(request: BaseRequest, task: str) -> dict:
+def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT) -> dict:
     """
     Registers a new matching/classification job in the DB and dispatches it
     to the dedicated ML Engine microservice.
@@ -44,10 +45,10 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
                 INSERT INTO jobs (
                     id, batch_id, type, status, current_stage,
                     total_items, completed_items, created_by,
-                    started_at, domain, sheet_name, target_sheet, input_skus_json
+                    started_at, domain, sheet_name, target_sheet, input_skus_json, tenant_id
                 ) VALUES (
                     :id, :id, :type, 'queued', 'queued', :total_items, 0, 'system',
-                    now(), :domain, :sheet_name, :target_sheet, :input_skus_json
+                    now(), :domain, :sheet_name, :target_sheet, :input_skus_json, :tenant_id
                 )
                 """),
                 {
@@ -58,6 +59,7 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
                     "sheet_name": request.sheet_name,
                     "target_sheet": target_sheet,
                     "input_skus_json": input_skus_json,
+                    "tenant_id": tenant_id,
                 },
             )
             conn.commit()
@@ -89,7 +91,7 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
 
     # 3. Dispatch to ML Engine microservice
     try:
-        dispatch_batch_job(job_id=job_id, request=request, task=task)
+        dispatch_batch_job(job_id=job_id, request=request, task=task, tenant_id=tenant_id)
     except Exception as dispatch_err:
         logger.error(f"[JOB {job_id}] Dispatch to ML Engine failed: {dispatch_err}")
         # Mark as failed in DB

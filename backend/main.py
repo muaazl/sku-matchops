@@ -18,6 +18,7 @@ from backend.app.middleware.etag import ETagMiddleware
 from backend.app.services.meilisearch_service import check_and_sync_meilisearch
 from engine import config
 from engine.core.db import init_db
+from engine.core.observability import TraceIdMiddleware, configure_logging
 from engine.pipeline.task_queue import get_task_queue
 from engine.rules_engine import refresh_rules_cache
 
@@ -42,6 +43,7 @@ root_logger.addHandler(sh)
 fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
 fh.setFormatter(formatter)
 root_logger.addHandler(fh)
+configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured output
 
 logger = logging.getLogger("matchops.server")
 
@@ -61,11 +63,20 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "If-None-Match", "X-API-Key"],
-    expose_headers=["X-Total-Count"],
+    allow_headers=[
+        "Content-Type",
+        "If-None-Match",
+        "X-API-Key",
+        "Authorization",
+        "X-Tenant-ID",
+        "X-Request-ID",
+    ],
+    expose_headers=["X-Total-Count", "X-Request-ID"],
 )
 app.add_middleware(AuditLoggingMiddleware)
 app.add_middleware(ETagMiddleware)
+# Outermost: the trace id is bound before audit logging and every handler run
+app.add_middleware(TraceIdMiddleware)
 
 app.include_router(api_router)
 

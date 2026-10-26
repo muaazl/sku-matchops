@@ -275,7 +275,9 @@ def process_request(
         emit_progress("writing_results", 95.0)
         t_tmpl_start = time.perf_counter()
         _apply_template_tag_enrichment(skus, out, domain, mode="matcher")
-        stage_timings["template_enrichment_ms"] = round((time.perf_counter() - t_tmpl_start) * 1000, 2)
+        stage_timings["template_enrichment_ms"] = round(
+            (time.perf_counter() - t_tmpl_start) * 1000, 2
+        )
         stage_timings["total_ms"] = round((time.time() - start_time) * 1000, 2)
         emit_progress("done", 100.0, 0)
         return {"domain": domain, "total": len(out), "results": out, "stage_timings": stage_timings}
@@ -382,7 +384,9 @@ def process_request(
         emit_progress("writing_results", 95.0)
         t_tmpl_start = time.perf_counter()
         _apply_template_tag_enrichment(skus, out, domain, mode="classifier")
-        stage_timings["template_enrichment_ms"] = round((time.perf_counter() - t_tmpl_start) * 1000, 2)
+        stage_timings["template_enrichment_ms"] = round(
+            (time.perf_counter() - t_tmpl_start) * 1000, 2
+        )
 
         emit_progress("applying_rules", 96.0)
         t_rules_start = time.perf_counter()
@@ -447,7 +451,9 @@ def process_request(
 
         t_pipe_match_start = time.perf_counter()
         match_df = matcher.process_inputs(input_df, progress_callback=matcher_pipeline_cb)
-        stage_timings["pipeline_matcher_ms"] = round((time.perf_counter() - t_pipe_match_start) * 1000, 2)
+        stage_timings["pipeline_matcher_ms"] = round(
+            (time.perf_counter() - t_pipe_match_start) * 1000, 2
+        )
 
         pipeline_out = []
         escalate_indices = []
@@ -606,14 +612,18 @@ def process_request(
 
                 gc.collect()
 
-            stage_timings["pipeline_escalated_clf_ms"] = round((time.perf_counter() - t_esc_clf_start) * 1000, 2)
+            stage_timings["pipeline_escalated_clf_ms"] = round(
+                (time.perf_counter() - t_esc_clf_start) * 1000, 2
+            )
         else:
             emit_progress("classifying", 90.0)
 
         # Template Tag Enrichment for Pipeline Mode
         t_tmpl_start = time.perf_counter()
         _apply_template_tag_enrichment(skus, pipeline_out, domain, mode="pipeline")
-        stage_timings["template_enrichment_ms"] = round((time.perf_counter() - t_tmpl_start) * 1000, 2)
+        stage_timings["template_enrichment_ms"] = round(
+            (time.perf_counter() - t_tmpl_start) * 1000, 2
+        )
 
         emit_progress("applying_rules", 92.0)
         t_rules_start = time.perf_counter()

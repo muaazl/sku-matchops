@@ -21,6 +21,8 @@ sqlalchemy>=2.0,<2.1
 psycopg[binary]>=3.1
 alembic>=1.13
 redis>=5.0
+PyJWT>=2.8
+prometheus-client>=0.20
 
 # Utilities
 rich>=13.0

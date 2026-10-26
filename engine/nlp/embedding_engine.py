@@ -10,6 +10,7 @@ import onnxruntime as ort
 from transformers import AutoTokenizer
 
 from engine import config
+from engine.core.observability import ONNX_INFERENCE_SECONDS
 
 logger = logging.getLogger("matchops.embedder")
 
@@ -203,7 +204,8 @@ class EmbeddingEngine:
                     ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
 
                     # Run hybrid ONNX model
-                    outputs = self.bi_session.run(None, ort_inputs)
+                    with ONNX_INFERENCE_SECONDS.labels(model="embed").time():
+                        outputs = self.bi_session.run(None, ort_inputs)
                     dense_vecs = outputs[0]
                     sparse_weights = outputs[1]
 
@@ -280,7 +282,8 @@ class EmbeddingEngine:
                 texts1, texts2, return_tensors="np", padding=True, truncation=True
             )
             ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
-            logits = self.cross_session.run(None, ort_inputs)[0]
+            with ONNX_INFERENCE_SECONDS.labels(model="cross_encoder").time():
+                logits = self.cross_session.run(None, ort_inputs)[0]
             scores.extend(logits.flatten().tolist())
         return np.array(scores, dtype=np.float32)
 

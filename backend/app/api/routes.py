@@ -2,9 +2,11 @@ import hmac
 import os
 from collections import deque
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Security
 from fastapi.security.api_key import APIKeyHeader
 
+from backend.app.api.endpoints.auth import router as auth_router
+from backend.app.api.endpoints.auth import users_router
 from backend.app.api.endpoints.batches import router as batches_router
 from backend.app.api.endpoints.catalog import router as catalog_router
 from backend.app.api.endpoints.engine_callbacks import router as engine_callbacks_router
@@ -18,6 +20,7 @@ from backend.app.api.endpoints.requests_log import router as requests_log_router
 from backend.app.api.endpoints.rules_api import router as rules_router
 from backend.app.api.endpoints.upload import router as upload_router
 from backend.app.core import config
+from backend.app.core.security import get_principal, require_platform_admin
 from backend.app.schemas.models import (
     ClassifyRequest,
     EnqueueJobResponse,
@@ -27,20 +30,30 @@ from backend.app.schemas.models import (
 from backend.app.services.engine_client import get_engine_health
 from backend.app.services.worker import enqueue_job
 from engine import config as engine_config
+from engine.core.observability import metrics_payload
 
 api_router = APIRouter()
 
-api_router.include_router(jobs_router, tags=["jobs"])
-api_router.include_router(batches_router, tags=["batches"])
-api_router.include_router(history_router, tags=["history"])
-api_router.include_router(interactive_router, tags=["interactive"])
-api_router.include_router(requests_log_router, tags=["requests_log"])
-api_router.include_router(qdrant_proxy_router, tags=["qdrant_proxy"])
-api_router.include_router(rules_router, tags=["rules_engine"])
-api_router.include_router(catalog_router, tags=["catalog"])
-api_router.include_router(models_router, tags=["models"])
-api_router.include_router(upload_router, tags=["upload"])
-api_router.include_router(queue_router, tags=["queue"])
+# Every operational router requires a resolved principal (a no-op in AUTH_ENABLED=false dev mode).
+# Role and platform-admin checks are added per endpoint on top of this.
+_authenticated = [Depends(get_principal)]
+for _router, _tag in (
+    (jobs_router, "jobs"),
+    (batches_router, "batches"),
+    (history_router, "history"),
+    (interactive_router, "interactive"),
+    (requests_log_router, "requests_log"),
+    (qdrant_proxy_router, "qdrant_proxy"),
+    (rules_router, "rules_engine"),
+    (catalog_router, "catalog"),
+    (models_router, "models"),
+    (upload_router, "upload"),
+    (queue_router, "queue"),
+    (users_router, "auth"),
+):
+    api_router.include_router(_router, tags=[_tag], dependencies=_authenticated)
+api_router.include_router(auth_router, tags=["auth"])  # public: login
+# Internal Engine -> Gateway callbacks (private network, no end-user auth)
 api_router.include_router(engine_callbacks_router)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -50,6 +63,13 @@ def get_api_key(api_key_header: str = Security(api_key_header)):
     if not hmac.compare_digest(api_key_header or "", config.API_KEY):
         raise HTTPException(status_code=401, detail="Invalid API key.")
     return api_key_header
+
+
+@api_router.get("/metrics", include_in_schema=False)
+def metrics():
+    """Prometheus metrics for the Gateway process (queue depth / DLQ gauges included)."""
+    body, content_type = metrics_payload()
+    return Response(content=body, media_type=content_type)
 
 
 @api_router.get("/health")
@@ -106,7 +126,7 @@ def pipeline(request: PipelineRequest, api_key: str = Depends(get_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@api_router.get("/logs")
+@api_router.get("/logs", dependencies=[Depends(require_platform_admin)])
 def get_logs(lines: int = Query(500, ge=1, le=20000)):
     """
     Returns the last N lines of the application logs.

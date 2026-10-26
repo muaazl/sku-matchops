@@ -2,9 +2,10 @@ import logging
 import re
 
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import text
 
+from backend.app.core.security import require_platform_admin
 from backend.app.services.catalog_service import (
     check_changes_for_domain,
     clean_record_nans,
@@ -526,7 +527,7 @@ def check_catalog_sync(limit: int = Query(50, ge=0, le=500)):
         raise HTTPException(status_code=500, detail=f"Failed to check sync status: {str(e)}")
 
 
-@router.post("/catalog/build-cache")
+@router.post("/catalog/build-cache", dependencies=[Depends(require_platform_admin)])
 def build_catalog_cache(background_tasks: BackgroundTasks):
     """Trigger background catalog cache build, Qdrant sync, and classifier training."""
     started, message = trigger_build_cache()
@@ -538,7 +539,7 @@ def build_catalog_cache(background_tasks: BackgroundTasks):
     return {"status": "started", "message": message}
 
 
-@router.post("/catalog/refresh")
+@router.post("/catalog/refresh", dependencies=[Depends(require_platform_admin)])
 def refresh_catalog_cache(background_tasks: BackgroundTasks):
     """Forces cache invalidation and rebuilds cache in background (delegates to build_catalog_cache)."""
     return build_catalog_cache(background_tasks)

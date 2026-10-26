@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from engine import config
+from engine.core.observability import ONNX_INFERENCE_SECONDS
 from engine.data_pipeline.cache_manager import calculate_df_hash
 from engine.utils.flavor_utils import build_food_flavors_info
 
@@ -531,7 +532,10 @@ class ZeroShotClassifier:
         if self.bt_model == "arcface" and getattr(self, "_arcface_session", None) is not None:
             scaled_p = self._preprocess_arcface_prices([p_val])
             vec_with_price = np.hstack([vec_2d, scaled_p]).astype(np.float32)
-            logits = self._arcface_session.run(None, {self._arcface_input_name: vec_with_price})[0]
+            with ONNX_INFERENCE_SECONDS.labels(model="arcface").time():
+                logits = self._arcface_session.run(
+                    None, {self._arcface_input_name: vec_with_price}
+                )[0]
             # Softmax to derive normalized probabilities
             exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
             probas = (exp_logits / np.sum(exp_logits, axis=-1, keepdims=True))[0]
@@ -602,14 +606,15 @@ class ZeroShotClassifier:
             scaled_p = self._preprocess_arcface_prices(prices)
             vecs_with_price = np.hstack([vecs, scaled_p]).astype(np.float32)
             bs = config.ONNX_BATCH_SIZE
-            logits = np.concatenate(
-                [
-                    self._arcface_session.run(
-                        None, {self._arcface_input_name: vecs_with_price[i : i + bs]}
-                    )[0]
-                    for i in range(0, n, bs)
-                ]
-            )
+            batches = []
+            for i in range(0, n, bs):
+                with ONNX_INFERENCE_SECONDS.labels(model="arcface").time():
+                    batches.append(
+                        self._arcface_session.run(
+                            None, {self._arcface_input_name: vecs_with_price[i : i + bs]}
+                        )[0]
+                    )
+            logits = np.concatenate(batches)
             exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
             probas = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
             bests = np.argmax(probas, axis=1)

@@ -10,12 +10,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from qdrant_client.http import models as qmodels
 
 from engine import config
+from engine.core.observability import TraceIdMiddleware, configure_logging, metrics_payload
 from engine.core.resource_loader import (
     _get_shared_models,
     _model_statuses,
@@ -28,7 +29,11 @@ from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
 from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job, start_queue_worker
 from engine.rules_engine import clear_flavor_cache, refresh_rules_cache
-from engine.rules_engine.loader import start_invalidation_listener
+from engine.rules_engine.loader import (
+    pinned_rules,
+    snapshot_rules,
+    start_invalidation_listener,
+)
 from engine.templates.template_suggest import suggest_tags_from_template
 
 # Configure logging
@@ -38,6 +43,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured output
 
 app = FastAPI(
     title="SKU MatchOps ML Engine",
@@ -55,12 +61,20 @@ app.add_middleware(
     allow_origins=_engine_cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Request-ID"],
 )
+app.add_middleware(TraceIdMiddleware)
 
 _model_load_lock = threading.Lock()
 _loading_in_progress = False
 _queue_worker: threading.Thread | None = None
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus metrics for this engine process (inference timings, processed SKUs, queue)."""
+    body, content_type = metrics_payload()
+    return Response(content=body, media_type=content_type)
 
 
 # --- Request Schemas ---
@@ -91,6 +105,7 @@ class RunSingleRequest(BaseModel):
     price: float | None = 0.0
     description: str | None = ""
     category: str | None = ""
+    tenant_id: str = "default"
 
 
 class SuggestRequest(BaseModel):
@@ -263,7 +278,8 @@ def run_single(request: RunSingleRequest):
             "description": request.description or "",
             "category": request.category or "",
         }
-        res = process_request(skus=[sku_dict], task=request.task, domain=request.domain)
+        with pinned_rules(snapshot_rules(request.tenant_id)):
+            res = process_request(skus=[sku_dict], task=request.task, domain=request.domain)
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -384,14 +400,15 @@ def engine_search_collection(name: str, request: VectorSearchRequest):
 def engine_audit(request: RunSingleRequest):
     """Executes a transparent diagnostic SKU audit."""
     try:
-        res = run_sku_audit(
-            sku_name=request.sku_name,
-            domain=request.domain,
-            task=request.task,
-            price=request.price or 0.0,
-            description=request.description or "",
-            category=request.category or "",
-        )
+        with pinned_rules(snapshot_rules(request.tenant_id)):
+            res = run_sku_audit(
+                sku_name=request.sku_name,
+                domain=request.domain,
+                task=request.task,
+                price=request.price or 0.0,
+                description=request.description or "",
+                category=request.category or "",
+            )
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))

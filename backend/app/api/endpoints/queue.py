@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 
 from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
 from backend.app.core.db import get_engine
+from backend.app.core.security import Principal, require_admin
 from engine.pipeline.task_queue import TaskQueue, get_task_queue
 
 router = APIRouter()
@@ -15,11 +16,20 @@ def _queue() -> TaskQueue:
     return queue
 
 
+def _tenant_items(queue: TaskQueue, principal: Principal) -> list[dict]:
+    """DLQ entries of the caller's tenant (jobs queued before tenancy count as 'default')."""
+    return [
+        e
+        for e in queue.dlq_items(limit=10000)
+        if e["payload"].get("tenant_id", "default") == principal.tenant_id
+    ]
+
+
 @router.get("/queue/dlq")
-def list_dead_letters(limit: int = 100):
-    """Dead-lettered tasks: payload plus job_id, batch_id, error, attempts, failed_at."""
+def list_dead_letters(limit: int = 100, principal: Principal = Depends(require_admin)):
+    """The tenant's dead-lettered tasks: payload plus job_id, batch_id, error, attempts, failed_at."""
     try:
-        return _queue().dlq_items(limit=limit)
+        return _tenant_items(_queue(), principal)[:limit]
     except HTTPException:
         raise
     except Exception as e:
@@ -27,10 +37,10 @@ def list_dead_letters(limit: int = 100):
 
 
 @router.post("/queue/dlq/{task_id}/replay")
-def replay_dead_letter(task_id: str):
+def replay_dead_letter(task_id: str, principal: Principal = Depends(require_admin)):
     """Re-queues a dead-lettered task with a fresh retry budget and marks its job queued again."""
     queue = _queue()
-    entry = next((e for e in queue.dlq_items(limit=10000) if e["task_id"] == task_id), None)
+    entry = next((e for e in _tenant_items(queue, principal) if e["task_id"] == task_id), None)
     if entry is None:
         raise HTTPException(status_code=404, detail="Dead-letter entry not found")
 

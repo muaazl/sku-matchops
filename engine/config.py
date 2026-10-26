@@ -44,6 +44,8 @@ QDRANT_DATA_DIR = os.path.join(DATA_DIR, "qdrant")
 
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
+# "json" emits one JSON object per log line (with trace_id); anything else is plain text
+LOG_FORMAT = os.getenv("LOG_FORMAT", "text").lower()
 
 # --- PostgreSQL (shared by the Gateway and the Engine) ---
 DATABASE_URL = os.getenv(

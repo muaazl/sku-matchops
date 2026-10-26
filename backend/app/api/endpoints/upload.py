@@ -1,11 +1,12 @@
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.db import get_engine, get_next_job_id
+from backend.app.core.security import Principal, get_principal
 from backend.app.schemas.models import EnqueueJobResponse, UploadRequest
 from backend.app.services.engine_client import dispatch_upload_job
 
@@ -14,7 +15,7 @@ logger = logging.getLogger("matchops.api.upload")
 
 
 @router.post("/upload", response_model=EnqueueJobResponse)
-def trigger_upload(request: UploadRequest):
+def trigger_upload(request: UploadRequest, principal: Principal = Depends(get_principal)):
     if not request.skus:
         raise HTTPException(status_code=400, detail="'skus' list is empty.")
 
@@ -37,16 +38,17 @@ def trigger_upload(request: UploadRequest):
                 INSERT INTO jobs (
                     id, batch_id, type, status, current_stage,
                     total_items, completed_items, created_by,
-                    started_at, domain, target_sheet, input_skus_json
+                    started_at, domain, target_sheet, input_skus_json, tenant_id
                 ) VALUES (
                     :id, :id, 'upload', 'queued', 'queued', :total_items, 0, 'system',
-                    now(), :domain, :target_sheet, :input_skus_json
+                    now(), :domain, :target_sheet, :input_skus_json, :tenant_id
                 )
                 """),
                 {
                     "id": job_id,
                     "total_items": len(request.skus),
                     "domain": domain,
+                    "tenant_id": principal.tenant_id,
                     "target_sheet": request.outlet_id_or_name,
                     "input_skus_json": input_skus_json,
                 },
@@ -71,7 +73,9 @@ def trigger_upload(request: UploadRequest):
     )
 
     try:
-        dispatch_upload_job(job_id=job_id, request=request, task="upload")
+        dispatch_upload_job(
+            job_id=job_id, request=request, task="upload", tenant_id=principal.tenant_id
+        )
     except Exception as dispatch_err:
         logger.error(f"[JOB {job_id}] Dispatch to ML Engine failed: {dispatch_err}")
         try:

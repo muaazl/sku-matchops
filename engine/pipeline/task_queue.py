@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from engine import config
+from engine.core.observability import trace_context
 
 logger = logging.getLogger("matchops.task_queue")
 
@@ -91,7 +92,10 @@ class TaskQueue:
         pipe.hset(TASKS, task["task_id"], json.dumps(task))
         pipe.rpush(queue, task["task_id"])
         pipe.execute()
-        logger.info(f"[QUEUE] Enqueued job {task['job_id']} as {task['task_id']} on {queue}.")
+        logger.info(
+            f"[QUEUE] Enqueued job {task['job_id']} as {task['task_id']} on {queue} "
+            f"(trace {payload.get('trace_id', '-')})."
+        )
         return task["task_id"]
 
     # -- consumer -------------------------------------------------------------------------------
@@ -217,6 +221,23 @@ class TaskQueue:
         """Job ids still owned by the queue (queued, delayed for retry, or in flight)."""
         return {json.loads(raw)["job_id"] for raw in self.r.hvals(TASKS)}
 
+    def stats(self) -> dict[str, int]:
+        pipe = self.r.pipeline()
+        pipe.llen(REALTIME)
+        pipe.llen(BULK)
+        pipe.zcard(DELAYED[REALTIME])
+        pipe.zcard(DELAYED[BULK])
+        pipe.zcard(INFLIGHT)
+        pipe.llen(DLQ)
+        rt, bulk, d_rt, d_bulk, inflight, dlq = pipe.execute()
+        return {
+            "realtime": rt,
+            "bulk": bulk,
+            "delayed": d_rt + d_bulk,
+            "inflight": inflight,
+            "dlq": dlq,
+        }
+
     def request_cancel(self, job_id: str) -> None:
         self.r.set(f"{CANCEL_PREFIX}{job_id}", "1", ex=86400)
 
@@ -290,6 +311,12 @@ def run_worker(
 
 
 def _run_claimed(queue: TaskQueue, task: dict, handler, on_dead) -> None:
+    # The Gateway's request trace id follows the job into every worker log line
+    with trace_context(task["payload"].get("trace_id")):
+        _run_traced(queue, task, handler, on_dead)
+
+
+def _run_traced(queue: TaskQueue, task: dict, handler, on_dead) -> None:
     done = threading.Event()
 
     def _heartbeat():

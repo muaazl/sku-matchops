@@ -1,7 +1,8 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from backend.app.core.security import require_platform_admin
 from backend.app.services.engine_client import (
     get_models_status,
     reload_engine_models,
@@ -12,7 +13,7 @@ logger = logging.getLogger("matchops.models_api")
 router = APIRouter()
 
 
-@router.post("/load-models")
+@router.post("/load-models", dependencies=[Depends(require_platform_admin)])
 def load_models():
     """Triggers ML model pre-loading on the ML Engine microservice."""
     return trigger_load_models()
@@ -24,7 +25,7 @@ def check_models_status():
     return get_models_status()
 
 
-@router.post("/models/reload")
+@router.post("/models/reload", dependencies=[Depends(require_platform_admin)])
 def reload_models():
     """Forces cache clearing and model reload on the ML Engine microservice."""
     return reload_engine_models()

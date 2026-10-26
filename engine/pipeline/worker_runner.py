@@ -15,6 +15,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from engine.core.db import log_outbound_request
+from engine.core.observability import SKUS_PROCESSED, trace_context
 from engine.pipeline.persistence import record_job_completion, record_job_failure
 from engine.pipeline.processor import process_request
 from engine.pipeline.task_queue import get_task_queue, run_worker
@@ -124,7 +125,7 @@ def _worker_loop():
         if payload is None:
             break
         try:
-            with _exec_lock:
+            with _exec_lock, trace_context(payload.get("trace_id")):
                 _run_legacy_job(payload)
         finally:
             _batch_queue.task_done()
@@ -246,7 +247,7 @@ def _execute_job(payload: dict[str, Any]) -> None:
     sync_rules_version()
     # Pin one (rules, rule_version) pair for every chunk of this job: a reload mid-job
     # must not change which rules evaluate it or the version its results are saved under
-    rule_snapshot = snapshot_rules()
+    rule_snapshot = snapshot_rules(payload.get("tenant_id") or "default")
     rule_version = rule_snapshot.version
     # Execute processing
     if task.lower() == "upload":
@@ -306,6 +307,10 @@ def _execute_job(payload: dict[str, Any]) -> None:
                 low += 1
 
     match_rate = round((high / max(1, len(res_list))) * 100, 2)
+    tenant_id = payload.get("tenant_id") or "default"
+    for status, count in (("high", high), ("medium", med), ("low", low)):
+        if count:
+            SKUS_PROCESSED.labels(domain=domain, status=status, tenant_id=tenant_id).inc(count)
 
     # Enrich result payload for external callback
     result_payload["job_id"] = job_id

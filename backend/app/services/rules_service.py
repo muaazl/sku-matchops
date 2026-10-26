@@ -3,6 +3,7 @@ from typing import Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
+from backend.app.core.config import DEFAULT_TENANT
 from backend.app.schemas.models import RuleModel
 from backend.app.services.engine_client import refresh_engine_rules
 from engine.rules_engine.loader import publish_rules_invalidation
@@ -44,6 +45,16 @@ def _insert_conditions_and_actions(db: Connection, rule_id: str, rule: RuleModel
         )
 
 
+def _owned(db: Connection, rule_id: str, tenant_id: str) -> bool:
+    return (
+        db.execute(
+            text("SELECT 1 FROM rules WHERE rule_id = :rule_id AND tenant_id = :tenant_id"),
+            {"rule_id": rule_id, "tenant_id": tenant_id},
+        ).fetchone()
+        is not None
+    )
+
+
 def get_next_rule_id(db: Connection) -> str:
     """Gets the next sequential rule ID starting from 1."""
     row = db.execute(
@@ -54,10 +65,12 @@ def get_next_rule_id(db: Connection) -> str:
     return str(row[0] if row and row[0] else 1)
 
 
-def get_rules_list(db: Connection, domain: str | None = None) -> list[dict[str, Any]]:
-    """Fetches all rules along with their associated conditions and actions in batched queries."""
-    query = "SELECT * FROM rules WHERE 1=1"
-    params = {}
+def get_rules_list(
+    db: Connection, domain: str | None = None, tenant_id: str = DEFAULT_TENANT
+) -> list[dict[str, Any]]:
+    """Fetches the tenant's rules with their conditions and actions in batched queries."""
+    query = "SELECT * FROM rules WHERE tenant_id = :tenant_id"
+    params = {"tenant_id": tenant_id}
 
     if domain and domain != "all":
         query += " AND domain = :domain"
@@ -115,11 +128,16 @@ def get_rules_list(db: Connection, domain: str | None = None) -> list[dict[str, 
     return rules
 
 
-def get_rule_by_id(db: Connection, rule_id: str) -> dict[str, Any] | None:
-    """Fetches a single rule by rule_id including conditions and actions."""
-    params = {"rule_id": rule_id}
+def get_rule_by_id(
+    db: Connection, rule_id: str, tenant_id: str = DEFAULT_TENANT
+) -> dict[str, Any] | None:
+    """Fetches one of the tenant's rules by rule_id including conditions and actions."""
+    params = {"rule_id": rule_id, "tenant_id": tenant_id}
     rule_row = (
-        db.execute(text("SELECT * FROM rules WHERE rule_id = :rule_id"), params)
+        db.execute(
+            text("SELECT * FROM rules WHERE rule_id = :rule_id AND tenant_id = :tenant_id"),
+            params,
+        )
         .mappings()
         .fetchone()
     )
@@ -150,7 +168,7 @@ def get_rule_by_id(db: Connection, rule_id: str) -> dict[str, Any] | None:
     return rule_dict
 
 
-def create_rule_entry(db: Connection, rule: RuleModel) -> str:
+def create_rule_entry(db: Connection, rule: RuleModel, tenant_id: str = DEFAULT_TENANT) -> str:
     """Inserts a new rule and its conditions/actions atomically, then refreshes cache.
 
     Retries on a rare rule_id collision (two near-simultaneous rule creations both computing
@@ -163,10 +181,10 @@ def create_rule_entry(db: Connection, rule: RuleModel) -> str:
         try:
             db.execute(
                 text("""
-                INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic, is_active)
-                VALUES (:rule_id, :domain, :priority, :description, :reasoning, :condition_logic, :is_active)
+                INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic, is_active, tenant_id)
+                VALUES (:rule_id, :domain, :priority, :description, :reasoning, :condition_logic, :is_active, :tenant_id)
                 """),
-                {"rule_id": new_id, **_rule_fields(rule)},
+                {"rule_id": new_id, "tenant_id": tenant_id, **_rule_fields(rule)},
             )
             _insert_conditions_and_actions(db, new_id, rule)
             db.commit()
@@ -184,13 +202,12 @@ def create_rule_entry(db: Connection, rule: RuleModel) -> str:
             raise e
 
 
-def update_rule_entry(db: Connection, rule_id: str, rule: RuleModel) -> bool:
-    """Updates an existing rule and replaces its conditions/actions, then refreshes cache."""
+def update_rule_entry(
+    db: Connection, rule_id: str, rule: RuleModel, tenant_id: str = DEFAULT_TENANT
+) -> bool:
+    """Updates one of the tenant's rules and replaces its conditions/actions, then refreshes cache."""
     params = {"rule_id": rule_id}
-    existing = db.execute(
-        text("SELECT rule_id FROM rules WHERE rule_id = :rule_id"), params
-    ).fetchone()
-    if not existing:
+    if not _owned(db, rule_id, tenant_id):
         return False
 
     try:
@@ -216,13 +233,10 @@ def update_rule_entry(db: Connection, rule_id: str, rule: RuleModel) -> bool:
         raise e
 
 
-def delete_rule_entry(db: Connection, rule_id: str) -> bool:
-    """Deletes a rule and its associated conditions/actions, then refreshes cache."""
+def delete_rule_entry(db: Connection, rule_id: str, tenant_id: str = DEFAULT_TENANT) -> bool:
+    """Deletes one of the tenant's rules and its conditions/actions, then refreshes cache."""
     params = {"rule_id": rule_id}
-    existing = db.execute(
-        text("SELECT rule_id FROM rules WHERE rule_id = :rule_id"), params
-    ).fetchone()
-    if not existing:
+    if not _owned(db, rule_id, tenant_id):
         return False
 
     try:
@@ -237,18 +251,22 @@ def delete_rule_entry(db: Connection, rule_id: str) -> bool:
         raise e
 
 
-def reorder_rules_entries(db: Connection, ordered_ids: list[str]) -> bool:
-    """Reorders rules by priority according to the given ordered list of rule IDs."""
+def reorder_rules_entries(
+    db: Connection, ordered_ids: list[str], tenant_id: str = DEFAULT_TENANT
+) -> bool:
+    """Reorders the tenant's rules by priority according to the given ordered list of rule IDs
+    (ids belonging to other tenants are ignored)."""
     if not ordered_ids:
         return False
 
     try:
         db.execute(
             text(
-                "UPDATE rules SET priority = :priority, updated_at = now() WHERE rule_id = :rule_id"
+                "UPDATE rules SET priority = :priority, updated_at = now() "
+                "WHERE rule_id = :rule_id AND tenant_id = :tenant_id"
             ),
             [
-                {"priority": (index + 1) * 10, "rule_id": rule_id}
+                {"priority": (index + 1) * 10, "rule_id": rule_id, "tenant_id": tenant_id}
                 for index, rule_id in enumerate(ordered_ids)
             ],
         )

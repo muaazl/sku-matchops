@@ -7,6 +7,7 @@ from sqlalchemy import Connection, text
 
 from backend.app.api.endpoints.engine_callbacks import _job_progress
 from backend.app.core.db import get_db_connection
+from backend.app.core.security import Principal, get_principal
 from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
 from backend.app.services.engine_client import cancel_engine_job
 from backend.app.services.worker import enqueue_job
@@ -62,10 +63,10 @@ def _enrich_job_dict(job_dict: dict) -> dict:
 _TIMEFRAME_INTERVALS = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}
 
 
-def _stats_filter(domain: str | None, timeframe: str | None) -> tuple[str, dict]:
+def _stats_filter(domain: str | None, timeframe: str | None, tenant_id: str) -> tuple[str, dict]:
     """WHERE clause + params shared by the processed_skus dashboard aggregates."""
-    where_clauses = ["1=1"]
-    params = {}
+    where_clauses = ["tenant_id = :tenant_id"]
+    params = {"tenant_id": tenant_id}
 
     if domain and domain.lower() != "all":
         where_clauses.append("domain = :domain")
@@ -76,6 +77,18 @@ def _stats_filter(domain: str | None, timeframe: str | None) -> tuple[str, dict]
         params["window"] = _TIMEFRAME_INTERVALS[timeframe]
 
     return " AND ".join(where_clauses), params
+
+
+def _tenant_job(db: Connection, job_id: str, principal: Principal):
+    """The job row if it belongs to the caller's tenant (other tenants' jobs look like 404s)."""
+    return (
+        db.execute(
+            text("SELECT * FROM jobs WHERE id = :id AND tenant_id = :tenant_id"),
+            {"id": job_id, "tenant_id": principal.tenant_id},
+        )
+        .mappings()
+        .fetchone()
+    )
 
 
 @router.get("/jobs", response_model=list[JobResponse])
@@ -95,9 +108,10 @@ def get_jobs(
     # /processed-skus) to explicitly request every row with no cap.
     limit: int | None = 10000,
     db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
 ):
-    where = "WHERE 1=1"
-    params = {}
+    where = "WHERE tenant_id = :tenant_id"
+    params = {"tenant_id": principal.tenant_id}
 
     if status:
         where += " AND status = :status"
@@ -143,12 +157,14 @@ def get_dashboard_stats(
     domain: str | None = "all",
     timeframe: str | None = "30d",
     db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
 ):
     """
     Computes aggregate metrics from processed_skus for dashboard cards and charts.
     Fast indexed queries (< 10ms).
     """
-    where_str, params = _stats_filter(domain, timeframe)
+    where_str, params = _stats_filter(domain, timeframe, principal.tenant_id)
+    tenant = {"tenant_id": principal.tenant_id}
 
     # 1. Total processed and confidence breakdown
     stat_query = f"""
@@ -196,9 +212,10 @@ def get_dashboard_stats(
     dom_query = """
         SELECT domain, COUNT(*) as count
         FROM processed_skus
+        WHERE tenant_id = :tenant_id
         GROUP BY domain
     """
-    dom_rows = db.execute(text(dom_query)).fetchall()
+    dom_rows = db.execute(text(dom_query), tenant).fetchall()
     domain_breakdown = [{"domain": r[0] or "Unknown", "count": r[1]} for r in dom_rows]
 
     # 4. Volume Trend (by hour or date)
@@ -246,17 +263,22 @@ def get_dashboard_stats(
 
     # 5. Legacy/Job counts for backward compatibility
     active_jobs = db.execute(
-        text("SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')")
+        text(
+            "SELECT COUNT(*) FROM jobs WHERE tenant_id = :tenant_id AND status IN ('queued', 'running')"
+        ),
+        tenant,
     ).scalar()
     completed_7d = db.execute(
         text(
-            "SELECT COUNT(*) FROM jobs WHERE status = 'completed' AND started_at >= now() - interval '7 days'"
-        )
+            "SELECT COUNT(*) FROM jobs WHERE tenant_id = :tenant_id AND status = 'completed' AND started_at >= now() - interval '7 days'"
+        ),
+        tenant,
     ).scalar()
     failed_7d = db.execute(
         text(
-            "SELECT COUNT(*) FROM jobs WHERE status = 'failed' AND started_at >= now() - interval '7 days'"
-        )
+            "SELECT COUNT(*) FROM jobs WHERE tenant_id = :tenant_id AND status = 'failed' AND started_at >= now() - interval '7 days'"
+        ),
+        tenant,
     ).scalar()
     requests_24h = db.execute(
         text("SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'")
@@ -308,12 +330,13 @@ def get_tag_stats(
     domain: str | None = "all",
     timeframe: str | None = "30d",
     db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
 ):
     """
     Computes Basic Type / Region-Category / tag-status breakdowns from processed_skus,
     for the tagging-strategy charts on the Dashboard and Guide pages.
     """
-    where_str, params = _stats_filter(domain, timeframe)
+    where_str, params = _stats_filter(domain, timeframe, principal.tenant_id)
 
     # 1. Basic Type distribution (top 10)
     bt_query = f"""
@@ -373,8 +396,12 @@ def get_tag_stats(
 
 
 @router.get("/jobs/{id}", response_model=JobResponse)
-def get_job(id: str, db: Connection = Depends(get_db_connection)):
-    row = db.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": id}).mappings().fetchone()
+def get_job(
+    id: str,
+    db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
+):
+    row = _tenant_job(db, id, principal)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -383,7 +410,13 @@ def get_job(id: str, db: Connection = Depends(get_db_connection)):
 
 
 @router.post("/jobs/{id}/cancel")
-def cancel_job(id: str, db: Connection = Depends(get_db_connection)):
+def cancel_job(
+    id: str,
+    db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
+):
+    if not _tenant_job(db, id, principal):
+        raise HTTPException(status_code=404, detail="Job not found")
     db.execute(
         text(
             "UPDATE jobs SET status = 'cancelled', cancel_requested = 1, completed_at = now() WHERE id = :id AND status IN ('queued', 'running')"
@@ -402,8 +435,12 @@ def cancel_job(id: str, db: Connection = Depends(get_db_connection)):
 
 
 @router.post("/jobs/{id}/retry")
-def retry_job(id: str, db: Connection = Depends(get_db_connection)):
-    row = db.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": id}).mappings().fetchone()
+def retry_job(
+    id: str,
+    db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
+):
+    row = _tenant_job(db, id, principal)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -425,5 +462,7 @@ def retry_job(id: str, db: Connection = Depends(get_db_connection)):
         sheet_name=job_dict.get("sheet_name"),
     )
 
-    result = enqueue_job(request, task=job_dict.get("type") or "pipeline")
+    result = enqueue_job(
+        request, task=job_dict.get("type") or "pipeline", tenant_id=principal.tenant_id
+    )
     return {"message": "Retry initiated", "new_job_id": result["job_id"]}

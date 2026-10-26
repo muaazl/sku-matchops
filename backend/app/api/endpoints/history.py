@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import Connection, text
 
 from backend.app.core.db import get_db_connection
+from backend.app.core.security import Principal, get_principal
 from backend.app.schemas.models import ProcessedSkuResponse
 
 router = APIRouter()
@@ -38,9 +39,10 @@ def get_history(
     page: int = 1,
     limit: int | None = 50,
     db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
 ):
-    where = "WHERE 1=1"
-    params = {}
+    where = "WHERE tenant_id = :tenant_id"
+    params = {"tenant_id": principal.tenant_id}
 
     if batch_id:
         where += " AND batch_id = :batch_id"
@@ -87,14 +89,15 @@ def export_history(
     ids: str | None = None,
     format: Literal["csv", "xlsx"] = "csv",
     db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
 ):
-    query = "SELECT * FROM processed_skus"
-    params = {}
+    query = "SELECT * FROM processed_skus WHERE tenant_id = :tenant_id"
+    params = {"tenant_id": principal.tenant_id}
 
     if ids:
         id_list = [i.strip() for i in ids.split(",") if i.strip()]
         if id_list:
-            query += " WHERE id = ANY(:ids)"
+            query += " AND id = ANY(:ids)"
             params["ids"] = id_list
     else:
         # No explicit id filter: cap the export instead of dumping the entire table.
@@ -122,9 +125,16 @@ def export_history(
 
 
 @router.get("/processed-skus/{id}", response_model=ProcessedSkuResponse)
-def get_processed_sku(id: str, db: Connection = Depends(get_db_connection)):
+def get_processed_sku(
+    id: str,
+    db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
+):
     row = (
-        db.execute(text("SELECT * FROM processed_skus WHERE id = :id"), {"id": id})
+        db.execute(
+            text("SELECT * FROM processed_skus WHERE id = :id AND tenant_id = :tenant_id"),
+            {"id": id, "tenant_id": principal.tenant_id},
+        )
         .mappings()
         .fetchone()
     )

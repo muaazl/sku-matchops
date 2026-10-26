@@ -1,12 +1,14 @@
 import functools
 import logging
 import re
+import time
 import warnings
 
 import pandas as pd
 from rapidfuzz import fuzz, process
 
 from engine import config
+from engine.core.observability import ONNX_INFERENCE_SECONDS
 
 # Suppress Hugging Face FastTokenizer regex deprecation warnings
 warnings.filterwarnings("ignore", message=".*fix_mistral_regex.*")
@@ -304,6 +306,7 @@ class NEREngine:
 
         # Batch NER for texts that got no dict hit
         fallback_texts = [valid_texts[i] for i in fallback_indices]
+        t_ner = time.perf_counter()
         try:
             if self.model:
                 if hasattr(self.model, "inference"):
@@ -328,6 +331,7 @@ class NEREngine:
             else:
                 logger.warning("[NER] No model for batch NER; returning empty for fallback items.")
                 raw_list = [[] for _ in fallback_texts]
+            ONNX_INFERENCE_SECONDS.labels(model="ner").observe(time.perf_counter() - t_ner)
 
             for list_idx, original_idx in enumerate(fallback_indices):
                 for entity in raw_list[list_idx]:

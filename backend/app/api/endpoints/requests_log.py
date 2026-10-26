@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import Connection, text
 
 from backend.app.core.db import get_db_connection
+from backend.app.core.security import require_platform_admin
 from backend.app.schemas.models import ApiRequestDetailResponse, ApiRequestResponse
 
-router = APIRouter()
+# The raw request log spans every tenant (payloads included): platform admins only
+router = APIRouter(dependencies=[Depends(require_platform_admin)])
 
 
 @router.get("/api-requests", response_model=list[ApiRequestResponse])

@@ -12,7 +12,9 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from backend.app.core.config import DEFAULT_TENANT
 from backend.app.schemas.models import BaseRequest
+from engine.core.observability import TRACE_ID
 from engine.pipeline.task_queue import get_task_queue
 
 logger = logging.getLogger("matchops.engine_client")
@@ -32,6 +34,13 @@ _retries = Retry(
 )
 _session.mount("http://", HTTPAdapter(max_retries=_retries))
 _session.mount("https://", HTTPAdapter(max_retries=_retries))
+
+
+def _trace_headers() -> dict[str, str]:
+    """Propagates the current request's trace id on synchronous Gateway -> Engine calls."""
+    trace_id = TRACE_ID.get()
+    return {"X-Request-ID": trace_id} if trace_id != "-" else {}
+
 
 _models_status_cache: dict[str, Any] = {}
 _models_status_cache_time: float = 0.0
@@ -145,7 +154,9 @@ def _enqueue_or_post(job_id: str, payload: dict[str, Any], label: str) -> dict[s
         raise RuntimeError(error_msg)
 
 
-def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> dict[str, Any]:
+def dispatch_batch_job(
+    job_id: str, request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT
+) -> dict[str, Any]:
     """
     Dispatches a batch job to the dedicated ML Engine microservice for async execution.
     """
@@ -168,11 +179,15 @@ def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> dict[str
         "callback_url": request.callback_url,
         "sheet_name": request.sheet_name,
         "spreadsheet_id": request.spreadsheet_id,
+        "tenant_id": tenant_id,
+        "trace_id": TRACE_ID.get(),
     }
     return _enqueue_or_post(job_id, payload, "job")
 
 
-def dispatch_upload_job(job_id: str, request: Any, task: str) -> dict[str, Any]:
+def dispatch_upload_job(
+    job_id: str, request: Any, task: str, tenant_id: str = DEFAULT_TENANT
+) -> dict[str, Any]:
     """
     Dispatches an upload job to the ML Engine microservice for async execution.
     Filters the SKU dict to only include specific columns.
@@ -212,6 +227,8 @@ def dispatch_upload_job(job_id: str, request: Any, task: str) -> dict[str, Any]:
         "sheet_name": request.outlet_id_or_name,
         "callback_url": None,
         "spreadsheet_id": None,
+        "tenant_id": tenant_id,
+        "trace_id": TRACE_ID.get(),
     }
     return _enqueue_or_post(job_id, payload, "upload job")
 
@@ -223,8 +240,9 @@ def run_single(
     price: float = 0.0,
     description: str = "",
     category: str = "",
+    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
-    """Runs synchronous single-SKU inference on the ML Engine."""
+    """Runs synchronous single-SKU inference on the ML Engine (with the tenant's rules)."""
     payload = {
         "sku_name": sku_name,
         "domain": domain,
@@ -232,10 +250,13 @@ def run_single(
         "price": price,
         "description": description,
         "category": category,
+        "tenant_id": tenant_id,
     }
 
     try:
-        resp = _session.post(f"{ENGINE_URL}/engine/run-single", json=payload, timeout=60.0)
+        resp = _session.post(
+            f"{ENGINE_URL}/engine/run-single", json=payload, headers=_trace_headers(), timeout=60.0
+        )
         if resp.status_code == 200:
             return resp.json()
         raise RuntimeError(f"Engine single-run returned {resp.status_code}: {resp.text}")
@@ -327,8 +348,9 @@ def run_sku_audit(
     price: float = 0.0,
     description: str = "",
     category: str = "",
+    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
-    """Runs single-SKU diagnostic audit on the ML Engine."""
+    """Runs single-SKU diagnostic audit on the ML Engine (with the tenant's rules)."""
     payload = {
         "sku_name": sku_name,
         "domain": domain,
@@ -336,10 +358,13 @@ def run_sku_audit(
         "price": price,
         "description": description,
         "category": category,
+        "tenant_id": tenant_id,
     }
 
     try:
-        resp = _session.post(f"{ENGINE_URL}/engine/audit", json=payload, timeout=60.0)
+        resp = _session.post(
+            f"{ENGINE_URL}/engine/audit", json=payload, headers=_trace_headers(), timeout=60.0
+        )
         if resp.status_code == 200:
             return resp.json()
         raise RuntimeError(f"Engine audit returned {resp.status_code}: {resp.text}")

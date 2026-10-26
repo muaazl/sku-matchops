@@ -1,12 +1,14 @@
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from backend.app.core.security import Principal, get_principal
 from backend.app.services.engine_client import run_single as engine_run_single
 from backend.app.services.engine_client import run_sku_audit as engine_run_sku_audit
 from backend.app.services.engine_client import suggest_tags as engine_suggest_tags
 from engine.rules_engine import run_rules_engine
+from engine.rules_engine.loader import pinned_rules, snapshot_rules
 
 router = APIRouter(prefix="/interactive")
 
@@ -35,9 +37,10 @@ class RerunRulesRequest(BaseModel):
 
 
 @router.post("/run-single")
-def run_single(request: RunSingleRequest):
+def run_single(request: RunSingleRequest, principal: Principal = Depends(get_principal)):
     try:
         res = engine_run_single(
+            tenant_id=principal.tenant_id,
             sku_name=request.sku_name,
             domain=request.domain,
             task=request.task,
@@ -55,7 +58,7 @@ def run_single(request: RunSingleRequest):
 
 
 @router.post("/rerun-rules")
-def rerun_rules(request: RerunRulesRequest):
+def rerun_rules(request: RerunRulesRequest, principal: Principal = Depends(get_principal)):
     try:
         gk_list = [x.strip() for x in request.gk.split(",") if x.strip()]
 
@@ -75,7 +78,8 @@ def rerun_rules(request: RerunRulesRequest):
             "rules_applied": [],
         }
 
-        aug_record = run_rules_engine(record)
+        with pinned_rules(snapshot_rules(principal.tenant_id)):
+            aug_record = run_rules_engine(record)
 
         rules_applied = aug_record.get("rules_applied", [])
         rules_applied_str = json.dumps(rules_applied) if rules_applied else ""
@@ -121,9 +125,10 @@ def suggest_tags(request: SuggestRequest):
 
 
 @router.post("/audit")
-def run_audit(request: RunSingleRequest):
+def run_audit(request: RunSingleRequest, principal: Principal = Depends(get_principal)):
     try:
         return engine_run_sku_audit(
+            tenant_id=principal.tenant_id,
             sku_name=request.sku_name,
             domain=request.domain,
             task=request.task,

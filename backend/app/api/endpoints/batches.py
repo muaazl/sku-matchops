@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import Connection, text
 
 from backend.app.core.db import get_db_connection
+from backend.app.core.security import Principal, get_principal
 from backend.app.schemas.models import (
     BaseRequest,
     BatchResponse,
@@ -24,6 +25,7 @@ def create_batch(
     task: str = Form("pipeline"),
     file: UploadFile = File(...),
     db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
 ):
     # A plain `def` endpoint runs in FastAPI's threadpool rather than on the event loop,
     # so the blocking DB writes and the blocking dispatch POST to the engine below
@@ -62,16 +64,22 @@ def create_batch(
         sheet_name=filename,  # filename serves as target sheet name
     )
 
-    res = enqueue_job(request, task=task)
+    res = enqueue_job(request, task=task, tenant_id=principal.tenant_id)
     job_id = res["job_id"]
 
     # Insert batch entry
     db.execute(
         text("""
-        INSERT INTO batches (id, source, filename, domain, status, created_by)
-        VALUES (:id, 'upload', :filename, :domain, 'queued', :created_by)
+        INSERT INTO batches (id, source, filename, domain, status, created_by, tenant_id)
+        VALUES (:id, 'upload', :filename, :domain, 'queued', :created_by, :tenant_id)
         """),
-        {"id": job_id, "filename": filename, "domain": domain, "created_by": created_by},
+        {
+            "id": job_id,
+            "filename": filename,
+            "domain": domain,
+            "created_by": created_by,
+            "tenant_id": principal.tenant_id,
+        },
     )
     db.commit()
 
@@ -108,8 +116,19 @@ def merchant_fetch(request: MerchantFetchRequest):
 
 
 @router.get("/batches/{id}", response_model=BatchResponse)
-def get_batch(id: str, db: Connection = Depends(get_db_connection)):
-    row = db.execute(text("SELECT * FROM batches WHERE id = :id"), {"id": id}).mappings().fetchone()
+def get_batch(
+    id: str,
+    db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
+):
+    row = (
+        db.execute(
+            text("SELECT * FROM batches WHERE id = :id AND tenant_id = :tenant_id"),
+            {"id": id, "tenant_id": principal.tenant_id},
+        )
+        .mappings()
+        .fetchone()
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Batch not found")
     return dict(row)
