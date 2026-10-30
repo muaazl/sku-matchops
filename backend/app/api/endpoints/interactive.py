@@ -31,7 +31,7 @@ class RerunRulesRequest(BaseModel):
     category: str | None = ""
     price: float | None = 0.0
     confidence: float | None = 1.0
-    match_source: str | None = "classifier"
+    match_source: str | None = "Classifier"
     matched_sku: str | None = ""
     reasoning: str | None = ""
 

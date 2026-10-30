@@ -153,6 +153,7 @@ ConfidenceDoughnutChart.propTypes = { data: PropTypes.array.isRequired };
 
 export function MatchSourcePieChart({ data }) {
   const theme = useTheme();
+
   const palette = [
     theme.palette.primary.main,
     theme.palette.success.main,
@@ -313,6 +314,7 @@ BasicTypeBarChart.propTypes = { data: PropTypes.array.isRequired };
 
 export function RegionDistributionChart({ data }) {
   const theme = useTheme();
+
   const palette = [
     theme.palette.primary.main,
     theme.palette.success.main,

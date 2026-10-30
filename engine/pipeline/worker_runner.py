@@ -40,11 +40,15 @@ _retries = Retry(
     status_forcelist=[502, 503, 504],
     allowed_methods=["GET", "POST"],
 )
+# Apps Script /exec randomly hangs ~30% of requests; doPost overwrites the same cells, so re-POSTing is safe.
+_sheets_retries = Retry(
+    total=3, backoff_factor=1, status_forcelist=[502, 503, 504], allowed_methods=["GET", "POST"]
+)
 _http_session.mount(
     "http://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_retries)
 )
 _http_session.mount(
-    "https://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_retries)
+    "https://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_sheets_retries)
 )
 
 
@@ -347,7 +351,7 @@ def _execute_job(payload: dict[str, Any]) -> None:
         t0_cb = time.time()
         try:
             logger.info(f"[ENGINE WORKER] Delivering Google Sheets callback to {callback_url}...")
-            cb_resp = _http_session.post(callback_url, json=result_payload, timeout=120)
+            cb_resp = _http_session.post(callback_url, json=result_payload, timeout=45)
             cb_dur = int((time.time() - t0_cb) * 1000)
             logger.info(
                 f"[ENGINE WORKER] Callback responded with status {cb_resp.status_code} in {cb_dur}ms"

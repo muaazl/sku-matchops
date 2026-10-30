@@ -58,13 +58,23 @@ def build_processed_sku_rows(
             gk = ""
         if task_lower == "matcher":
             conf = res.get("score", 0.0)
-            source = "matcher"
+            source = "Matcher"
         elif task_lower == "classifier":
             conf = res.get("bt_confidence", 0.0)
-            source = "classifier"
+            source = "Classifier"
         else:  # pipeline / upload
             conf = res.get("bt_confidence", res.get("score", 0.0))
-            source = res.get("pipeline_source", "")
+            p_src = str(res.get("pipeline_source") or "").strip().lower()
+            if p_src == "classifier":
+                source = "Classifier"
+            elif p_src in ("matcher", "catalogue"):
+                source = "Matcher"
+            elif res.get("matched_catalog_name") or (res.get("score") and float(res.get("score", 0)) > 0):
+                source = "Matcher"
+            elif (res.get("bt_confidence") and float(res.get("bt_confidence", 0)) > 0) or res.get("suggested_bt"):
+                source = "Classifier"
+            else:
+                source = "Matcher"
 
         input_entities = res.get("input_entities") or {}
         flavor_list = list(input_entities.get("flavor") or [])

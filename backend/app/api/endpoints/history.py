@@ -60,16 +60,38 @@ def get_history(
         where += " AND created_at <= CAST(:date_to AS timestamptz)"
         params["date_to"] = date_to
     if sku_name:
-        where += " AND sku_name LIKE :sku_name"
+        where += " AND sku_name ILIKE :sku_name"
         params["sku_name"] = f"%{sku_name}%"
     if bt:
-        where += " AND bt LIKE :bt"
+        where += " AND bt ILIKE :bt"
         params["bt"] = f"%{bt}%"
     if gk:
-        where += " AND gk_json LIKE :gk"
+        where += " AND gk_json ILIKE :gk"
         params["gk"] = f"%{gk}%"
     if match_source:
-        where += " AND match_source LIKE :match_source"
+        source_val = match_source.strip().lower()
+        if source_val == "matcher":
+            where += """ AND (
+                LOWER(TRIM(COALESCE(match_source, ''))) IN ('matcher', 'catalogue')
+                OR (
+                    (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
+                    AND NOT (
+                        (matched_catalog_name IS NULL OR TRIM(matched_catalog_name) = '')
+                        AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
+                    )
+                )
+            )"""
+        elif source_val == "classifier":
+            where += """ AND (
+                LOWER(TRIM(COALESCE(match_source, ''))) = 'classifier'
+                OR (
+                    (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
+                    AND (matched_catalog_name IS NULL OR TRIM(matched_catalog_name) = '')
+                    AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
+                )
+            )"""
+        else:
+            where += " AND match_source ILIKE :match_source"
         params["match_source"] = f"%{match_source}%"
 
     total_count = db.execute(text(f"SELECT COUNT(*) FROM processed_skus {where}"), params).scalar()

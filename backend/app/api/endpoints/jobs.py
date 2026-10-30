@@ -196,16 +196,24 @@ def get_dashboard_stats(
 
     # 2. Match Source Breakdown
     source_query = f"""
-        SELECT match_source, COUNT(*) as count
+        SELECT
+            CASE
+                WHEN LOWER(TRIM(COALESCE(match_source, ''))) IN ('matcher', 'catalogue') THEN 'Matcher'
+                WHEN LOWER(TRIM(COALESCE(match_source, ''))) = 'classifier' THEN 'Classifier'
+                WHEN matched_catalog_name IS NOT NULL AND TRIM(matched_catalog_name) != '' THEN 'Matcher'
+                WHEN (bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0) THEN 'Classifier'
+                ELSE 'Matcher'
+            END as normalized_source,
+            COUNT(*) as count
         FROM processed_skus
         WHERE {where_str}
-        GROUP BY match_source
+        GROUP BY normalized_source
         ORDER BY count DESC
     """
     source_rows = db.execute(text(source_query), params).fetchall()
     match_sources = [
         {
-            "source": r[0] or "Unknown",
+            "source": r[0],
             "count": r[1],
             "pct": round((r[1] / max(1, total_skus)) * 100, 1),
         }

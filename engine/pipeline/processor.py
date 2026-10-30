@@ -402,7 +402,7 @@ def process_request(
                 "category": row.get("suggested_region") if domain == config.DOMAIN_MARKET else None,
                 "price": sku.get("price", 0.0),
                 "confidence": row.get("bt_confidence", 0.0) or 0.0,
-                "match_source": "classifier",
+                "match_source": "Classifier",
                 "matched_sku": "",
                 "reasoning": row.get("logic_notes", ""),
             }
@@ -499,7 +499,7 @@ def process_request(
                     "suggested_region": "",
                     "region_confidence": 0.0,
                     "region_status": "Low / Rejected",
-                    "pipeline_source": "",
+                    "pipeline_source": "Matcher",
                     "escalated": False,
                 }
 
@@ -641,9 +641,9 @@ def process_request(
                 "category": row.get("suggested_region") if domain == config.DOMAIN_MARKET else None,
                 "price": sku.get("price", 0.0),
                 "confidence": max(row.get("score", 0), row.get("bt_confidence", 0) or 0),
-                "match_source": "classifier"
+                "match_source": "Classifier"
                 if row.get("pipeline_source") == "Classifier"
-                else "catalogue",
+                else "Matcher",
                 "matched_sku": row.get("matched_catalog_name", ""),
                 "reasoning": row.get("logic_notes", ""),
             }

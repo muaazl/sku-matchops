@@ -25,13 +25,27 @@ from typing import Any
 
 import requests
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv()
+
+# Apps Script /exec randomly hangs ~30% of requests; every call here is safe to repeat.
+# Only https (Google) retries; the local backend (http) keeps failing fast.
+_session = requests.Session()
+_session.mount(
+    "https://",
+    HTTPAdapter(
+        max_retries=Retry(
+            total=3, backoff_factor=1, status_forcelist=[502, 503, 504], allowed_methods=None
+        )
+    ),
+)
 
 DEFAULT_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "17wPPEUu0_KbgOPtjDy4UVS8fh76D1ZmQlB5FZMw2JEo")
 DEFAULT_APPS_SCRIPT_URL = os.getenv(
     "APPS_SCRIPT_URL",
-    "https://script.google.com/macros/s/AKfycbx-COA5Dy5LR0lvi9Q2eaWpF3pjM5JL33NxhPKn8FcjqbnRhn9an1BXhVpVN1M38m1H/exec",
+    "https://script.google.com/macros/s/AKfycbyGbZfZ-JOEdX2RXs5IPRMhcPQd3SVk6Vr29NcmFjclgjdBUQngZYj_CTSkiatQjxY/exec",
 )
 # 127.0.0.1, not localhost: on Windows localhost tries IPv6 first and stalls ~2s per connection
 DEFAULT_BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
@@ -44,7 +58,7 @@ def fetch_sheet_csv_gviz(sheet_id: str, sheet_name: str, timeout: int = 15) -> s
     """Fetches raw CSV text from Google Sheets via the public/org gviz export."""
     encoded_sheet = urllib.parse.quote(sheet_name)
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_sheet}"
-    resp = requests.get(url, timeout=timeout)
+    resp = _session.get(url, timeout=timeout)
     resp.raise_for_status()
     return resp.text
 
@@ -58,7 +72,7 @@ def fetch_sheet_data_apps_script(
         "spreadsheet_id": sheet_id,
         "sheet_name": sheet_name,
     }
-    resp = requests.get(apps_script_url, params=params, timeout=timeout)
+    resp = _session.get(apps_script_url, params=params, timeout=timeout)
     resp.raise_for_status()
     payload = resp.json()
     if payload.get("status") != "ok":
@@ -138,7 +152,7 @@ def parse_csv_to_skus(csv_text: str) -> list[dict[str, Any]]:
 def list_available_tabs(apps_script_url: str, sheet_id: str) -> list[str]:
     """Queries Apps Script Web App for available non-internal tabs."""
     try:
-        resp = requests.get(
+        resp = _session.get(
             apps_script_url,
             params={"action": "list_sheets", "spreadsheet_id": sheet_id},
             timeout=10,
@@ -181,7 +195,7 @@ def fetch_queue_gviz(catalog_sheet_id: str) -> list[dict[str, Any]]:
 def update_queue_status(apps_script_url: str, sheet_id: str, job_id: str, status: str):
     """Sends a queue_update notification to Google Apps Script doPost."""
     try:
-        requests.post(
+        _session.post(
             apps_script_url,
             json={
                 "type": "queue_update",
@@ -198,7 +212,7 @@ def update_queue_status(apps_script_url: str, sheet_id: str, job_id: str, status
 def check_backend_health(backend_url: str) -> bool:
     """Verifies that the local FastAPI backend is active."""
     try:
-        resp = requests.get(f"{backend_url.rstrip('/')}/health", timeout=3)
+        resp = _session.get(f"{backend_url.rstrip('/')}/health", timeout=3)
         return resp.status_code == 200
     except Exception:
         return False
@@ -287,7 +301,7 @@ def run_single_job(
 
     print(f"[2/2] Enqueuing {len(skus)} SKUs to backend ({endpoint})...", flush=True)
     try:
-        resp = requests.post(endpoint, json=payload, headers=headers, timeout=30)
+        resp = _session.post(endpoint, json=payload, headers=headers, timeout=30)
         resp.raise_for_status()
         res_data = resp.json()
         enqueued_job_id = res_data.get("job_id", "")
@@ -337,7 +351,7 @@ def watch_queue(
         try:
             pending_jobs = []
             try:
-                resp = requests.get(
+                resp = _session.get(
                     apps_script_url,
                     params={"action": "get_queue", "spreadsheet_id": sheet_id},
                     timeout=15,

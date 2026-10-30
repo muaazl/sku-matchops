@@ -949,7 +949,7 @@ def run_sku_audit(
         "category": curr_region if domain == config.DOMAIN_MARKET else None,
         "price": price,
         "confidence": rules_confidence,
-        "match_source": "classifier" if pipeline_source == "Classifier" else "catalogue",
+        "match_source": "Classifier" if pipeline_source == "Classifier" else "Matcher",
         "matched_sku": str(winner["Name"]),
         "reasoning": win_reasons,
     }
@@ -1668,7 +1668,7 @@ def _audit_classifier_pipeline(
         "category": chosen_third_tag if domain == config.DOMAIN_MARKET else None,
         "price": price,
         "confidence": rules_confidence,
-        "match_source": "classifier",
+        "match_source": "Classifier",
         "matched_sku": "",
         "reasoning": f"Classifier predicted BT='{curr_bt}', GK='{', '.join(curr_gk_list)}', {tag_label}='{chosen_third_tag}'",
     }
