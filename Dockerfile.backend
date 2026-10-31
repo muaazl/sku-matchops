@@ -29,6 +29,8 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY backend /app/backend
 COPY engine /app/engine
 COPY scripts /app/scripts
+COPY alembic.ini /app/alembic.ini
+COPY migrations /app/migrations
 
 COPY docker-entrypoint-backend.py /app/docker-entrypoint-backend.py
 

@@ -8,16 +8,15 @@ import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from qdrant_client.http import models as qmodels
 
-from engine.core import config
-from engine.pipeline.audit_engine import run_sku_audit
-from engine.data_pipeline.vector_store import VectorStore
-from engine.pipeline.processor import process_request
+from engine import config
+from engine.core.observability import TraceIdMiddleware, configure_logging, metrics_payload
 from engine.core.resource_loader import (
     _get_shared_models,
     _model_statuses,
@@ -25,93 +24,113 @@ from engine.core.resource_loader import (
     get_pipeline,
     reset_statuses,
 )
-from engine.rules_engine import refresh_rules_cache, clear_flavor_cache
+from engine.data_pipeline.vector_store import VectorStore
+from engine.pipeline.audit_engine import run_sku_audit
+from engine.pipeline.processor import process_request
+from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job, start_queue_worker
+from engine.rules_engine import clear_flavor_cache, refresh_rules_cache
+from engine.rules_engine.loader import (
+    pinned_rules,
+    snapshot_rules,
+    start_invalidation_listener,
+)
 from engine.templates.template_suggest import suggest_tags_from_template
-from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qmodels
 
 # Configure logging
 logger = logging.getLogger("matchops.engine.server")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured output
 
 app = FastAPI(
     title="SKU MatchOps ML Engine",
     description="Dedicated ML Inference Microservice for SKU Matching and Classification.",
-    version="2.0.0"
+    version="2.0.0",
 )
 
 # The engine is an internal service: only the backend gateway calls it
 # (server-to-server). Restrict CORS to the backend origin rather than "*".
 _engine_cors_origins = [
-    o.strip()
-    for o in os.getenv("BACKEND_URL", "http://backend:8000").split(",")
-    if o.strip()
+    o.strip() for o in os.getenv("BACKEND_URL", "http://backend:8000").split(",") if o.strip()
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_engine_cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Request-ID"],
 )
+app.add_middleware(TraceIdMiddleware)
 
 _model_load_lock = threading.Lock()
 _loading_in_progress = False
+_queue_worker: threading.Thread | None = None
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus metrics for this engine process (inference timings, processed SKUs, queue)."""
+    body, content_type = metrics_payload()
+    return Response(content=body, media_type=content_type)
 
 
 # --- Request Schemas ---
 
+
 class SKUItemPayload(BaseModel):
     name: str
-    price: Optional[float] = 0.0
-    description: Optional[str] = ""
-    category: Optional[str] = ""
+    price: float | None = 0.0
+    description: str | None = ""
+    category: str | None = ""
 
 
 class BatchProcessRequest(BaseModel):
     job_id: str
     task: str = "pipeline"
     domain: str = "market"
-    skus: List[SKUItemPayload]
+    skus: list[dict[str, Any]]
     backend_url: str = "http://backend:8000"
-    callback_url: Optional[str] = None
-    sheet_name: Optional[str] = None
-    spreadsheet_id: Optional[str] = None
+    callback_url: str | None = None
+    sheet_name: str | None = None
+    spreadsheet_id: str | None = None
+    # Carried so HTTP-fallback jobs keep the same tenant rules and trace as Redis-queued ones
+    tenant_id: str = "default"
+    trace_id: str = "-"
 
 
 class RunSingleRequest(BaseModel):
     sku_name: str
     domain: str = "market"
     task: str = "pipeline"
-    price: Optional[float] = 0.0
-    description: Optional[str] = ""
-    category: Optional[str] = ""
+    price: float | None = 0.0
+    description: str | None = ""
+    category: str | None = ""
+    tenant_id: str = "default"
 
 
 class SuggestRequest(BaseModel):
     sku_name: str
     domain: str = "market"
-    current_bt: Optional[str] = ""
-    exclude_bt: Optional[str] = ""
-    exclude_gk: Optional[str] = ""
+    current_bt: str | None = ""
+    exclude_bt: str | None = ""
+    exclude_gk: str | None = ""
 
 
 class VectorSearchRequest(BaseModel):
     query: str
     top_k: int = 10
-    score_threshold: Optional[float] = None
-    filters: Optional[Dict[str, Any]] = None
+    score_threshold: float | None = None
+    filters: dict[str, Any] | None = None
 
 
 # --- Background Model Pre-loader ---
 
+
 def _bg_load_models():
-    global _loading_in_progress
+    global _loading_in_progress, _queue_worker
     logger.info("[ENGINE] Background model loading and warmup started...")
     try:
         for d in _model_statuses:
@@ -119,15 +138,16 @@ def _bg_load_models():
             _model_statuses[d]["classifier"] = "training"
 
         embed_engine, ner_engine = _get_shared_models()
-        if hasattr(embed_engine, 'warmup'):
+        if hasattr(embed_engine, "warmup"):
             embed_engine.warmup()
-        if hasattr(ner_engine, 'warmup'):
+        if hasattr(ner_engine, "warmup"):
             ner_engine.warmup()
     except Exception as e:
         logger.warning(f"[ENGINE] Warmup failed: {e}")
 
     try:
         refresh_rules_cache()
+        start_invalidation_listener()
         clear_flavor_cache()
 
         def _init_domain(d):
@@ -141,6 +161,9 @@ def _bg_load_models():
             list(executor.map(_init_domain, [config.DOMAIN_MARKET, config.DOMAIN_FOOD]))
 
         logger.info("[ENGINE] All ML models loaded and cached successfully.")
+        # Only take queued jobs once models are ready; until then other workers can serve them
+        if _queue_worker is None or not _queue_worker.is_alive():
+            _queue_worker = start_queue_worker()
     except Exception as e:
         logger.error(f"[ENGINE] Background model loading failed: {e}")
         reset_statuses()
@@ -150,31 +173,44 @@ def _bg_load_models():
 
 # --- Endpoints ---
 
+
 @app.get("/health")
 def health():
-    market_ready = _model_statuses["market"]["pipeline"] == "ready" and _model_statuses["market"]["classifier"] == "ready"
-    food_ready = _model_statuses["food"]["pipeline"] == "ready" and _model_statuses["food"]["classifier"] == "ready"
+    market_ready = (
+        _model_statuses["market"]["pipeline"] == "ready"
+        and _model_statuses["market"]["classifier"] == "ready"
+    )
+    food_ready = (
+        _model_statuses["food"]["pipeline"] == "ready"
+        and _model_statuses["food"]["classifier"] == "ready"
+    )
     return {
         "status": "ok",
         "service": "matchops-engine",
         "loaded_domains": [d for d in _model_statuses if _model_statuses[d]["pipeline"] == "ready"],
         "all_models_ready": market_ready and food_ready,
         "model_statuses": _model_statuses,
-        "loading_in_progress": _loading_in_progress
+        "loading_in_progress": _loading_in_progress,
     }
 
 
 @app.get("/models/status")
 @app.get("/models-status")
 def models_status():
-    market_ready = _model_statuses["market"]["pipeline"] == "ready" and _model_statuses["market"]["classifier"] == "ready"
-    food_ready = _model_statuses["food"]["pipeline"] == "ready" and _model_statuses["food"]["classifier"] == "ready"
+    market_ready = (
+        _model_statuses["market"]["pipeline"] == "ready"
+        and _model_statuses["market"]["classifier"] == "ready"
+    )
+    food_ready = (
+        _model_statuses["food"]["pipeline"] == "ready"
+        and _model_statuses["food"]["classifier"] == "ready"
+    )
     is_ready = market_ready and food_ready and not _loading_in_progress
     return {
         "status": "ready" if is_ready else ("loading" if _loading_in_progress else "unloaded"),
         "loaded": is_ready,
         "details": _model_statuses,
-        "loading_in_progress": _loading_in_progress
+        "loading_in_progress": _loading_in_progress,
     }
 
 
@@ -184,8 +220,14 @@ def load_models(background_tasks: BackgroundTasks):
     if _loading_in_progress:
         return {"status": "ignored", "message": "Model loading is already in progress."}
 
-    market_ready = _model_statuses["market"]["pipeline"] == "ready" and _model_statuses["market"]["classifier"] == "ready"
-    food_ready = _model_statuses["food"]["pipeline"] == "ready" and _model_statuses["food"]["classifier"] == "ready"
+    market_ready = (
+        _model_statuses["market"]["pipeline"] == "ready"
+        and _model_statuses["market"]["classifier"] == "ready"
+    )
+    food_ready = (
+        _model_statuses["food"]["pipeline"] == "ready"
+        and _model_statuses["food"]["classifier"] == "ready"
+    )
     if market_ready and food_ready:
         return {"status": "success", "message": "Models are already fully loaded."}
 
@@ -218,11 +260,13 @@ def process_batch(request: BatchProcessRequest):
         "job_id": request.job_id,
         "task": request.task,
         "domain": request.domain,
-        "skus": [s.model_dump() for s in request.skus],
+        "skus": request.skus,
         "backend_url": request.backend_url,
         "callback_url": request.callback_url,
         "sheet_name": request.sheet_name,
         "spreadsheet_id": request.spreadsheet_id,
+        "tenant_id": request.tenant_id,
+        "trace_id": request.trace_id,
     }
 
     result = enqueue_batch_job(payload)
@@ -237,13 +281,10 @@ def run_single(request: RunSingleRequest):
             "name": request.sku_name,
             "price": request.price or 0.0,
             "description": request.description or "",
-            "category": request.category or ""
+            "category": request.category or "",
         }
-        res = process_request(
-            skus=[sku_dict],
-            task=request.task,
-            domain=request.domain
-        )
+        with pinned_rules(snapshot_rules(request.tenant_id)):
+            res = process_request(skus=[sku_dict], task=request.task, domain=request.domain)
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -261,7 +302,7 @@ def suggest(request: SuggestRequest):
             domain=request.domain,
             current_bt=request.current_bt,
             exclude_bt=request.exclude_bt,
-            exclude_gk=request.exclude_gk
+            exclude_gk=request.exclude_gk,
         )
         return res
     except Exception as e:
@@ -285,7 +326,7 @@ def reload_models(background_tasks: BackgroundTasks):
 
 @app.post("/engine/refresh-rules")
 def refresh_rules():
-    """Reloads the rules-engine cache from SQLite in this process, without touching ML models.
+    """Reloads the rules-engine cache from PostgreSQL in this process, without touching ML models.
 
     Called by the backend after any rules CRUD operation so live matching/classification
     jobs pick up rule changes immediately, instead of only after a full model reload/restart.
@@ -299,6 +340,7 @@ def refresh_rules():
 
 
 # --- Vector Database & Audit Endpoints ---
+
 
 @app.get("/engine/vector-db/collections")
 def engine_list_collections():
@@ -330,37 +372,29 @@ def engine_search_collection(name: str, request: VectorSearchRequest):
         embed_engine, _ = _get_shared_models()
         encoded = embed_engine.encode([request.query])
         query_vector = encoded["dense"][0]
-        
+
         qdrant_filter = None
         if request.filters:
             conditions = []
             for key, val in request.filters.items():
                 conditions.append(
-                    qmodels.FieldCondition(
-                        key=key,
-                        match=qmodels.MatchValue(value=val)
-                    )
+                    qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=val))
                 )
             if conditions:
                 qdrant_filter = qmodels.Filter(must=conditions)
-        
+
         search_result = client.query_points(
             collection_name=name,
-            query=query_vector.tolist() if hasattr(query_vector, 'tolist') else query_vector,
+            query=query_vector.tolist() if hasattr(query_vector, "tolist") else query_vector,
             using="dense",
             limit=request.top_k,
             query_filter=qdrant_filter,
-            score_threshold=request.score_threshold
+            score_threshold=request.score_threshold,
         ).points
-        
+
         return {
             "results": [
-                {
-                    "id": hit.id,
-                    "score": hit.score,
-                    "payload": hit.payload
-                }
-                for hit in search_result
+                {"id": hit.id, "score": hit.score, "payload": hit.payload} for hit in search_result
             ]
         }
     except Exception as e:
@@ -371,14 +405,15 @@ def engine_search_collection(name: str, request: VectorSearchRequest):
 def engine_audit(request: RunSingleRequest):
     """Executes a transparent diagnostic SKU audit."""
     try:
-        res = run_sku_audit(
-            sku_name=request.sku_name,
-            domain=request.domain,
-            task=request.task,
-            price=request.price or 0.0,
-            description=request.description or "",
-            category=request.category or ""
-        )
+        with pinned_rules(snapshot_rules(request.tenant_id)):
+            res = run_sku_audit(
+                sku_name=request.sku_name,
+                domain=request.domain,
+                task=request.task,
+                price=request.price or 0.0,
+                description=request.description or "",
+                category=request.category or "",
+            )
         return res
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -389,6 +424,7 @@ def engine_audit(request: RunSingleRequest):
 
 if __name__ == "__main__":
     import uvicorn
+
     port = int(os.getenv("ENGINE_PORT", 8001))
     host = os.getenv("ENGINE_HOST", "0.0.0.0")
     logger.info(f"Starting SKU MatchOps Engine on {host}:{port}...")

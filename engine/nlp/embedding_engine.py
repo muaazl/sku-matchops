@@ -1,19 +1,19 @@
-from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import sys
-from typing import Dict, List, Optional, Tuple, Union
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 import joblib
 import numpy as np
 import onnxruntime as ort
-from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from engine.core import config
+from engine import config
+from engine.core.observability import ONNX_INFERENCE_SECONDS
 
 logger = logging.getLogger("matchops.embedder")
+
 
 class EmbeddingEngine:
     """
@@ -36,34 +36,46 @@ class EmbeddingEngine:
         sess_options.inter_op_num_threads = config.MAX_CPU_CORES
 
         def _load_bi_encoder():
-            logger.info(f"[EMBED] Loading BGE-M3 Hybrid Bi-Encoder (ONNX) from {config.BI_ENCODER_ONNX}...")
+            logger.info(
+                f"[EMBED] Loading BGE-M3 Hybrid Bi-Encoder (ONNX) from {config.BI_ENCODER_ONNX}..."
+            )
             self.flag_model = None
-            
+
             # Auto-export if missing
             if not os.path.exists(config.BI_ENCODER_ONNX):
                 try:
                     from scripts.ml.export_onnx import export_bge_m3
+
                     logger.info("[EMBED] BGE-M3 ONNX not found. Initiating on-demand export...")
                     export_bge_m3()
                 except Exception as exp_err:
-                    logger.warning(f"[EMBED] Auto-export BGE-M3 failed ({exp_err}); will attempt PyTorch fallback.")
+                    logger.warning(
+                        f"[EMBED] Auto-export BGE-M3 failed ({exp_err}); will attempt PyTorch fallback."
+                    )
 
             try:
                 try:
                     self.tokenizer = AutoTokenizer.from_pretrained(
-                        os.path.dirname(config.BI_ENCODER_ONNX), local_files_only=True, fix_mistral_regex=True
+                        os.path.dirname(config.BI_ENCODER_ONNX),
+                        local_files_only=True,
+                        fix_mistral_regex=True,
                     )
                 except Exception:
-                    self.tokenizer = AutoTokenizer.from_pretrained(config.BI_ENCODER_MODEL, fix_mistral_regex=True)
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        config.BI_ENCODER_MODEL, fix_mistral_regex=True
+                    )
 
                 self.bi_session = ort.InferenceSession(
-                    config.BI_ENCODER_ONNX, sess_options, providers=['CPUExecutionProvider']
+                    config.BI_ENCODER_ONNX, sess_options, providers=["CPUExecutionProvider"]
                 )
                 logger.info("[EMBED] BGE-M3 ONNX hybrid bi-encoder loaded (dense + sparse).")
             except Exception as e:
-                logger.warning(f"[EMBED] Bi-Encoder ONNX unavailable ({e}); falling back to PyTorch FlagEmbedding...")
+                logger.warning(
+                    f"[EMBED] Bi-Encoder ONNX unavailable ({e}); falling back to PyTorch FlagEmbedding..."
+                )
                 try:
                     from FlagEmbedding import BGEM3FlagModel
+
                     self.flag_model = BGEM3FlagModel(config.BI_ENCODER_MODEL, use_fp16=False)
                     logger.info("[EMBED] PyTorch BGEM3FlagModel loaded successfully as fallback.")
                 except Exception as fe_err:
@@ -71,44 +83,59 @@ class EmbeddingEngine:
                 self.bi_session = None
 
         def _load_cross_encoder():
-            logger.info(f"[EMBED] Loading BGE-Reranker Cross-Encoder (ONNX) from {config.CROSS_ENCODER_ONNX}...")
+            logger.info(
+                f"[EMBED] Loading BGE-Reranker Cross-Encoder (ONNX) from {config.CROSS_ENCODER_ONNX}..."
+            )
             self.cross_encoder_fallback = None
-            
+
             # Auto-export if missing
             if not os.path.exists(config.CROSS_ENCODER_ONNX):
                 try:
                     from scripts.ml.export_onnx import export_bge_reranker
-                    logger.info("[EMBED] BGE-Reranker ONNX not found. Initiating on-demand export...")
+
+                    logger.info(
+                        "[EMBED] BGE-Reranker ONNX not found. Initiating on-demand export..."
+                    )
                     export_bge_reranker()
                 except Exception as exp_err:
-                    logger.warning(f"[EMBED] Auto-export BGE-Reranker failed ({exp_err}); will attempt PyTorch fallback.")
+                    logger.warning(
+                        f"[EMBED] Auto-export BGE-Reranker failed ({exp_err}); will attempt PyTorch fallback."
+                    )
 
             # 1. Load Tokenizer
             try:
                 try:
                     self.rerank_tokenizer = AutoTokenizer.from_pretrained(
-                        os.path.dirname(config.CROSS_ENCODER_ONNX), local_files_only=True
+                        os.path.dirname(config.CROSS_ENCODER_ONNX),
+                        local_files_only=True,
+                        fix_mistral_regex=True,
                     )
-                except TypeError:
+                except Exception:
                     self.rerank_tokenizer = AutoTokenizer.from_pretrained(
                         os.path.dirname(config.CROSS_ENCODER_ONNX), local_files_only=True
                     )
-                except Exception:
-                    self.rerank_tokenizer = AutoTokenizer.from_pretrained(config.CROSS_ENCODER_MODEL)
             except Exception as tok_err:
-                logger.warning(f"[EMBED] Cross-Encoder tokenizer loading encountered issue: {tok_err}")
+                logger.warning(
+                    f"[EMBED] Cross-Encoder tokenizer loading encountered issue: {tok_err}"
+                )
+                self.rerank_tokenizer = AutoTokenizer.from_pretrained(config.CROSS_ENCODER_MODEL)
 
             # 2. Load ONNX Session
             try:
                 self.cross_session = ort.InferenceSession(
-                    config.CROSS_ENCODER_ONNX, sess_options, providers=['CPUExecutionProvider']
+                    config.CROSS_ENCODER_ONNX, sess_options, providers=["CPUExecutionProvider"]
                 )
                 logger.info("[EMBED] Cross-Encoder ONNX loaded.")
             except Exception as e:
-                logger.warning(f"[EMBED] Cross-Encoder ONNX unavailable ({e}); falling back to sentence-transformers.")
+                logger.warning(
+                    f"[EMBED] Cross-Encoder ONNX unavailable ({e}); falling back to sentence-transformers."
+                )
                 try:
                     from sentence_transformers import CrossEncoder
-                    self.cross_encoder_fallback = CrossEncoder(config.CROSS_ENCODER_MODEL, device="cpu")
+
+                    self.cross_encoder_fallback = CrossEncoder(
+                        config.CROSS_ENCODER_MODEL, device="cpu"
+                    )
                     logger.info("[EMBED] sentence-transformers CrossEncoder loaded successfully.")
                 except Exception as e2:
                     logger.error(f"[EMBED] sentence-transformers CrossEncoder also failed: {e2}")
@@ -135,7 +162,9 @@ class EmbeddingEngine:
             self.cross_session.run(None, inputs)
             logger.info("[EMBED] Cross-Encoder (ONNX) warmed up.")
 
-    def encode(self, texts: List[str], batch_size: int = config.EMBED_BATCH_SIZE) -> Dict[str, Union[np.ndarray, List[dict]]]:
+    def encode(
+        self, texts: list[str], batch_size: int = config.ONNX_BATCH_SIZE
+    ) -> dict[str, np.ndarray | list[dict]]:
         """
         Generates hybrid embeddings for a list of texts using the hybrid ONNX model or PyTorch fallback.
         """
@@ -146,7 +175,7 @@ class EmbeddingEngine:
         if not texts:
             return {"dense": np.array([]), "sparse": []}
 
-        if not hasattr(self, '_str_cache'):
+        if not hasattr(self, "_str_cache"):
             # LRU (not "grow-then-wipe-everything") cache: an OrderedDict evicts the
             # least-recently-used entries incrementally once over the cap, instead of a
             # periodic full clear that both re-encodes frequently-used strings (dictionary
@@ -165,23 +194,26 @@ class EmbeddingEngine:
         if missing_texts:
             all_dense = []
             all_sparse = []
-            
+
             if self.bi_session:
                 for i in range(0, len(missing_texts), batch_size):
                     batch = missing_texts[i : i + batch_size]
-                    inputs = self.tokenizer(batch, padding=True, truncation=True, return_tensors="np")
+                    inputs = self.tokenizer(
+                        batch, padding=True, truncation=True, return_tensors="np"
+                    )
                     ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
-                    
+
                     # Run hybrid ONNX model
-                    outputs = self.bi_session.run(None, ort_inputs)
+                    with ONNX_INFERENCE_SECONDS.labels(model="embed").time():
+                        outputs = self.bi_session.run(None, ort_inputs)
                     dense_vecs = outputs[0]
                     sparse_weights = outputs[1]
-                    
+
                     # Dense post-processing (L2 norm)
                     norms = np.linalg.norm(dense_vecs, axis=1, keepdims=True)
                     norms = np.where(norms == 0, 1e-12, norms)
                     all_dense.append(dense_vecs / norms)
-                    
+
                     # Sparse post-processing
                     for b in range(len(batch)):
                         d = {}
@@ -221,11 +253,13 @@ class EmbeddingEngine:
             "sparse": out_sparse,
         }
 
-    def encode_query(self, text: str) -> Dict[str, Union[np.ndarray, List[dict]]]:
+    def encode_query(self, text: str) -> dict[str, np.ndarray | list[dict]]:
         """Encodes a single query string."""
         return self.encode([text], batch_size=1)
 
-    def score_cross_encoder(self, pairs: List[List[str]], batch_size: int = 32) -> np.ndarray:
+    def score_cross_encoder(
+        self, pairs: list[list[str]], batch_size: int = config.ONNX_BATCH_SIZE
+    ) -> np.ndarray:
         """Scores candidate pairs using the Cross-Encoder reranker (ONNX) in batches."""
         if not pairs:
             return np.array([], dtype=np.float32)
@@ -233,18 +267,23 @@ class EmbeddingEngine:
         if not self.cross_session or not self.rerank_tokenizer:
             if self.cross_encoder_fallback is not None:
                 return self.cross_encoder_fallback.predict(pairs, show_progress_bar=False)
-            logger.error("[EMBED] Cross-encoder unavailable (neither ONNX nor PyTorch fallback); returning -10.0 sentinels.")
+            logger.error(
+                "[EMBED] Cross-encoder unavailable (neither ONNX nor PyTorch fallback); returning -10.0 sentinels."
+            )
             return np.full(len(pairs), -10.0, dtype=np.float32)
 
+        logger.debug(f"[EMBED] Scoring {len(pairs)} pairs with Cross-Encoder...")
         scores = []
-        iterator = tqdm(range(0, len(pairs), batch_size), desc=f"Cross-Encoder (Total Pairs: {len(pairs)})")
-        for i in iterator:
+        for i in range(0, len(pairs), batch_size):
             batch = pairs[i : i + batch_size]
             texts1 = [p[0] for p in batch]
             texts2 = [p[1] for p in batch]
-            inputs = self.rerank_tokenizer(texts1, texts2, return_tensors="np", padding=True, truncation=True)
+            inputs = self.rerank_tokenizer(
+                texts1, texts2, return_tensors="np", padding=True, truncation=True
+            )
             ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
-            logits = self.cross_session.run(None, ort_inputs)[0]
+            with ONNX_INFERENCE_SECONDS.labels(model="cross_encoder").time():
+                logits = self.cross_session.run(None, ort_inputs)[0]
             scores.extend(logits.flatten().tolist())
         return np.array(scores, dtype=np.float32)
 
@@ -253,7 +292,7 @@ class EmbeddingEngine:
         vecs: np.ndarray,
         prototypes: np.ndarray,
         tau: float = 0.05,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Calculates temperature-scaled class probabilities via batch matrix multiplication.
         vecs: (N, D) or (D,) normalized query embeddings
@@ -298,7 +337,9 @@ class EmbeddingEngine:
         score = float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
         return score
 
-    def embed_queries(self, queries: List[str], domain: Optional[str] = None, cache_key: str = "sku_queries") -> Dict[str, Union[np.ndarray, List[dict]]]:
+    def embed_queries(
+        self, queries: list[str], domain: str | None = None, cache_key: str = "sku_queries"
+    ) -> dict[str, np.ndarray | list[dict]]:
         """Batch-encodes SKU queries with logging for classifier tasks."""
         if not queries:
             return {"dense": np.array([]), "sparse": []}
@@ -309,11 +350,11 @@ class EmbeddingEngine:
 
     def embed_weighted_sku(
         self,
-        names: List[str],
-        descriptions: List[str],
-        categories: List[str],
-        weights: tuple = (1.0, 0.8, 0.5),
-    ) -> Dict[str, Union[np.ndarray, List[dict]]]:
+        names: list[str],
+        descriptions: list[str],
+        categories: list[str],
+        weights: tuple = config.CLASSIFIER_WEIGHTS,
+    ) -> dict[str, np.ndarray | list[dict]]:
         """
         Embeds SKUs using weighted vector averaging across Name, Description, and Category.
 
@@ -340,7 +381,9 @@ class EmbeddingEngine:
         cats_clean = _clean(categories) if categories else [""] * n
 
         # Embed all non-empty field lists in a single merged call to self.encode
-        logger.info(f"[EMBED] Weighted SKU encoding: {n} items (weights: name={w_name}, desc={w_desc}, cat={w_cat})")
+        logger.debug(
+            f"[EMBED] Weighted SKU encoding: {n} items (weights: name={w_name}, desc={w_desc}, cat={w_cat})"
+        )
 
         flat_texts = []
         name_offsets = []
@@ -418,10 +461,12 @@ class EmbeddingEngine:
 
             all_sparse.append(merged_sparse)
 
-        logger.info(f"[EMBED] Weighted SKU encoding complete ({n} items).")
+        logger.debug(f"[EMBED] Weighted SKU encoding complete ({n} items).")
         return {"dense": np.vstack(all_dense), "sparse": all_sparse}
 
-    def embed_dictionary_incremental(self, domain: str, dict_key: str, keywords: List[str]) -> Dict[str, Union[np.ndarray, List[dict]]]:
+    def embed_dictionary_incremental(
+        self, domain: str, dict_key: str, keywords: list[str]
+    ) -> dict[str, np.ndarray | list[dict]]:
         """
         Encodes a dictionary of keywords incrementally, using disk caching to skip unchanged items.
         """
@@ -443,25 +488,33 @@ class EmbeddingEngine:
                 f"({len(keywords) - len(missing_keywords)} cached)."
             )
             all_dense, all_sparse = [], []
-            batch_size = config.EMBED_BATCH_SIZE
-            batches = [missing_keywords[i : i + batch_size] for i in range(0, len(missing_keywords), batch_size)]
+            batch_size = config.ONNX_BATCH_SIZE
+            batches = [
+                missing_keywords[i : i + batch_size]
+                for i in range(0, len(missing_keywords), batch_size)
+            ]
             num_batches = len(batches)
             for idx, batch in enumerate(batches, 1):
                 new_embs = self.encode(batch)
                 all_dense.extend(new_embs["dense"])
                 all_sparse.extend(new_embs["sparse"])
                 if idx % 5 == 0 or idx == num_batches:
-                    logger.info(f"[EMBED] {domain}/{dict_key}: Batch {idx}/{num_batches} encoded ({min(idx * batch_size, len(missing_keywords))}/{len(missing_keywords)} items)...")
+                    logger.info(
+                        f"[EMBED] {domain}/{dict_key}: Batch {idx}/{num_batches} encoded ({min(idx * batch_size, len(missing_keywords))}/{len(missing_keywords)} items)..."
+                    )
                     sys.stdout.flush()
-
 
             for i, kw in enumerate(missing_keywords):
                 item_cache[kw] = {"dense": all_dense[i], "sparse": all_sparse[i]}
 
             joblib.dump(item_cache, cache_path)
-            logger.info(f"[EMBED] {domain}/{dict_key}: cache updated ({len(item_cache)} total items).")
+            logger.info(
+                f"[EMBED] {domain}/{dict_key}: cache updated ({len(item_cache)} total items)."
+            )
         else:
-            logger.info(f"[EMBED] {domain}/{dict_key}: all {len(keywords)} items served from cache.")
+            logger.info(
+                f"[EMBED] {domain}/{dict_key}: all {len(keywords)} items served from cache."
+            )
 
         dense_list = [item_cache[kw]["dense"] for kw in keywords]
         sparse_list = [item_cache[kw]["sparse"] for kw in keywords]

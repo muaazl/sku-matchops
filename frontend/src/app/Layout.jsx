@@ -3,8 +3,8 @@ import { useTheme } from '@mui/material/styles';
 import { Box, Toolbar, CssBaseline, AppBar, Typography, Button, CircularProgress } from '@mui/material';
 import { Outlet, useLocation, Link } from 'react-router-dom';
 import ColorModeToggle from '../components/Common/ColorModeToggle';
-import AccessibilityToggle from '../components/Common/AccessibilityToggle';
 import SkuSidebar from './SkuSidebar';
+import SessionControl from './components/SessionControl';
 import { DrawerHeader } from '../components/Sidebar/SidebarStyled';
 import { Logo } from '../components/Logo';
 import { IconModal } from './components/ui';
@@ -25,6 +25,7 @@ function getPageName(pathname) {
   if (pathname === '/rules') return 'Rules Engine';
   if (pathname === '/catalog') return 'Catalog Search';
   if (pathname === '/logs') return 'Logs';
+  if (pathname === '/queue') return 'Queue & DLQ';
   return 'SKU MatchOps';
 }
 
@@ -199,8 +200,8 @@ export default function Layout() {
                 Load Models
               </Button>
             )}
-            <AccessibilityToggle />
             <ColorModeToggle />
+            <SessionControl />
           </Box>
         </Toolbar>
       </AppBar>

@@ -1,19 +1,21 @@
 import functools
 import logging
 import re
-from typing import Dict, List, Set, Tuple
+import time
 import warnings
+
+import pandas as pd
+from rapidfuzz import fuzz, process
+
+from engine import config
+from engine.core.observability import ONNX_INFERENCE_SECONDS
 
 # Suppress Hugging Face FastTokenizer regex deprecation warnings
 warnings.filterwarnings("ignore", message=".*fix_mistral_regex.*")
 warnings.filterwarnings("ignore", message=".*The regex pattern.*")
 
-import pandas as pd
-from rapidfuzz import fuzz, process
-
-from engine.core import config
-
 logger = logging.getLogger("matchops.ner")
+
 
 class NEREngine:
     """Named Entity Recognition engine (GLiNER ONNX-optimised).
@@ -31,7 +33,9 @@ class NEREngine:
     flavor conflicts across SKUs.
     """
 
-    def __init__(self, brands_df: pd.DataFrame, domain: str = config.DOMAIN_MARKET, shared_model=None):
+    def __init__(
+        self, brands_df: pd.DataFrame, domain: str = config.DOMAIN_MARKET, shared_model=None
+    ):
         self.domain = domain
         self.target_label = "flavor" if domain == config.DOMAIN_FOOD else "brand"
         self.labels = config.NER_LABELS
@@ -39,12 +43,12 @@ class NEREngine:
         if self.model is None:
             self._load_model()
 
-        self.brand_mapping: Dict[str, str] = {}
-        self.weak_brands: Set[str] = set()
-        self.meat_flavors: Set[str] = set()
-        self.vegetable_flavors: Set[str] = set()
-        self.seafood_flavors: Set[str] = set()
-        self.sorted_aliases: List[str] = []
+        self.brand_mapping: dict[str, str] = {}
+        self.weak_brands: set[str] = set()
+        self.meat_flavors: set[str] = set()
+        self.vegetable_flavors: set[str] = set()
+        self.seafood_flavors: set[str] = set()
+        self.sorted_aliases: list[str] = []
         self.combined_pattern = None
         self._build_brand_knowledge(brands_df)
 
@@ -61,8 +65,9 @@ class NEREngine:
 
     def _load_model(self):
         import os
+
         from gliner import GLiNER
-        
+
         # 1. Try loading from local ONNX directory if model.onnx exists
         if os.path.exists(config.GLINER_ONNX):
             try:
@@ -75,10 +80,11 @@ class NEREngine:
                 return
             except Exception as e:
                 logger.warning(f"[NER] Local ONNX load failed: {e}")
-        
+
         # 2. Try downloading ONNX model on demand if missing
         try:
             from scripts.ml.export_onnx import export_gliner
+
             logger.info("[NER] GLiNER ONNX model not found locally. Downloading ONNX model...")
             export_gliner()
             self.model = GLiNER.from_pretrained(
@@ -89,7 +95,9 @@ class NEREngine:
             logger.info("[NER] GLiNER loaded successfully in ONNX mode.")
             return
         except Exception as e:
-            logger.warning(f"[NER] Auto-export/download of GLiNER ONNX failed: {e}; falling back to Hugging Face PyTorch...")
+            logger.warning(
+                f"[NER] Auto-export/download of GLiNER ONNX failed: {e}; falling back to Hugging Face PyTorch..."
+            )
 
         # 3. Fallback to direct PyTorch model from Hugging Face Hub
         try:
@@ -114,35 +122,56 @@ class NEREngine:
         """Indexes flavor/brand aliases from the Google Sheet for fast dict scanning."""
         if df is None or df.empty:
             return
-        for _, row in df.iterrows():
-            canonical = str(row.get("Brand Name", row.get("Flavor Name", ""))).strip().lower()
+        cols = list(df.columns)
+        name_col = (
+            "Brand Name"
+            if "Brand Name" in cols
+            else ("Flavor Name" if "Flavor Name" in cols else None)
+        )
+        names = df[name_col].tolist() if name_col else [""] * len(df)
+        aliases_list = df["Aliases"].tolist() if "Aliases" in cols else [""] * len(df)
+        is_weaks = df["Is_Weak"].tolist() if "Is_Weak" in cols else [""] * len(df)
+        is_meats = df["Is_Meat"].tolist() if "Is_Meat" in cols else [""] * len(df)
+        is_vegs = df["Is_Vegetable"].tolist() if "Is_Vegetable" in cols else [""] * len(df)
+        is_seafoods = df["Is_Seafood"].tolist() if "Is_Seafood" in cols else [""] * len(df)
+
+        for raw_name, raw_alias, raw_weak, raw_meat, raw_veg, raw_seafood in zip(
+            names, aliases_list, is_weaks, is_meats, is_vegs, is_seafoods
+        ):
+            canonical = str(raw_name or "").strip().lower()
             if not canonical or canonical == "nan":
                 continue
-            aliases_str = str(row.get("Aliases", ""))
+            aliases_str = str(raw_alias or "")
             aliases = (
-                [x.strip().lower() for x in aliases_str.split(",")
-                 if x.strip() and x.strip().lower() != "nan"]
-                if aliases_str != "nan" else []
+                [
+                    x.strip().lower()
+                    for x in aliases_str.split(",")
+                    if x.strip() and x.strip().lower() != "nan"
+                ]
+                if aliases_str != "nan"
+                else []
             )
             aliases.append(canonical)
-            is_weak = str(row.get("Is_Weak", "")).strip().lower() in ("true", "1", "yes", "y")
+            is_weak = str(raw_weak or "").strip().lower() in ("true", "1", "yes", "y")
             if is_weak:
                 self.weak_brands.add(canonical)
-                
-            if str(row.get("Is_Meat", "")).strip().lower() in ("true", "1", "yes", "y"):
+
+            if str(raw_meat or "").strip().lower() in ("true", "1", "yes", "y"):
                 self.meat_flavors.add(canonical)
-            if str(row.get("Is_Vegetable", "")).strip().lower() in ("true", "1", "yes", "y"):
+            if str(raw_veg or "").strip().lower() in ("true", "1", "yes", "y"):
                 self.vegetable_flavors.add(canonical)
-            if str(row.get("Is_Seafood", "")).strip().lower() in ("true", "1", "yes", "y"):
+            if str(raw_seafood or "").strip().lower() in ("true", "1", "yes", "y"):
                 self.seafood_flavors.add(canonical)
-                
+
             for alias in aliases:
                 if alias and alias != "nan":
                     self.brand_mapping[alias] = canonical
         self.sorted_aliases = sorted(self.brand_mapping.keys(), key=len, reverse=True)
         if self.sorted_aliases:
             self.combined_pattern = re.compile(
-                r"(?<![a-z0-9])(" + "|".join(re.escape(a) for a in self.sorted_aliases) + r")(?![a-z0-9])"
+                r"(?<![a-z0-9])("
+                + "|".join(re.escape(a) for a in self.sorted_aliases)
+                + r")(?![a-z0-9])"
             )
         else:
             self.combined_pattern = None
@@ -151,26 +180,30 @@ class NEREngine:
     # Layer 1: Flavor / Brand Alias Dictionary
     # ─────────────────────────────────────────────────────────────
 
-    def _get_dict_entities(self, text: str) -> Tuple[frozenset[str], frozenset[str]]:
+    def _get_dict_entities(self, text: str) -> tuple[frozenset[str], frozenset[str]]:
         """Scans text against the alias dictionary using word-boundary regex + fuzzy fallback."""
         text_lower = text.lower()
         found_matches = []
 
         if self.combined_pattern:
+
             def replace_callback(match):
                 alias = match.group(1)
                 canonical = self.brand_mapping[alias]
                 is_weak = canonical in self.weak_brands
                 found_matches.append((canonical, match.start(), is_weak))
                 return " "
+
             text_lower = self.combined_pattern.sub(replace_callback, text_lower)
 
         # Fuzzy fallback only when dict finds nothing
         if not found_matches and self.sorted_aliases:
             words = [w for w in re.findall(r"\b\w+\b", text_lower) if len(w) >= 4]
-            bi_grams = [" ".join(words[i:i+2]) for i in range(len(words) - 1)]
+            bi_grams = [" ".join(words[i : i + 2]) for i in range(len(words) - 1)]
             for candidate in words + bi_grams:
-                m = process.extractOne(candidate, self.sorted_aliases, scorer=fuzz.ratio, score_cutoff=85)
+                m = process.extractOne(
+                    candidate, self.sorted_aliases, scorer=fuzz.ratio, score_cutoff=85
+                )
                 if m:
                     canonical = self.brand_mapping[m[0]]
                     is_weak = canonical in self.weak_brands
@@ -195,7 +228,7 @@ class NEREngine:
     # Layer 2: NER Fallback
     # ─────────────────────────────────────────────────────────────
 
-    def _resolve_entity_text(self, entity_text: str) -> Set[str]:
+    def _resolve_entity_text(self, entity_text: str) -> set[str]:
         """Maps an extracted NER entity string to known canonical aliases or raw text."""
         value = entity_text.lower().strip()
         if not value or value in ("product", "product:"):
@@ -204,10 +237,12 @@ class NEREngine:
         matched = {self.brand_mapping[w] for w in words if w in self.brand_mapping}
         return matched if matched else {value}
 
-    def _run_ner(self, text: str) -> List[Dict]:
+    def _run_ner(self, text: str) -> list[dict]:
         try:
             if self.model:
-                return self.model.predict_entities(text, self.labels, threshold=0.25)
+                return self.model.predict_entities(
+                    text, self.labels, threshold=config.NER_CONFIDENCE_THRESHOLD
+                )
             logger.warning(f"[NER] No model available for '{text}'.")
             return []
         except Exception as e:
@@ -218,12 +253,12 @@ class NEREngine:
     # Public: Single Extract
     # ─────────────────────────────────────────────────────────────
 
-    def extract_entities(self, text: str) -> Dict[str, Set[str]]:
+    def extract_entities(self, text: str) -> dict[str, set[str]]:
         """2-layer extraction. Result dict contains only 'flavor' (food) or 'brand' (market)."""
         if not isinstance(text, str) or not text.strip():
             return {label: set() for label in self.labels}
 
-        extracted: Dict[str, Set[str]] = {label: set() for label in self.labels}
+        extracted: dict[str, set[str]] = {label: set() for label in self.labels}
 
         # Layer 1: dictionary
         dict_strong, dict_weak = self._get_dict_entities(text)
@@ -245,18 +280,18 @@ class NEREngine:
     # ─────────────────────────────────────────────────────────────
 
     def batch_extract_entities(
-        self, texts: List[str], batch_size: int = config.EMBED_BATCH_SIZE
-    ) -> List[Dict[str, Set[str]]]:
+        self, texts: list[str], batch_size: int = config.ONNX_BATCH_SIZE
+    ) -> list[dict[str, set[str]]]:
         """Batch extraction: dict first, NER only for texts where dict found nothing."""
         if not texts:
             return []
 
-        all_results: List[Dict[str, Set[str]]] = []
+        all_results: list[dict[str, set[str]]] = []
         valid_texts = [t if (isinstance(t, str) and t.strip()) else "" for t in texts]
-        fallback_indices: List[int] = []
+        fallback_indices: list[int] = []
 
         for i, text in enumerate(valid_texts):
-            extracted: Dict[str, Set[str]] = {label: set() for label in self.labels}
+            extracted: dict[str, set[str]] = {label: set() for label in self.labels}
             if text:
                 dict_strong, dict_weak = self._get_dict_entities(text)
                 extracted[self.target_label].update(dict_strong)
@@ -271,15 +306,22 @@ class NEREngine:
 
         # Batch NER for texts that got no dict hit
         fallback_texts = [valid_texts[i] for i in fallback_indices]
+        t_ner = time.perf_counter()
         try:
             if self.model:
                 if hasattr(self.model, "inference"):
                     raw_list = self.model.inference(
-                        fallback_texts, self.labels, threshold=0.25, batch_size=batch_size
+                        fallback_texts,
+                        self.labels,
+                        threshold=config.NER_CONFIDENCE_THRESHOLD,
+                        batch_size=batch_size,
                     )
                 elif hasattr(self.model, "batch_predict_entities"):
                     raw_list = self.model.batch_predict_entities(
-                        fallback_texts, self.labels, threshold=0.25, batch_size=batch_size
+                        fallback_texts,
+                        self.labels,
+                        threshold=config.NER_CONFIDENCE_THRESHOLD,
+                        batch_size=batch_size,
                     )
                 else:
                     raw_list = [
@@ -289,6 +331,7 @@ class NEREngine:
             else:
                 logger.warning("[NER] No model for batch NER; returning empty for fallback items.")
                 raw_list = [[] for _ in fallback_texts]
+            ONNX_INFERENCE_SECONDS.labels(model="ner").observe(time.perf_counter() - t_ner)
 
             for list_idx, original_idx in enumerate(fallback_indices):
                 for entity in raw_list[list_idx]:
@@ -298,7 +341,7 @@ class NEREngine:
 
         except Exception as e:
             logger.warning(f"[NER] Batch NER failed, falling back to sequential: {e}")
-            for list_idx, original_idx in enumerate(fallback_indices):
+            for original_idx in fallback_indices:
                 all_results[original_idx] = self.extract_entities(valid_texts[original_idx])
 
         return all_results

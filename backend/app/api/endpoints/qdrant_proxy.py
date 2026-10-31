@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException
+
 from backend.app.schemas.models import VectorSearchRequest
 from backend.app.services.engine_client import (
-    list_vector_collections,
     get_vector_collection,
+    list_vector_collections,
     search_vector_collection,
 )
 

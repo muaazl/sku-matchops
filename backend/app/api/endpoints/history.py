@@ -1,11 +1,12 @@
 import csv
 import io
-import sqlite3
-from typing import List, Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import Connection, text
 
 from backend.app.core.db import get_db_connection
+from backend.app.core.security import Principal, get_principal
 from backend.app.schemas.models import ProcessedSkuResponse
 
 router = APIRouter()
@@ -23,96 +24,110 @@ def _sanitize_csv_cell(value):
     return value
 
 
-@router.get("/processed-skus", response_model=List[ProcessedSkuResponse])
+@router.get("/processed-skus", response_model=list[ProcessedSkuResponse])
 def get_history(
     response: Response,
-    batch_id: Optional[str] = None,
-    domain: Optional[str] = None,
-    min_confidence: Optional[float] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    sku_name: Optional[str] = None,
-    bt: Optional[str] = None,
-    gk: Optional[str] = None,
-    match_source: Optional[str] = None,
+    batch_id: str | None = None,
+    domain: str | None = None,
+    min_confidence: float | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    sku_name: str | None = None,
+    bt: str | None = None,
+    gk: str | None = None,
+    match_source: str | None = None,
     page: int = 1,
-    limit: Optional[int] = 50,
-    db: sqlite3.Connection = Depends(get_db_connection)
+    limit: int | None = 50,
+    db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
 ):
-    query = "SELECT * FROM processed_skus WHERE 1=1"
-    count_query = "SELECT COUNT(*) FROM processed_skus WHERE 1=1"
-    params = []
-    
+    where = "WHERE tenant_id = :tenant_id"
+    params = {"tenant_id": principal.tenant_id}
+
     if batch_id:
-        query += " AND batch_id = ?"
-        count_query += " AND batch_id = ?"
-        params.append(batch_id)
+        where += " AND batch_id = :batch_id"
+        params["batch_id"] = batch_id
     if domain:
-        query += " AND domain = ?"
-        count_query += " AND domain = ?"
-        params.append(domain)
+        where += " AND domain = :domain"
+        params["domain"] = domain
     if min_confidence is not None:
-        query += " AND confidence >= ?"
-        count_query += " AND confidence >= ?"
-        params.append(min_confidence)
+        where += " AND confidence >= :min_confidence"
+        params["min_confidence"] = min_confidence
     if date_from:
-        query += " AND created_at >= ?"
-        count_query += " AND created_at >= ?"
-        params.append(date_from)
+        where += " AND created_at >= CAST(:date_from AS timestamptz)"
+        params["date_from"] = date_from
     if date_to:
-        query += " AND created_at <= ?"
-        count_query += " AND created_at <= ?"
-        params.append(date_to)
+        where += " AND created_at <= CAST(:date_to AS timestamptz)"
+        params["date_to"] = date_to
     if sku_name:
-        query += " AND sku_name LIKE ?"
-        count_query += " AND sku_name LIKE ?"
-        params.append(f"%{sku_name}%")
+        where += " AND sku_name ILIKE :sku_name"
+        params["sku_name"] = f"%{sku_name}%"
     if bt:
-        query += " AND (basic_type LIKE ? OR bt LIKE ?)"
-        count_query += " AND (basic_type LIKE ? OR bt LIKE ?)"
-        params.extend([f"%{bt}%", f"%{bt}%"])
+        where += " AND bt ILIKE :bt"
+        params["bt"] = f"%{bt}%"
     if gk:
-        query += " AND (generic_keywords LIKE ? OR gk_json LIKE ? OR gk LIKE ?)"
-        count_query += " AND (generic_keywords LIKE ? OR gk_json LIKE ? OR gk LIKE ?)"
-        params.extend([f"%{gk}%", f"%{gk}%", f"%{gk}%"])
+        where += " AND gk_json ILIKE :gk"
+        params["gk"] = f"%{gk}%"
     if match_source:
-        query += " AND match_source LIKE ?"
-        count_query += " AND match_source LIKE ?"
-        params.append(f"%{match_source}%")
-        
-    total_count = db.execute(count_query, params).fetchone()[0]
+        source_val = match_source.strip().lower()
+        if source_val == "matcher":
+            where += """ AND (
+                LOWER(TRIM(COALESCE(match_source, ''))) IN ('matcher', 'catalogue')
+                OR (
+                    (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
+                    AND NOT (
+                        (matched_catalog_name IS NULL OR TRIM(matched_catalog_name) = '')
+                        AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
+                    )
+                )
+            )"""
+        elif source_val == "classifier":
+            where += """ AND (
+                LOWER(TRIM(COALESCE(match_source, ''))) = 'classifier'
+                OR (
+                    (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
+                    AND (matched_catalog_name IS NULL OR TRIM(matched_catalog_name) = '')
+                    AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
+                )
+            )"""
+        else:
+            where += " AND match_source ILIKE :match_source"
+        params["match_source"] = f"%{match_source}%"
+
+    total_count = db.execute(text(f"SELECT COUNT(*) FROM processed_skus {where}"), params).scalar()
     response.headers["X-Total-Count"] = str(total_count)
 
-    query += " ORDER BY created_at DESC"
+    query = f"SELECT * FROM processed_skus {where} ORDER BY created_at DESC"
     if limit is not None and limit > 0:
-        query += " LIMIT ? OFFSET ?"
-        params.extend([limit, (page - 1) * limit])
-    
-    rows = db.execute(query, params).fetchall()
+        query += " LIMIT :limit OFFSET :offset"
+        params.update(limit=limit, offset=(page - 1) * limit)
+
+    rows = db.execute(text(query), params).mappings().fetchall()
     return [dict(row) for row in rows]
+
 
 @router.get("/processed-skus/export")
 def export_history(
-    ids: Optional[str] = None,
+    ids: str | None = None,
     format: Literal["csv", "xlsx"] = "csv",
-    db: sqlite3.Connection = Depends(get_db_connection)
+    db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
 ):
-    query = "SELECT * FROM processed_skus"
-    params = []
+    query = "SELECT * FROM processed_skus WHERE tenant_id = :tenant_id"
+    params = {"tenant_id": principal.tenant_id}
 
     if ids:
-        id_list = [i.strip() for i in ids.split(',') if i.strip()]
+        id_list = [i.strip() for i in ids.split(",") if i.strip()]
         if id_list:
-            placeholders = ','.join('?' for _ in id_list)
-            query += f" WHERE id IN ({placeholders})"
-            params.extend(id_list)
+            query += " AND id = ANY(:ids)"
+            params["ids"] = id_list
     else:
         # No explicit id filter: cap the export instead of dumping the entire table.
         query += " ORDER BY created_at DESC LIMIT 50000"
 
-    rows = db.execute(query, params).fetchall()
+    rows = db.execute(text(query), params).mappings().fetchall()
 
-    if format == 'csv':
+    if format == "csv":
         output = io.StringIO()
         if rows:
             writer = csv.DictWriter(output, fieldnames=dict(rows[0]).keys())
@@ -123,14 +138,28 @@ def export_history(
         return Response(
             content=output.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=export.csv"}
+            headers={"Content-Disposition": "attachment; filename=export.csv"},
         )
     else:
-        raise HTTPException(status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv.")
+        raise HTTPException(
+            status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv."
+        )
+
 
 @router.get("/processed-skus/{id}", response_model=ProcessedSkuResponse)
-def get_processed_sku(id: str, db: sqlite3.Connection = Depends(get_db_connection)):
-    row = db.execute("SELECT * FROM processed_skus WHERE id = ?", (id,)).fetchone()
+def get_processed_sku(
+    id: str,
+    db: Connection = Depends(get_db_connection),
+    principal: Principal = Depends(get_principal),
+):
+    row = (
+        db.execute(
+            text("SELECT * FROM processed_skus WHERE id = :id AND tenant_id = :tenant_id"),
+            {"id": id, "tenant_id": principal.tenant_id},
+        )
+        .mappings()
+        .fetchone()
+    )
     if not row:
         raise HTTPException(status_code=404, detail="SKU not found")
     return dict(row)

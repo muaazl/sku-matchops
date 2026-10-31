@@ -1,13 +1,71 @@
 services:
-  # Internal-only services (qdrant, meilisearch, engine) are NOT published to the
+  # Internal-only services (postgres, qdrant, meilisearch, engine) are NOT published to the
   # host. They communicate over the private compose network by service name.
   # For local debugging, docker-compose.override.yml re-publishes their ports.
+  postgres:
+    image: postgres:16-alpine
+    container_name: sku_matchops_postgres
+    expose:
+      - "5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-matchops}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-matchops}
+      - POSTGRES_DB=${POSTGRES_DB:-matchops}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-matchops} -d ${POSTGRES_DB:-matchops}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Postgres web UI at http://localhost:5050 (no login; the matchops server is pre-registered).
+  # Bound to 127.0.0.1 only because desktop mode has no authentication.
+  pgadmin:
+    image: dpage/pgadmin4:8.14
+    container_name: sku_matchops_pgadmin
+    ports:
+      - "127.0.0.1:5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD:-matchops}
+      - PGADMIN_CONFIG_SERVER_MODE=False
+      - PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED=False
+    volumes:
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # One-shot: applies Alembic migrations before the Gateway and Engine start.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: sku_matchops_migrate
+    entrypoint: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    container_name: sku_matchops_redis
+    expose:
+      - "6379"
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: sku_matchops_qdrant
     expose:
       - "6333"
-      - "6334"
     volumes:
       - ./data/qdrant:/qdrant/storage:z
     restart: unless-stopped
@@ -25,11 +83,14 @@ services:
       - ./data/meilisearch:/meili_data
     restart: unless-stopped
 
+  # Horizontally scalable: every replica consumes the shared Redis job queue.
+  #   docker compose up -d --scale engine=3
+  # (no container_name, so Compose can name the replicas; the override file's fixed
+  #  host port 8001 only works with a single replica.)
   engine:
     build:
       context: .
       dockerfile: Dockerfile.engine
-    container_name: sku_matchops_engine
     expose:
       - "8001"
     environment:
@@ -40,6 +101,8 @@ services:
       - ENGINE_PORT=8001
       - USE_INT8_MODELS=true
       - TZ=Asia/Colombo
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
     env_file:
       - .env
     volumes:
@@ -48,8 +111,14 @@ services:
       - ./models:/app/models:ro
       - ./scripts:/app/scripts
     depends_on:
-      - qdrant
-      - meilisearch
+      qdrant:
+        condition: service_started
+      meilisearch:
+        condition: service_started
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   backend:
@@ -65,6 +134,8 @@ services:
       - ENGINE_URL=http://engine:8001
       - BACKEND_INTERNAL_URL=http://backend:8000
       - TZ=Asia/Colombo
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
     env_file:
       - .env
     volumes:
@@ -72,9 +143,16 @@ services:
       - ./engine:/app/engine
       - ./data:/app/data
       - ./scripts:/app/scripts
+      - ./migrations:/app/migrations
     depends_on:
-      - meilisearch
-      - engine
+      meilisearch:
+        condition: service_started
+      engine:
+        condition: service_started
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:

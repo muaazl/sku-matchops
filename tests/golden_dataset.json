@@ -1,0 +1,876 @@
+{
+  "description": "Curated golden SKUs for the classifier + business-rules pipeline. Expected labels were reviewed by hand (model mistakes are kept as misses, not snapshotted). Only fields shown to be stable across PYTHONHASHSEED values are asserted: the basic type and rule-driven GKs.",
+  "min_accuracy": 0.85,
+  "rules": [
+    {
+      "rule_id": "golden_1",
+      "domain": "food",
+      "priority": 1,
+      "description": "We put the Seafood keyword for all the Seafood dishes except Short Eats",
+      "reasoning": "",
+      "condition_logic": "AND",
+      "conditions": [
+        {
+          "condition_group": 1,
+          "condition_type": "flavor_is",
+          "value": "seafood",
+          "negate": 0
+        },
+        {
+          "condition_group": 2,
+          "condition_type": "gk_contains",
+          "value": "Short Eats",
+          "negate": 1
+        },
+        {
+          "condition_group": 3,
+          "condition_type": "sku_contains",
+          "value": "Seafood",
+          "negate": 1
+        },
+        {
+          "condition_group": 4,
+          "condition_type": "flavor_is",
+          "value": "meat",
+          "negate": 1
+        }
+      ],
+      "actions": [
+        {
+          "action_type": "add_gk",
+          "value": "Seafood"
+        }
+      ]
+    },
+    {
+      "rule_id": "golden_2",
+      "domain": "food",
+      "priority": 11,
+      "description": "We don't put Rice for Fried Rice",
+      "reasoning": "",
+      "condition_logic": "AND",
+      "conditions": [
+        {
+          "condition_group": 1,
+          "condition_type": "bt_is",
+          "value": "Fried Rice",
+          "negate": 0
+        },
+        {
+          "condition_group": 2,
+          "condition_type": "gk_contains",
+          "value": "Fried Rice",
+          "negate": 0
+        }
+      ],
+      "actions": [
+        {
+          "action_type": "remove_gk",
+          "value": "Rice"
+        }
+      ]
+    },
+    {
+      "rule_id": "golden_3",
+      "domain": "food",
+      "priority": 21,
+      "description": "We don't put Short Eats keyword for Sweet Items",
+      "reasoning": "",
+      "condition_logic": "OR",
+      "conditions": [
+        {
+          "condition_group": 1,
+          "condition_type": "bt_is",
+          "value": "Sweet Bun",
+          "negate": 0
+        },
+        {
+          "condition_group": 2,
+          "condition_type": "bt_is",
+          "value": "Sweet Crepe",
+          "negate": 0
+        },
+        {
+          "condition_group": 3,
+          "condition_type": "bt_is",
+          "value": "Sweet Pastry",
+          "negate": 0
+        },
+        {
+          "condition_group": 4,
+          "condition_type": "bt_is",
+          "value": "Sweet Pie",
+          "negate": 0
+        },
+        {
+          "condition_group": 5,
+          "condition_type": "bt_is",
+          "value": "Sweet Pizza",
+          "negate": 0
+        },
+        {
+          "condition_group": 6,
+          "condition_type": "bt_is",
+          "value": "Sweet Roll",
+          "negate": 0
+        }
+      ],
+      "actions": [
+        {
+          "action_type": "remove_gk",
+          "value": "Short Eats"
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "f001",
+      "domain": "food",
+      "sku": "Devilled Fish Set Menu",
+      "category": "seafood_rule",
+      "expected_bt": [
+        "Fried Rice",
+        "Set Menu"
+      ],
+      "must_have_gk": [
+        "Seafood"
+      ]
+    },
+    {
+      "id": "f002",
+      "domain": "food",
+      "sku": "Prawn Fried Rice",
+      "category": "seafood_rule",
+      "expected_bt": [
+        "Fried Rice"
+      ],
+      "must_have_gk": [
+        "Seafood"
+      ]
+    },
+    {
+      "id": "f003",
+      "domain": "food",
+      "sku": "Cuttlefish Devilled",
+      "category": "seafood_rule",
+      "expected_bt": [
+        "Devilled Cuttlefish"
+      ],
+      "must_have_gk": [
+        "Seafood"
+      ]
+    },
+    {
+      "id": "f004",
+      "domain": "food",
+      "sku": "Crab Curry",
+      "category": "seafood_rule",
+      "expected_bt": [
+        "Curry"
+      ],
+      "must_have_gk": [
+        "Seafood"
+      ]
+    },
+    {
+      "id": "f005",
+      "domain": "food",
+      "sku": "Seafood Fried Rice",
+      "category": "seafood_rule_exclusion",
+      "expected_bt": [
+        "Fried Rice"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true,
+      "note": "Rule 1 excludes SKUs already named 'Seafood'."
+    },
+    {
+      "id": "f006",
+      "domain": "food",
+      "sku": "Fish Kottu",
+      "category": "seafood_rule",
+      "expected_bt": [
+        "Kottu"
+      ],
+      "must_have_gk": [
+        "Seafood"
+      ]
+    },
+    {
+      "id": "f007",
+      "domain": "food",
+      "sku": "Chicken and Prawn Mixed Fried Rice",
+      "category": "seafood_rule_exclusion",
+      "expected_bt": [
+        "Fried Rice"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true,
+      "note": "Rule 1 excludes dishes that also contain land meat."
+    },
+    {
+      "id": "f008",
+      "domain": "food",
+      "sku": "Fish Cutlet",
+      "category": "seafood_rule_exclusion",
+      "expected_bt": [
+        "Cutlets"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true,
+      "note": "Rule 1 excludes Short Eats."
+    },
+    {
+      "id": "f009",
+      "domain": "food",
+      "sku": "Fish Roll",
+      "category": "seafood_rule_exclusion",
+      "expected_bt": [
+        "Rolls"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true,
+      "note": "Rule 1 excludes Short Eats."
+    },
+    {
+      "id": "f010",
+      "domain": "food",
+      "sku": "Prawn Noodles",
+      "category": "seafood_rule",
+      "expected_bt": [
+        "Fried Noodles"
+      ],
+      "must_have_gk": [
+        "Seafood"
+      ]
+    },
+    {
+      "id": "f011",
+      "domain": "food",
+      "sku": "Chicken Fried Rice",
+      "category": "food_dish",
+      "expected_bt": [
+        "Fried Rice"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f012",
+      "domain": "food",
+      "sku": "Beef Kottu",
+      "category": "food_dish",
+      "expected_bt": [
+        "Kottu"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f013",
+      "domain": "food",
+      "sku": "Chicken Biryani",
+      "category": "food_dish",
+      "expected_bt": [
+        "Biriyani"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f014",
+      "domain": "food",
+      "sku": "Mutton Curry",
+      "category": "food_dish",
+      "expected_bt": [
+        "Curry"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f015",
+      "domain": "food",
+      "sku": "Pork Devilled",
+      "category": "food_dish",
+      "expected_bt": [
+        "Devilled Pork"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f016",
+      "domain": "food",
+      "sku": "Egg Fried Rice",
+      "category": "food_dish",
+      "expected_bt": [
+        "Fried Rice"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f017",
+      "domain": "food",
+      "sku": "Vegetable Fried Rice",
+      "category": "food_dish",
+      "expected_bt": [
+        "Fried Rice"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f018",
+      "domain": "food",
+      "sku": "Veg Kottu",
+      "category": "food_dish",
+      "expected_bt": [
+        "Kottu"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f019",
+      "domain": "food",
+      "sku": "Chicken Kottu",
+      "category": "food_dish",
+      "expected_bt": [
+        "Kottu"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f020",
+      "domain": "food",
+      "sku": "Cheese Kottu",
+      "category": "food_dish",
+      "expected_bt": [
+        "Kottu"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f021",
+      "domain": "food",
+      "sku": "Chicken Rice and Curry Set Menu",
+      "category": "combo_set_menu",
+      "expected_bt": [
+        "Rice and Curry"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f022",
+      "domain": "food",
+      "sku": "Family Meal Bucket 8 Pcs",
+      "category": "combo_set_menu",
+      "expected_bt": [
+        "Fried Chicken"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true,
+      "note": "Known model miss: no BT predicted for fried-chicken bucket meals."
+    },
+    {
+      "id": "f023",
+      "domain": "food",
+      "sku": "Chicken Submarine",
+      "category": "food_dish",
+      "expected_bt": [
+        "Submarine"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f024",
+      "domain": "food",
+      "sku": "Chicken Burger",
+      "category": "food_dish",
+      "expected_bt": [
+        "Burger"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f025",
+      "domain": "food",
+      "sku": "Fish Burger",
+      "category": "seafood_rule_ambiguous",
+      "expected_bt": [
+        "Burger"
+      ],
+      "note": "'Short Eats' GK is hash-seed dependent, so the Seafood rule outcome is not asserted."
+    },
+    {
+      "id": "f026",
+      "domain": "food",
+      "sku": "Iced Coffee",
+      "category": "beverage",
+      "expected_bt": [
+        "Iced Coffee"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f027",
+      "domain": "food",
+      "sku": "Mango Juice",
+      "category": "beverage",
+      "expected_bt": [
+        "Fruit Juice"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f028",
+      "domain": "food",
+      "sku": "Faluda",
+      "category": "beverage",
+      "expected_bt": [
+        "Falooda"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f029",
+      "domain": "food",
+      "sku": "Watalappan",
+      "category": "food_dish",
+      "expected_bt": [
+        "Watalappam"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f030",
+      "domain": "food",
+      "sku": "Chocolate Cake Slice",
+      "category": "food_dish",
+      "expected_bt": [
+        "Cakes"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f031",
+      "domain": "food",
+      "sku": "Vegetable Roti",
+      "category": "food_dish",
+      "expected_bt": [
+        "Roti",
+        "Short eats"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f032",
+      "domain": "food",
+      "sku": "Egg Hopper",
+      "category": "food_dish",
+      "expected_bt": [
+        "Hoppers"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f033",
+      "domain": "food",
+      "sku": "String Hoppers with Dhal Curry",
+      "category": "food_dish",
+      "expected_bt": [
+        "String Hoppers"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f034",
+      "domain": "food",
+      "sku": "Chiken Fried Rice",
+      "category": "typo",
+      "expected_bt": [
+        "Fried Rice"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "f035",
+      "domain": "food",
+      "sku": "Prwn Fried Rice",
+      "category": "typo",
+      "expected_bt": [
+        "Fried Rice"
+      ],
+      "must_have_gk": [
+        "Seafood"
+      ],
+      "note": "Known pipeline miss: the typo 'Prwn' is not resolved to the prawn flavor, so the Seafood rule does not fire."
+    },
+    {
+      "id": "f036",
+      "domain": "food",
+      "sku": "Kotthu Chicken",
+      "category": "typo",
+      "expected_bt": [
+        "Kottu"
+      ],
+      "must_not_have_gk": [
+        "Seafood"
+      ],
+      "critical": true
+    },
+    {
+      "id": "m037",
+      "domain": "market",
+      "sku": "Anchor Butter 200g",
+      "category": "false_positive_trap",
+      "expected_bt": [
+        "Butter"
+      ],
+      "note": "Known model miss: predicts cosmetic 'Body Butter' for dairy butter."
+    },
+    {
+      "id": "m038",
+      "domain": "market",
+      "sku": "Anchor Full Cream Milk Powder 400g",
+      "category": "unit_variant",
+      "expected_bt": [
+        "Milk Powder"
+      ]
+    },
+    {
+      "id": "m039",
+      "domain": "market",
+      "sku": "Anchor Milk Powder 1kg",
+      "category": "unit_variant",
+      "expected_bt": [
+        "Milk Powder"
+      ]
+    },
+    {
+      "id": "m040",
+      "domain": "market",
+      "sku": "Coca Cola 1.5L",
+      "category": "beverage",
+      "expected_bt": [
+        "Coca Cola"
+      ]
+    },
+    {
+      "id": "m041",
+      "domain": "market",
+      "sku": "Coca-Cola 500ml",
+      "category": "beverage",
+      "expected_bt": [
+        "Coca Cola"
+      ]
+    },
+    {
+      "id": "m042",
+      "domain": "market",
+      "sku": "Sprite 1L",
+      "category": "beverage",
+      "expected_bt": [
+        "Sprite"
+      ]
+    },
+    {
+      "id": "m043",
+      "domain": "market",
+      "sku": "Elephant House Ginger Beer 330ml",
+      "category": "beverage",
+      "expected_bt": [
+        "Ginger Beer"
+      ]
+    },
+    {
+      "id": "m044",
+      "domain": "market",
+      "sku": "Basmati Rice 5kg",
+      "category": "unit_variant",
+      "expected_bt": [
+        "Basmati Rice"
+      ]
+    },
+    {
+      "id": "m045",
+      "domain": "market",
+      "sku": "Red Raw Rice 1kg",
+      "category": "unit_variant",
+      "expected_bt": [
+        "Red Raw Rice"
+      ]
+    },
+    {
+      "id": "m046",
+      "domain": "market",
+      "sku": "Dhal 500g",
+      "category": "unit_variant",
+      "expected_bt": [
+        "Dhal"
+      ]
+    },
+    {
+      "id": "m047",
+      "domain": "market",
+      "sku": "Mysoor Dhal 0.5kg",
+      "category": "unit_variant",
+      "expected_bt": [
+        "Dhal"
+      ]
+    },
+    {
+      "id": "m048",
+      "domain": "market",
+      "sku": "Sugar 1kg",
+      "category": "unit_variant",
+      "expected_bt": [
+        "White Sugar",
+        "Sugar"
+      ]
+    },
+    {
+      "id": "m049",
+      "domain": "market",
+      "sku": "White Sugar 500g",
+      "category": "unit_variant",
+      "expected_bt": [
+        "White Sugar"
+      ]
+    },
+    {
+      "id": "m050",
+      "domain": "market",
+      "sku": "Munchee Cream Crackers 490g",
+      "category": "grocery",
+      "expected_bt": [
+        "Biscuit"
+      ]
+    },
+    {
+      "id": "m051",
+      "domain": "market",
+      "sku": "Maliban Marie Biscuits 400g",
+      "category": "grocery",
+      "expected_bt": [
+        "Biscuit"
+      ]
+    },
+    {
+      "id": "m052",
+      "domain": "market",
+      "sku": "Sunlight Soap 110g",
+      "category": "grocery",
+      "expected_bt": [
+        "Detergent Soap"
+      ]
+    },
+    {
+      "id": "m053",
+      "domain": "market",
+      "sku": "Signal Toothpaste 120g",
+      "category": "grocery",
+      "expected_bt": [
+        "Toothpaste"
+      ]
+    },
+    {
+      "id": "m054",
+      "domain": "market",
+      "sku": "Lux Soap 100g",
+      "category": "grocery",
+      "expected_bt": [
+        "Soap"
+      ]
+    },
+    {
+      "id": "m055",
+      "domain": "market",
+      "sku": "Highland Fresh Milk 1L",
+      "category": "beverage",
+      "expected_bt": [
+        "Fresh Milk"
+      ]
+    },
+    {
+      "id": "m056",
+      "domain": "market",
+      "sku": "Kotmale Yoghurt 80g",
+      "category": "grocery",
+      "expected_bt": [
+        "Yoghurt"
+      ]
+    },
+    {
+      "id": "m057",
+      "domain": "market",
+      "sku": "Nestle Milo 400g",
+      "category": "grocery",
+      "expected_bt": [
+        "Milo"
+      ]
+    },
+    {
+      "id": "m058",
+      "domain": "market",
+      "sku": "Lipton Ceylonta Tea 200g",
+      "category": "grocery",
+      "expected_bt": [
+        "Tea Leaves"
+      ]
+    },
+    {
+      "id": "m059",
+      "domain": "market",
+      "sku": "Dilmah Tea Bags 50s",
+      "category": "grocery",
+      "expected_bt": [
+        "Tea Bags"
+      ]
+    },
+    {
+      "id": "m060",
+      "domain": "market",
+      "sku": "Keells Chicken Sausages 500g",
+      "category": "false_positive_trap",
+      "expected_bt": [
+        "Sausage"
+      ]
+    },
+    {
+      "id": "m061",
+      "domain": "market",
+      "sku": "Prima Kottu Mee 400g",
+      "category": "false_positive_trap",
+      "expected_bt": [
+        "Instant Kottu"
+      ]
+    },
+    {
+      "id": "m062",
+      "domain": "market",
+      "sku": "Maggi Noodles 73g",
+      "category": "grocery",
+      "expected_bt": [
+        "Instant Noodles"
+      ]
+    },
+    {
+      "id": "m063",
+      "domain": "market",
+      "sku": "Anchr Butter 200g",
+      "category": "typo",
+      "expected_bt": [
+        "Butter"
+      ]
+    },
+    {
+      "id": "m064",
+      "domain": "market",
+      "sku": "Cocacola 1.5L",
+      "category": "typo",
+      "expected_bt": [
+        "Coca Cola"
+      ]
+    },
+    {
+      "id": "m065",
+      "domain": "market",
+      "sku": "Fish Sauce 200ml",
+      "category": "false_positive_trap",
+      "expected_bt": [
+        "Fish Sauce"
+      ]
+    },
+    {
+      "id": "m066",
+      "domain": "market",
+      "sku": "Prawn Crackers 100g",
+      "category": "false_positive_trap",
+      "expected_bt": [
+        "Prawn Crackers"
+      ],
+      "note": "Known model miss: predicts 'Biscuit'; catalog has 'Prawn Crackers'."
+    },
+    {
+      "id": "m067",
+      "domain": "market",
+      "sku": "Chicken Stock Cubes 8s",
+      "category": "false_positive_trap",
+      "expected_bt": [
+        "Chicken Cube"
+      ]
+    }
+  ]
+}

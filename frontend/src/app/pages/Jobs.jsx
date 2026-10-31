@@ -174,13 +174,16 @@ export default function Jobs() {
                 </StyledTableRow>
               ) : (
                 serverJobs.map((row) => {
-                  const canCancel = ['running', 'queued'].includes(row.status);
+                  const isUpload = row.task === 'upload' || row.type === 'upload';
+                  const canCancel = ['running', 'queued'].includes(row.status) && !isUpload;
                   const rowId = row.id;
                   return (
                     <StyledTableRow
                       key={row.id}
                       hover
                       onClick={() => {
+                        if (isUpload && row.status === 'failed') return;
+                        
                         if (['running', 'queued'].includes(row.status)) {
                           setModalJobId(row.id);
                         } else if (row.status === 'completed') {
@@ -229,23 +232,25 @@ export default function Jobs() {
                               </IconButton>
                             </span>
                           </Tooltip>
-                          <Tooltip title="Retry job">
-                            <IconButton
-                              aria-label="Retry job"
-                              size="small"
-                              disabled={retryMutation.isPending}
-                              onClick={() => {
-                                setConfirm({
-                                  open: true,
-                                  title: 'Retry Job',
-                                  message: `Are you sure you want to retry Job ${rowId}?`,
-                                  onConfirm: () => retryMutation.mutate(rowId),
-                                });
-                              }}
-                            >
-                              <RotateCw size={16} />
-                            </IconButton>
-                          </Tooltip>
+                          {!isUpload && (
+                            <Tooltip title="Retry job">
+                              <IconButton
+                                aria-label="Retry job"
+                                size="small"
+                                disabled={retryMutation.isPending}
+                                onClick={() => {
+                                  setConfirm({
+                                    open: true,
+                                    title: 'Retry Job',
+                                    message: `Are you sure you want to retry Job ${rowId}?`,
+                                    onConfirm: () => retryMutation.mutate(rowId),
+                                  });
+                                }}
+                              >
+                                <RotateCw size={16} />
+                              </IconButton>
+                            </Tooltip>
+                          )}
                         </Box>
                       </TableCell>
                     </StyledTableRow>

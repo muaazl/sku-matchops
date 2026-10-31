@@ -28,7 +28,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardStats, getTagStats } from '../api';
 
-function StatCard({ icon: Icon, label, value, subtext, color }) {
+export function StatCard({ icon: Icon, label, value, subtext, color }) {
   return (
     <Card sx={{ height: '100%' }}>
       <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -98,7 +98,23 @@ export default function Dashboard() {
   };
 
   const confidenceDistribution = dashboardData?.confidenceDistribution || [];
-  const matchSourceDistribution = dashboardData?.matchSourceDistribution || [];
+  const rawSources = dashboardData?.matchSourceDistribution || [];
+  const matchSourceDistribution = React.useMemo(() => {
+    const map = {};
+    for (const item of rawSources) {
+      const src = (item.source || '').trim().toLowerCase();
+      const norm = src === 'classifier' ? 'Classifier' : 'Matcher';
+      map[norm] = (map[norm] || 0) + (item.count || 0);
+    }
+    const total = Object.values(map).reduce((a, b) => a + b, 0);
+    return Object.entries(map)
+      .filter((entry) => entry[1] > 0)
+      .map(([source, count]) => ({
+        source,
+        count,
+        pct: total > 0 ? Math.round((count / total) * 1000) / 10 : 0,
+      }));
+  }, [rawSources]);
   const domainBreakdown = dashboardData?.domainBreakdown || {};
   const volumeTrend = dashboardData?.volumeTrend || [];
 

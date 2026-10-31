@@ -1,4 +1,5 @@
 import hashlib
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -7,6 +8,7 @@ from starlette.responses import Response
 # buffering large bodies (catalog search pages, CSV/XLSX exports, log dumps)
 # into memory just to MD5-hash them.
 ETAG_MAX_BODY_SIZE = 256 * 1024  # 256 KB
+
 
 class ETagMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -34,9 +36,11 @@ class ETagMiddleware(BaseHTTPMiddleware):
         body_bytes = b""
         if hasattr(response, "body_iterator"):
             response_body = [section async for section in response.body_iterator]
+
             async def async_iter():
                 for chunk in response_body:
                     yield chunk
+
             response.body_iterator = async_iter()
             body_bytes = b"".join(response_body)
         elif hasattr(response, "body"):
@@ -44,7 +48,7 @@ class ETagMiddleware(BaseHTTPMiddleware):
 
         # Calculate MD5 hash for ETag
         etag = f'W/"{hashlib.md5(body_bytes).hexdigest()}"'
-        
+
         # Check If-None-Match header
         if_none_match = request.headers.get("if-none-match")
         if if_none_match and if_none_match == etag:

@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "matchops",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "matchops",
+      "Username": "matchops",
+      "SSLMode": "prefer"
+    }
+  }
+}

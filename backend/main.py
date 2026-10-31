@@ -4,42 +4,46 @@ SKU MatchOps – FastAPI Application Entry Point (Lightweight API Gateway)
 
 import logging
 import os
-import sqlite3
 import sys
 import threading
-import warnings
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from backend.app.api.routes import api_router
+from backend.app.core.db import get_engine
 from backend.app.middleware.audit_logging import AuditLoggingMiddleware
 from backend.app.middleware.etag import ETagMiddleware
 from backend.app.services.meilisearch_service import check_and_sync_meilisearch
-from scripts.database.migrate import migrate
-from engine.core import config
+from engine import config
+from engine.core.db import init_db
+from engine.core.observability import TraceIdMiddleware, configure_logging
+from engine.pipeline.task_queue import get_task_queue
 from engine.rules_engine import refresh_rules_cache
-from backend.app.core.db import DB_PATH
 
 # Configure logging with standard stream and file handlers
-LOG_DIR = getattr(config, "LOG_DIR", config.DB_DIR)
+LOG_DIR = config.LOG_DIR
 os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = getattr(config, "LOG_FILE", os.path.join(LOG_DIR, "app.log"))
+LOG_FILE = config.LOG_FILE
 
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 for handler in root_logger.handlers[:]:
     root_logger.removeHandler(handler)
 
-formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+formatter = logging.Formatter(
+    "%(asctime)s - [%(levelname)s] - %(name)s - [%(filename)s:%(lineno)d] - %(message)s"
+)
 
 sh = logging.StreamHandler(sys.stdout)
 sh.setFormatter(formatter)
 root_logger.addHandler(sh)
 
-fh = logging.FileHandler(LOG_FILE, encoding='utf-8')
+fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
 fh.setFormatter(formatter)
 root_logger.addHandler(fh)
+configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured output
 
 logger = logging.getLogger("matchops.server")
 
@@ -51,14 +55,28 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:4173", "http://127.0.0.1:5173", "https://sku-matchops.vercel.app"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:5173",
+        "https://sku-matchops.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "If-None-Match", "X-API-Key"],
-    expose_headers=["X-Total-Count"],
+    allow_headers=[
+        "Content-Type",
+        "If-None-Match",
+        "X-API-Key",
+        "Authorization",
+        "X-Tenant-ID",
+        "X-Request-ID",
+    ],
+    expose_headers=["X-Total-Count", "X-Request-ID"],
 )
 app.add_middleware(AuditLoggingMiddleware)
 app.add_middleware(ETagMiddleware)
+# Outermost: the trace id is bound before audit logging and every handler run
+app.add_middleware(TraceIdMiddleware)
 
 app.include_router(api_router)
 
@@ -67,10 +85,10 @@ app.include_router(api_router)
 def startup_event():
     """Startup sequence: Run schema migrations and sync search engine."""
     logger.info("Executing Startup Sequence for Backend Gateway...")
-    
+
     # Auto-run schema migrations on startup
     try:
-        migrate()
+        init_db()
         logger.info("Database schemas verified/migrated.")
     except Exception as e:
         logger.error(f"Failed to execute database migrations on startup: {e}")
@@ -85,31 +103,39 @@ def startup_event():
     # sit stuck in that state forever with no progress updates ever arriving again. Flip them
     # to 'failed' with a clear message so they show up as actionable — the existing "Retry"
     # button re-submits them from their stored input SKUs.
+    # Jobs still held by the Redis queue survive restarts and must not be failed here.
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=60.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=60000;")
-        cur = conn.execute(
-            """
-            UPDATE jobs SET
-                status = 'failed',
-                current_stage = 'failed',
-                error_message = 'Interrupted by a service restart. Use Retry to resubmit.',
-                completed_at = datetime('now')
-            WHERE status IN ('queued', 'running')
-            """
-        )
-        stuck_count = cur.rowcount
-        conn.execute(
-            """
-            UPDATE batches SET status = 'failed', completed_at = datetime('now')
-            WHERE status IN ('queued', 'running')
-            """
-        )
-        conn.commit()
-        conn.close()
+        queue = get_task_queue()
+        live_job_ids = list(queue.tracked_job_ids()) if queue is not None else []
+    except Exception as e:
+        logger.warning(f"Redis queue unreachable at startup ({e}); treating no jobs as queued.")
+        live_job_ids = []
+
+    try:
+        with get_engine().begin() as conn:
+            cur = conn.execute(
+                text("""
+                UPDATE jobs SET
+                    status = 'failed',
+                    current_stage = 'failed',
+                    error_message = 'Interrupted by a service restart. Use Retry to resubmit.',
+                    completed_at = now()
+                WHERE status IN ('queued', 'running') AND NOT (id = ANY(:live))
+                """),
+                {"live": live_job_ids},
+            )
+            stuck_count = cur.rowcount
+            conn.execute(
+                text("""
+                UPDATE batches SET status = 'failed', completed_at = now()
+                WHERE status IN ('queued', 'running') AND NOT (id = ANY(:live))
+                """),
+                {"live": live_job_ids},
+            )
         if stuck_count:
-            logger.warning(f"Marked {stuck_count} job(s) left in queued/running state as failed after restart.")
+            logger.warning(
+                f"Marked {stuck_count} job(s) left in queued/running state as failed after restart."
+            )
     except Exception as e:
         logger.error(f"Failed to reconcile stuck jobs on startup: {e}")
 

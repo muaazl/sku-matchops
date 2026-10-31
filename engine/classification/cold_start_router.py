@@ -1,17 +1,14 @@
 import enum
-import hashlib
-import json
 import logging
 import os
-import sqlite3
 import threading
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from engine.core import config
+from engine import config
 from engine.nlp.embedding_engine import EmbeddingEngine
 
 logger = logging.getLogger("matchops.cold_start_router")
@@ -19,9 +16,10 @@ logger = logging.getLogger("matchops.cold_start_router")
 
 class ClassLifecycleTier(enum.Enum):
     """Lifecycle tier of a Basic Type category based on historical manual examples N_c."""
-    TIER_1_ZERO_SHOT = 1      # N_c == 0 (Pure Zero-Shot Cross-Encoder)
-    TIER_2_FEW_SHOT = 2       # 1 <= N_c < 15 (Cosine-Weighted k-NN + ML-kNN)
-    TIER_3_WARM_CENTROID = 3   # N_c >= 15 (Dense Prototypes / Matrix Multiplication)
+
+    TIER_1_ZERO_SHOT = 1  # N_c == 0 (Pure Zero-Shot Cross-Encoder)
+    TIER_2_FEW_SHOT = 2  # 1 <= N_c < 15 (Cosine-Weighted k-NN + ML-kNN)
+    TIER_3_WARM_CENTROID = 3  # N_c >= 15 (Dense Prototypes / Matrix Multiplication)
 
 
 class TaxonomyLifecycleRegistry:
@@ -33,8 +31,8 @@ class TaxonomyLifecycleRegistry:
     def __init__(
         self,
         domain: str = config.DOMAIN_MARKET,
-        cache_dir: Optional[str] = None,
-        few_shot_threshold: int = 15,
+        cache_dir: str | None = None,
+        few_shot_threshold: int = config.LIFECYCLE_FEW_SHOT_THRESHOLD,
     ):
         self.domain = domain
         self.cache_dir = cache_dir or config.CACHE_DIR
@@ -42,23 +40,23 @@ class TaxonomyLifecycleRegistry:
         self._lock = threading.RLock()
 
         # Class counts N_c and lifecycle tier assignment
-        self.class_counts: Dict[str, int] = {}
-        self.class_tiers: Dict[str, ClassLifecycleTier] = {}
-        self.class_descriptions: Dict[str, str] = {}
+        self.class_counts: dict[str, int] = {}
+        self.class_tiers: dict[str, ClassLifecycleTier] = {}
+        self.class_descriptions: dict[str, str] = {}
 
         # Partitioned class sets
-        self.zero_shot_classes: List[str] = []
-        self.few_shot_classes: List[str] = []
-        self.warm_classes: List[str] = []
+        self.zero_shot_classes: list[str] = []
+        self.few_shot_classes: list[str] = []
+        self.warm_classes: list[str] = []
 
         # Warm Centroids (shape: M_warm x 1024, L2 normalized)
         self.warm_centroids: np.ndarray = np.empty((0, 1024), dtype=np.float32)
-        self.warm_index_to_class: List[str] = []
-        self.class_to_warm_index: Dict[str, int] = {}
+        self.warm_index_to_class: list[str] = []
+        self.class_to_warm_index: dict[str, int] = {}
 
         # Zero-Shot bi-encoder description embeddings for fast pre-filtering (M_zero x 1024)
         self.zero_shot_embeddings: np.ndarray = np.empty((0, 1024), dtype=np.float32)
-        self.zero_shot_index_to_class: List[str] = []
+        self.zero_shot_index_to_class: list[str] = []
 
     def get_tier(self, class_name: str) -> ClassLifecycleTier:
         with self._lock:
@@ -73,7 +71,7 @@ class TaxonomyLifecycleRegistry:
         tag: str,
         description: str = "",
         sample_count: int = 0,
-        embed_engine: Optional[EmbeddingEngine] = None,
+        embed_engine: EmbeddingEngine | None = None,
     ):
         """
         Dynamically registers a new Basic Type tag into the lifecycle registry.
@@ -93,7 +91,10 @@ class TaxonomyLifecycleRegistry:
             self._partition_classes()
 
             # If it's a zero-shot tag and embed_engine is provided, compute its description embedding
-            if self.class_tiers[clean_tag] == ClassLifecycleTier.TIER_1_ZERO_SHOT and embed_engine is not None:
+            if (
+                self.class_tiers[clean_tag] == ClassLifecycleTier.TIER_1_ZERO_SHOT
+                and embed_engine is not None
+            ):
                 self._update_single_zero_shot_embedding(clean_tag, embed_engine)
 
     def _partition_classes(self):
@@ -120,7 +121,11 @@ class TaxonomyLifecycleRegistry:
     def _update_single_zero_shot_embedding(self, tag: str, embed_engine: EmbeddingEngine):
         """Appends or updates the bi-encoder embedding for a single zero-shot class."""
         desc_text = self.class_descriptions.get(tag, tag)
-        formatted_prompt = f"Basic Type: {tag} - {desc_text}" if desc_text and desc_text != tag else f"Basic Type: {tag}"
+        formatted_prompt = (
+            f"Basic Type: {tag} - {desc_text}"
+            if desc_text and desc_text != tag
+            else f"Basic Type: {tag}"
+        )
         res = embed_engine.encode([formatted_prompt])
         vec = res["dense"][0].astype(np.float32)
 
@@ -136,10 +141,10 @@ class TaxonomyLifecycleRegistry:
 
     def sync_from_catalog(
         self,
-        registered_bts: List[str],
-        descriptions: Dict[str, str],
-        cat_df: Optional[pd.DataFrame] = None,
-        embed_engine: Optional[EmbeddingEngine] = None,
+        registered_bts: list[str],
+        descriptions: dict[str, str],
+        cat_df: pd.DataFrame | None = None,
+        embed_engine: EmbeddingEngine | None = None,
         force_rebuild: bool = False,
     ):
         """
@@ -153,7 +158,7 @@ class TaxonomyLifecycleRegistry:
                     self.class_descriptions[clean_bt] = descriptions.get(clean_bt, clean_bt)
 
             # 2. Derive class counts N_c
-            counts: Dict[str, int] = {}
+            counts: dict[str, int] = {}
             if cat_df is not None and not cat_df.empty:
                 bt_col = None
                 for col in ["basictype", "BasicType", "basic_type", "BT"]:
@@ -163,20 +168,27 @@ class TaxonomyLifecycleRegistry:
                 if bt_col:
                     vc = cat_df[bt_col].astype(str).str.strip().value_counts()
                     counts = {str(k): int(v) for k, v in vc.items() if str(k).strip()}
-            elif os.path.exists(config.DB_PATH):
-                # Fall back to SQLite catalog_items table
+            else:
+                # Fall back to the catalog_items table
                 try:
-                    conn = sqlite3.connect(config.DB_PATH)
-                    cur = conn.cursor()
-                    cur.execute(
-                        "SELECT basictype, COUNT(*) FROM catalog_items WHERE domain = ? GROUP BY basictype",
-                        (self.domain,),
-                    )
-                    rows = cur.fetchall()
-                    conn.close()
-                    counts = {str(r[0]).strip(): int(r[1]) for r in rows if r[0] and str(r[0]).strip()}
+                    from sqlalchemy import text
+
+                    from engine.core.db import get_connection
+
+                    with get_connection() as conn:
+                        rows = conn.execute(
+                            text(
+                                "SELECT basictype, COUNT(*) FROM catalog_items WHERE domain = :domain GROUP BY basictype"
+                            ),
+                            {"domain": self.domain},
+                        ).fetchall()
+                    counts = {
+                        str(r[0]).strip(): int(r[1]) for r in rows if r[0] and str(r[0]).strip()
+                    }
                 except Exception as db_err:
-                    logger.warning(f"[{self.domain}] Could not read class counts from SQLite: {db_err}")
+                    logger.warning(
+                        f"[{self.domain}] Could not read class counts from the database: {db_err}"
+                    )
 
             # Assign counts for all known BTs
             self.class_counts = {bt: counts.get(bt, 0) for bt in self.class_descriptions.keys()}
@@ -201,8 +213,8 @@ class TaxonomyLifecycleRegistry:
 
     def _build_or_load_centroids(
         self,
-        cat_df: Optional[pd.DataFrame],
-        embed_engine: Optional[EmbeddingEngine],
+        cat_df: pd.DataFrame | None,
+        embed_engine: EmbeddingEngine | None,
         force_rebuild: bool,
     ):
         """Precomputes or loads L2-normalized centroid vectors for all warm classes (N_c >= 15)."""
@@ -217,16 +229,22 @@ class TaxonomyLifecycleRegistry:
                 if set(cached_classes) == set(self.warm_classes):
                     self.warm_centroids = cached["centroids"]
                     self.warm_index_to_class = cached_classes
-                    self.class_to_warm_index = {c: i for i, c in enumerate(self.warm_index_to_class)}
+                    self.class_to_warm_index = {
+                        c: i for i, c in enumerate(self.warm_index_to_class)
+                    }
                     logger.info(
                         f"[CENTROIDS] Loaded {len(self.warm_index_to_class)} warm centroids from cache ({self.domain})."
                     )
                     return
             except Exception as e:
-                logger.warning(f"[CENTROIDS] Cache read failed for {self.domain} ({e}); recomputing.")
+                logger.warning(
+                    f"[CENTROIDS] Cache read failed for {self.domain} ({e}); recomputing."
+                )
 
         if cat_df is None or cat_df.empty:
-            logger.debug(f"[CENTROIDS] No cat_df available for {self.domain} centroid precomputation.")
+            logger.debug(
+                f"[CENTROIDS] No cat_df available for {self.domain} centroid precomputation."
+            )
             return
 
         bt_col = None
@@ -240,10 +258,24 @@ class TaxonomyLifecycleRegistry:
         df_clean = cat_df.dropna(subset=[bt_col]).copy()
         df_clean[bt_col] = df_clean[bt_col].astype(str).str.strip()
 
-        names = df_clean["Name"].astype(str).str.strip().tolist() if "Name" in df_clean.columns else [""] * len(df_clean)
-        descs = df_clean["Description"].astype(str).str.strip().tolist() if "Description" in df_clean.columns else [""] * len(df_clean)
-        col_cat = "category" if "category" in df_clean.columns else ("Category" if "Category" in df_clean.columns else "")
-        cats = df_clean[col_cat].astype(str).str.strip().tolist() if col_cat else [""] * len(df_clean)
+        names = (
+            df_clean["Name"].astype(str).str.strip().tolist()
+            if "Name" in df_clean.columns
+            else [""] * len(df_clean)
+        )
+        descs = (
+            df_clean["Description"].astype(str).str.strip().tolist()
+            if "Description" in df_clean.columns
+            else [""] * len(df_clean)
+        )
+        col_cat = (
+            "category"
+            if "category" in df_clean.columns
+            else ("Category" if "Category" in df_clean.columns else "")
+        )
+        cats = (
+            df_clean[col_cat].astype(str).str.strip().tolist() if col_cat else [""] * len(df_clean)
+        )
 
         centroids_list = []
         valid_warm_classes = []
@@ -253,13 +285,18 @@ class TaxonomyLifecycleRegistry:
         if os.path.exists(weighted_cache_path):
             try:
                 sku_cache = joblib.load(weighted_cache_path)
-                keys = [f"{str(n).strip()}||{str(d).strip()}||{str(c).strip()}" for n, d, c in zip(names, descs, cats)]
+                keys = [
+                    f"{str(n).strip()}||{str(d).strip()}||{str(c).strip()}"
+                    for n, d, c in zip(names, descs, cats)
+                ]
                 labels = df_clean[bt_col].values
 
                 # Group by warm class and calculate centroids directly
                 for c in self.warm_classes:
                     cls_indices = np.where(labels == c)[0]
-                    cls_vecs = [sku_cache[keys[idx]] for idx in cls_indices if keys[idx] in sku_cache]
+                    cls_vecs = [
+                        sku_cache[keys[idx]] for idx in cls_indices if keys[idx] in sku_cache
+                    ]
                     if not cls_vecs:
                         continue
                     class_matrix = np.vstack(cls_vecs)
@@ -273,7 +310,9 @@ class TaxonomyLifecycleRegistry:
                     f"[CENTROIDS] Precomputed {len(valid_warm_classes)} centroids from cached SKU embeddings ({self.domain})."
                 )
             except Exception as cache_err:
-                logger.warning(f"[CENTROIDS] Error reading weighted_skus_cache ({cache_err}); skipping.")
+                logger.warning(
+                    f"[CENTROIDS] Error reading weighted_skus_cache ({cache_err}); skipping."
+                )
 
         if centroids_list:
             self.warm_centroids = np.vstack(centroids_list).astype(np.float32)
@@ -319,8 +358,8 @@ class Tier1ZeroShotClassifier:
         self,
         embed_engine: EmbeddingEngine,
         registry: TaxonomyLifecycleRegistry,
-        confidence_threshold: float = 0.50,
-        max_candidate_cross_eval: int = 5,
+        confidence_threshold: float = config.REVIEW_THRESHOLD,
+        max_candidate_cross_eval: int = config.ZERO_SHOT_MAX_CANDIDATES,
     ):
         self.embed_engine = embed_engine
         self.registry = registry
@@ -331,8 +370,8 @@ class Tier1ZeroShotClassifier:
         self,
         sku_name: str,
         sku_description: str = "",
-        query_dense: Optional[np.ndarray] = None,
-    ) -> Tuple[str, float, str]:
+        query_dense: np.ndarray | None = None,
+    ) -> tuple[str, float, str]:
         """
         Evaluates an SKU against zero-shot classes.
         Returns: (bt_label, confidence, source).
@@ -350,10 +389,14 @@ class Tier1ZeroShotClassifier:
                 q_vec = query_dense.reshape(1, -1)
                 sims = (q_vec @ zs_embs.T)[0]
                 top_k_indices = np.argsort(sims)[::-1][: self.max_candidate_cross_eval]
-                candidate_classes = [self.registry.zero_shot_index_to_class[i] for i in top_k_indices]
+                candidate_classes = [
+                    self.registry.zero_shot_index_to_class[i] for i in top_k_indices
+                ]
 
         # 2. Format cross-encoder pairs: (sku_name, "Basic Type: {bt_name} - {bt_description}")
-        query_text = f"{sku_name} {sku_description}".strip() if sku_description else sku_name.strip()
+        query_text = (
+            f"{sku_name} {sku_description}".strip() if sku_description else sku_name.strip()
+        )
         pairs = []
         for bt in candidate_classes:
             desc = self.registry.class_descriptions.get(bt, "")
@@ -377,10 +420,10 @@ class Tier1ZeroShotClassifier:
 
     def batch_predict(
         self,
-        sku_names: List[str],
-        sku_descriptions: Optional[List[str]] = None,
-        query_dense_matrix: Optional[np.ndarray] = None,
-    ) -> List[Tuple[str, float, str]]:
+        sku_names: list[str],
+        sku_descriptions: list[str] | None = None,
+        query_dense_matrix: np.ndarray | None = None,
+    ) -> list[tuple[str, float, str]]:
         """Batch version of Tier 1 Zero-Shot prediction with fully vectorized Cross-Encoder inference."""
         n = len(sku_names)
         if n == 0:
@@ -395,15 +438,22 @@ class Tier1ZeroShotClassifier:
 
         # 1. Candidate Selection
         candidate_classes_per_sku = [zero_shot_classes] * n
-        if len(zero_shot_classes) > self.max_candidate_cross_eval and query_dense_matrix is not None:
+        if (
+            len(zero_shot_classes) > self.max_candidate_cross_eval
+            and query_dense_matrix is not None
+        ):
             self.registry.ensure_zero_shot_embeddings(self.embed_engine)
             zs_embs = self.registry.zero_shot_embeddings
             if zs_embs.shape[0] == len(zero_shot_classes):
                 # Matrix multiplication: (n, 1024) @ (1024, M_zero) -> (n, M_zero)
                 sims_matrix = query_dense_matrix @ zs_embs.T
                 for i in range(n):
-                    top_k_indices = np.argsort(sims_matrix[i])[::-1][: self.max_candidate_cross_eval]
-                    candidate_classes_per_sku[i] = [self.registry.zero_shot_index_to_class[idx] for idx in top_k_indices]
+                    top_k_indices = np.argsort(sims_matrix[i])[::-1][
+                        : self.max_candidate_cross_eval
+                    ]
+                    candidate_classes_per_sku[i] = [
+                        self.registry.zero_shot_index_to_class[idx] for idx in top_k_indices
+                    ]
 
         # 2. Format cross-encoder pairs for all SKUs
         all_pairs = []
@@ -418,7 +468,9 @@ class Tier1ZeroShotClassifier:
 
             for bt in candidate_classes_per_sku[i]:
                 desc = self.registry.class_descriptions.get(bt, "")
-                bt_str = f"Basic Type: {bt} - {desc}" if desc and desc != bt else f"Basic Type: {bt}"
+                bt_str = (
+                    f"Basic Type: {bt} - {desc}" if desc and desc != bt else f"Basic Type: {bt}"
+                )
                 all_pairs.append([query_text, bt_str])
                 flat_meta.append((i, bt))
 
@@ -442,7 +494,7 @@ class Tier1ZeroShotClassifier:
                 best_conf_per_sku[sku_idx] = conf
                 best_class_per_sku[sku_idx] = bt
 
-        results: List[Tuple[str, float, str]] = []
+        results: list[tuple[str, float, str]] = []
         for i in range(n):
             if best_conf_per_sku[i] >= self.confidence_threshold:
                 results.append((best_class_per_sku[i], best_conf_per_sku[i], "zero-shot"))
@@ -466,9 +518,9 @@ class Tier2FewShotClassifier:
         self,
         registry: TaxonomyLifecycleRegistry,
         vector_store: Any,
-        top_k: int = 15,
-        confidence_threshold: float = 0.50,
-        gk_weight_threshold: float = 0.35,
+        top_k: int = config.FEW_SHOT_TOP_K,
+        confidence_threshold: float = config.REVIEW_THRESHOLD,
+        gk_weight_threshold: float = config.FEW_SHOT_GK_WEIGHT_THRESHOLD,
     ):
         self.registry = registry
         self.vector_store = vector_store
@@ -478,8 +530,8 @@ class Tier2FewShotClassifier:
 
     def evaluate_neighbors(
         self,
-        neighbor_hits: List[Dict[str, Any]],
-    ) -> Tuple[str, float, List[str], str]:
+        neighbor_hits: list[dict[str, Any]],
+    ) -> tuple[str, float, list[str], str]:
         """
         Computes cosine-weighted class probabilities and multi-label generic keywords from top-k neighbors.
         Returns: (best_few_shot_bt, probability, propagated_gks, source).
@@ -500,7 +552,12 @@ class Tier2FewShotClassifier:
             bt = str(hit.get("basictype") or hit.get("BasicType") or "").strip()
             bts.append(bt)
 
-            raw_gk = str(hit.get("Generic keywords") or hit.get("GenericKeywords") or hit.get("generic_keywords") or "")
+            raw_gk = str(
+                hit.get("Generic keywords")
+                or hit.get("GenericKeywords")
+                or hit.get("generic_keywords")
+                or ""
+            )
             gks = [tag.strip() for tag in raw_gk.split(",") if tag.strip()]
             gks_per_hit.append(gks)
 
@@ -509,14 +566,14 @@ class Tier2FewShotClassifier:
             return "", 0.0, [], "few-shot"
 
         # Calculate class probabilities: P(c | x) = sum_{y_i = c} sim / sum sim
-        class_sim_sums: Dict[str, float] = {}
+        class_sim_sums: dict[str, float] = {}
         for bt, sim in zip(bts, sims):
             if bt:
                 class_sim_sums[bt] = class_sim_sums.get(bt, 0.0) + sim
 
         # Prioritize classes that reside in Tier 2 (1 <= N_c < 15)
-        few_shot_class_probs: Dict[str, float] = {}
-        all_class_probs: Dict[str, float] = {}
+        few_shot_class_probs: dict[str, float] = {}
+        all_class_probs: dict[str, float] = {}
 
         for bt, sim_sum in class_sim_sums.items():
             prob = sim_sum / total_sim
@@ -537,25 +594,28 @@ class Tier2FewShotClassifier:
 
         # Multi-label Generic Keyword Propagation (ML-kNN):
         # W(w | x) = sum_{w in GK_i} sim / total_sim
-        gk_weights: Dict[str, float] = {}
+        gk_weights: dict[str, float] = {}
         for gks, sim in zip(gks_per_hit, sims):
             for kw in gks:
                 gk_weights[kw] = gk_weights.get(kw, 0.0) + sim
 
         propagated_gks = [
-            kw for kw, weight_sum in sorted(gk_weights.items(), key=lambda x: -x[1])
+            kw
+            for kw, weight_sum in sorted(gk_weights.items(), key=lambda x: -x[1])
             if (weight_sum / total_sim) >= self.gk_weight_threshold
         ]
 
         return best_bt, best_prob, propagated_gks, "few-shot"
 
-    def predict(self, dense_vec: np.ndarray, domain: str) -> Tuple[str, float, List[str], str]:
+    def predict(self, dense_vec: np.ndarray, domain: str) -> tuple[str, float, list[str], str]:
         """Queries Qdrant for nearest neighbors and executes Tier 2 few-shot matching."""
         if self.vector_store is None:
             return "", 0.0, [], "few-shot"
 
         try:
-            hits = self.vector_store.search_catalog_neighbors(dense_vec, domain=domain, top_k=self.top_k)
+            hits = self.vector_store.search_catalog_neighbors(
+                dense_vec, domain=domain, top_k=self.top_k
+            )
             return self.evaluate_neighbors(hits)
         except Exception as e:
             logger.warning(f"[{domain}] Tier 2 nearest neighbors query failed: {e}")
@@ -563,9 +623,9 @@ class Tier2FewShotClassifier:
 
     def batch_predict(
         self,
-        dense_vecs: List[np.ndarray],
+        dense_vecs: list[np.ndarray],
         domain: str,
-    ) -> List[Tuple[str, float, List[str], str]]:
+    ) -> list[tuple[str, float, list[str], str]]:
         """Batch-queries Qdrant and evaluates Tier 2 few-shot matching."""
         n = len(dense_vecs)
         if n == 0:
@@ -575,7 +635,9 @@ class Tier2FewShotClassifier:
             return [("", 0.0, [], "few-shot")] * n
 
         try:
-            batch_hits = self.vector_store.search_batch_catalog_neighbors(dense_vecs, domain=domain, top_k=self.top_k)
+            batch_hits = self.vector_store.search_batch_catalog_neighbors(
+                dense_vecs, domain=domain, top_k=self.top_k
+            )
             return [self.evaluate_neighbors(hits) for hits in batch_hits]
         except Exception as e:
             logger.warning(f"[{domain}] Tier 2 batch nearest neighbors query failed: {e}")
@@ -593,14 +655,14 @@ class Tier3CentroidClassifier:
     def __init__(
         self,
         registry: TaxonomyLifecycleRegistry,
-        tau: float = 0.05,
-        confidence_threshold: float = 0.50,
+        tau: float = config.COLD_START_TAU,
+        confidence_threshold: float = config.REVIEW_THRESHOLD,
     ):
         self.registry = registry
         self.tau = tau
         self.confidence_threshold = confidence_threshold
 
-    def predict(self, dense_vec: np.ndarray) -> Tuple[str, float, str]:
+    def predict(self, dense_vec: np.ndarray) -> tuple[str, float, str]:
         """Calculates temperature-scaled class probability against warm centroids."""
         warm_protos = self.registry.warm_centroids
         if warm_protos.shape[0] == 0:
@@ -615,7 +677,7 @@ class Tier3CentroidClassifier:
 
         return best_class, best_conf, "trained"
 
-    def batch_predict(self, dense_vecs: np.ndarray) -> List[Tuple[str, float, str]]:
+    def batch_predict(self, dense_vecs: np.ndarray) -> list[tuple[str, float, str]]:
         """Batch temperature-scaled matrix multiplication against warm centroids."""
         warm_protos = self.registry.warm_centroids
         n = dense_vecs.shape[0]
@@ -654,11 +716,11 @@ class ColdStartRouter:
         domain: str,
         embed_engine: EmbeddingEngine,
         vector_store: Any,
-        descriptions: Dict[str, Any],
-        cat_df: Optional[pd.DataFrame] = None,
-        cache_dir: Optional[str] = None,
-        few_shot_threshold: int = 15,
-        tau: float = 0.05,
+        descriptions: dict[str, Any],
+        cat_df: pd.DataFrame | None = None,
+        cache_dir: str | None = None,
+        few_shot_threshold: int = config.LIFECYCLE_FEW_SHOT_THRESHOLD,
+        tau: float = config.COLD_START_TAU,
     ):
         self.domain = domain
         self.embed_engine = embed_engine
@@ -716,8 +778,8 @@ class ColdStartRouter:
         dense_vec: np.ndarray,
         sku_name: str = "",
         sku_description: str = "",
-        price: Optional[float] = None,
-    ) -> Tuple[str, float, str, List[str]]:
+        price: float | None = None,
+    ) -> tuple[str, float, str, list[str]]:
         """
         Routes a single SKU through the multi-tier hierarchy.
         Returns: (predicted_bt, confidence, source, propagated_gks)
@@ -733,7 +795,10 @@ class ColdStartRouter:
         few_shot_tag, few_shot_conf, few_shot_gks, few_shot_src = self.tier2_few_shot.predict(
             dense_vec, domain=self.domain
         )
-        if few_shot_tag and self.registry.get_tier(few_shot_tag) == ClassLifecycleTier.TIER_2_FEW_SHOT:
+        if (
+            few_shot_tag
+            and self.registry.get_tier(few_shot_tag) == ClassLifecycleTier.TIER_2_FEW_SHOT
+        ):
             if few_shot_conf >= config.REVIEW_THRESHOLD:
                 return few_shot_tag, few_shot_conf, few_shot_src, few_shot_gks
 
@@ -759,10 +824,10 @@ class ColdStartRouter:
     def route_batch(
         self,
         dense_vecs: np.ndarray,
-        sku_names: Optional[List[str]] = None,
-        sku_descriptions: Optional[List[str]] = None,
-        prices: Optional[List[float]] = None,
-    ) -> List[Tuple[str, float, str, List[str]]]:
+        sku_names: list[str] | None = None,
+        sku_descriptions: list[str] | None = None,
+        prices: list[float] | None = None,
+    ) -> list[tuple[str, float, str, list[str]]]:
         """
         Batch version of multi-tier routing.
         Optimized to process warm centroids via BLAS, and selectively invoke Qdrant/Cross-Encoder.
@@ -776,7 +841,7 @@ class ColdStartRouter:
         if sku_descriptions is None:
             sku_descriptions = [""] * n
 
-        results: List[Optional[Tuple[str, float, str, List[str]]]] = [None] * n
+        results: list[tuple[str, float, str, list[str]] | None] = [None] * n
 
         # Pass 1: Warm Centroid Batch Screening (Tier 3)
         warm_preds = []
@@ -801,7 +866,11 @@ class ColdStartRouter:
         still_unresolved = []
         for list_idx, orig_idx in enumerate(unresolved_indices):
             fs_tag, fs_conf, fs_gks, fs_src = few_shot_results[list_idx]
-            if fs_tag and self.registry.get_tier(fs_tag) == ClassLifecycleTier.TIER_2_FEW_SHOT and fs_conf >= config.REVIEW_THRESHOLD:
+            if (
+                fs_tag
+                and self.registry.get_tier(fs_tag) == ClassLifecycleTier.TIER_2_FEW_SHOT
+                and fs_conf >= config.REVIEW_THRESHOLD
+            ):
                 results[orig_idx] = (fs_tag, fs_conf, fs_src, fs_gks)
             else:
                 still_unresolved.append((orig_idx, fs_tag, fs_conf, fs_gks, fs_src))
@@ -812,7 +881,9 @@ class ColdStartRouter:
             zs_descs = [sku_descriptions[idx] for idx, _, _, _, _ in still_unresolved]
             zs_vecs = np.vstack([dense_vecs[idx] for idx, _, _, _, _ in still_unresolved])
 
-            zs_preds = self.tier1_zero_shot.batch_predict(zs_names, zs_descs, query_dense_matrix=zs_vecs)
+            zs_preds = self.tier1_zero_shot.batch_predict(
+                zs_names, zs_descs, query_dense_matrix=zs_vecs
+            )
         else:
             zs_preds = [("", 0.0, "zero-shot")] * len(still_unresolved)
 

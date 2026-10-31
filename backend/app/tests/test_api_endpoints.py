@@ -1,6 +1,10 @@
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from backend.app.api.routes import api_router
+
+pytestmark = pytest.mark.usefixtures("pg")
 
 api_app = FastAPI()
 api_app.include_router(api_router)
@@ -28,19 +32,9 @@ def test_rules_crud_lifecycle():
         "condition_logic": "AND",
         "is_active": 1,
         "conditions": [
-            {
-                "condition_group": 1,
-                "condition_type": "sku_contains",
-                "value": "pepsi",
-                "negate": 0
-            }
+            {"condition_group": 1, "condition_type": "sku_contains", "value": "pepsi", "negate": 0}
         ],
-        "actions": [
-            {
-                "action_type": "set_bt",
-                "value": "Soft Drink"
-            }
-        ]
+        "actions": [{"action_type": "set_bt", "value": "Soft Drink"}],
     }
 
     create_resp = client.post("/rules", json=rule_payload)
@@ -66,7 +60,10 @@ def test_rules_crud_lifecycle():
         assert reorder_resp.status_code == 200
 
         # 5. Test rule against sample record
-        test_resp = client.post(f"/rules/{rule_id}/test", json={"sample_record": {"sku_name": "Pepsi Max 330ml Can", "bt": "Beverage"}})
+        test_resp = client.post(
+            f"/rules/{rule_id}/test",
+            json={"sample_record": {"sku_name": "Pepsi Max 330ml Can", "bt": "Beverage"}},
+        )
         assert test_resp.status_code == 200
         test_data = test_resp.json()
         assert test_data.get("fires") is True
@@ -84,7 +81,7 @@ def test_rules_test_draft_endpoint():
         "rule": {
             "rule_id": "draft_test_1",
             "domain": "food",
-                "priority": 100,
+            "priority": 100,
             "description": "Draft rule test",
             "reasoning": "Test without saving",
             "condition_logic": "AND",
@@ -94,20 +91,12 @@ def test_rules_test_draft_endpoint():
                     "condition_group": 1,
                     "condition_type": "sku_contains",
                     "value": "kottu",
-                    "negate": 0
+                    "negate": 0,
                 }
             ],
-            "actions": [
-                {
-                    "action_type": "set_bt",
-                    "value": "Kottu"
-                }
-            ]
+            "actions": [{"action_type": "set_bt", "value": "Kottu"}],
         },
-        "sample_record": {
-            "sku_name": "Chicken Cheese Kottu",
-            "bt": "Unknown"
-        }
+        "sample_record": {"sku_name": "Chicken Cheese Kottu", "bt": "Unknown"},
     }
     resp = client.post("/rules/test-draft", json=draft_payload)
     assert resp.status_code == 200
@@ -164,7 +153,6 @@ def test_api_requests_endpoints():
     assert not_found_resp.status_code == 404
 
 
-
 def test_interactive_rerun_rules():
     """Verify /interactive/rerun-rules executes rules engine on single record."""
     payload = {
@@ -172,7 +160,7 @@ def test_interactive_rerun_rules():
         "domain": "market",
         "bt": "Drink",
         "gk": "beverage, soda",
-        "price": 250.0
+        "price": 250.0,
     }
     resp = client.post("/interactive/rerun-rules", json=payload)
     assert resp.status_code == 200
@@ -201,11 +189,12 @@ def test_catalog_summary_stats():
 def test_catalog_dictionary_search():
     """Verify /catalog endpoint searches dictionaries without reading full catalog into memory."""
     for dataset in ["gk", "bt", "category", "brands", "bt_gk_map"]:
-        resp = client.get("/catalog", params={"dataset": dataset, "domain": "market", "page": 1, "page_size": 5})
+        resp = client.get(
+            "/catalog", params={"dataset": dataset, "domain": "market", "page": 1, "page_size": 5}
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert "results" in data
         assert "total" in data
         assert isinstance(data["results"], list)
         assert data["total"] >= 0
-

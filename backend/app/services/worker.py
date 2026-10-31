@@ -5,18 +5,20 @@ Persists job records in the database and dispatches async tasks to the dedicated
 
 import json
 import logging
-import sqlite3
-import uuid
 
-from backend.app.core.db import DB_PATH, get_next_job_id
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
+from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
+from backend.app.core.config import DEFAULT_TENANT
+from backend.app.core.db import get_engine, get_next_job_id
 from backend.app.schemas.models import BaseRequest
 from backend.app.services.engine_client import dispatch_batch_job
-from backend.app.api.endpoints.engine_callbacks import _job_progress, _job_eta
 
 logger = logging.getLogger("matchops.backend.worker")
 
 
-def enqueue_job(request: BaseRequest, task: str) -> dict:
+def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT) -> dict:
     """
     Registers a new matching/classification job in the DB and dispatches it
     to the dedicated ML Engine microservice.
@@ -35,30 +37,46 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
     max_attempts = 5
     job_id = None
     for attempt in range(1, max_attempts + 1):
-        conn = sqlite3.connect(DB_PATH, timeout=60.0)
+        conn = get_engine().connect()
         try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA busy_timeout=60000;")
             job_id = get_next_job_id(conn)
             conn.execute(
-                """
+                text("""
                 INSERT INTO jobs (
                     id, batch_id, type, status, current_stage,
                     total_items, completed_items, created_by,
-                    started_at, domain, sheet_name, target_sheet, input_skus_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)
-                """,
-                (job_id, job_id, task, 'queued', 'queued', len(request.skus), 0, 'system', domain, request.sheet_name, target_sheet, input_skus_json)
+                    started_at, domain, sheet_name, target_sheet, input_skus_json, tenant_id
+                ) VALUES (
+                    :id, :id, :type, 'queued', 'queued', :total_items, 0, 'system',
+                    now(), :domain, :sheet_name, :target_sheet, :input_skus_json, :tenant_id
+                )
+                """),
+                {
+                    "id": job_id,
+                    "type": task,
+                    "total_items": len(request.skus),
+                    "domain": domain,
+                    "sheet_name": request.sheet_name,
+                    "target_sheet": target_sheet,
+                    "input_skus_json": input_skus_json,
+                    "tenant_id": tenant_id,
+                },
             )
             conn.commit()
             break
-        except sqlite3.IntegrityError as e:
+        except IntegrityError as e:
             conn.rollback()
             job_id = None
             if attempt == max_attempts:
-                logger.error(f"Failed to allocate a unique job id after {max_attempts} attempts: {e}")
-                raise RuntimeError(f"Could not allocate a unique job id after {max_attempts} attempts: {e}")
-            logger.warning(f"Job id collided with an existing row (attempt {attempt}/{max_attempts}); retrying with a new id.")
+                logger.error(
+                    f"Failed to allocate a unique job id after {max_attempts} attempts: {e}"
+                )
+                raise RuntimeError(
+                    f"Could not allocate a unique job id after {max_attempts} attempts: {e}"
+                )
+            logger.warning(
+                f"Job id collided with an existing row (attempt {attempt}/{max_attempts}); retrying with a new id."
+            )
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to insert job into DB: {e}")
@@ -73,23 +91,20 @@ def enqueue_job(request: BaseRequest, task: str) -> dict:
 
     # 3. Dispatch to ML Engine microservice
     try:
-        dispatch_batch_job(job_id=job_id, request=request, task=task)
+        dispatch_batch_job(job_id=job_id, request=request, task=task, tenant_id=tenant_id)
     except Exception as dispatch_err:
         logger.error(f"[JOB {job_id}] Dispatch to ML Engine failed: {dispatch_err}")
         # Mark as failed in DB
         try:
-            conn = sqlite3.connect(DB_PATH, timeout=60.0)
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA busy_timeout=60000;")
-            conn.execute(
-                "UPDATE jobs SET status = 'failed', current_stage = 'failed', error_message = ? WHERE id = ?",
-                (str(dispatch_err), job_id)
-            )
-            conn.commit()
-            conn.close()
+            with get_engine().begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE jobs SET status = 'failed', current_stage = 'failed', error_message = :err WHERE id = :id"
+                    ),
+                    {"err": str(dispatch_err), "id": job_id},
+                )
         except Exception:
             pass
         raise RuntimeError(f"Failed to dispatch job to ML Engine: {dispatch_err}")
 
     return {"job_id": job_id, "status": "queued", "total_skus": len(request.skus)}
-

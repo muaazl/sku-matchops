@@ -1,8 +1,9 @@
-import pytest
-import pandas as pd
 from unittest.mock import MagicMock
+
+import pandas as pd
+import pytest
+
 from engine.matching.logic_gates import LogicGates
-from engine.nlp.text_cleaner import TextPipeline
 
 
 class TestTextWeightPriorityMatching:
@@ -115,10 +116,28 @@ class TestTextWeightPriorityMatching:
         """Test that token_sorted_map selects the best pack size or provides mismatch note."""
         from engine.matching.matcher import SKUMatcher
 
-        catalog_df = pd.DataFrame([
-            {"Name": "Smak Hot & Spicy Mixture 200g", "Brand": "Smak", "BasicType": "Snacks", "Generic keywords": "Mix", "clean_text": "smak hot spicy mixture 200 g", "clean_no_weights": "smak hot spicy mixture", "weight_val": (200.0, "g", "solid")},
-            {"Name": "Smak Hot & Spicy Mixture 150g", "Brand": "Smak", "BasicType": "Snacks", "Generic keywords": "Mix", "clean_text": "smak hot spicy mixture 150 g", "clean_no_weights": "smak hot spicy mixture", "weight_val": (150.0, "g", "solid")},
-        ])
+        catalog_df = pd.DataFrame(
+            [
+                {
+                    "Name": "Smak Hot & Spicy Mixture 200g",
+                    "Brand": "Smak",
+                    "BasicType": "Snacks",
+                    "Generic keywords": "Mix",
+                    "clean_text": "smak hot spicy mixture 200 g",
+                    "clean_no_weights": "smak hot spicy mixture",
+                    "weight_val": (200.0, "g", "solid"),
+                },
+                {
+                    "Name": "Smak Hot & Spicy Mixture 150g",
+                    "Brand": "Smak",
+                    "BasicType": "Snacks",
+                    "Generic keywords": "Mix",
+                    "clean_text": "smak hot spicy mixture 150 g",
+                    "clean_no_weights": "smak hot spicy mixture",
+                    "weight_val": (150.0, "g", "solid"),
+                },
+            ]
+        )
 
         mock_cache = MagicMock()
         mock_cache.manage_catalog_cache.return_value = (catalog_df, MagicMock())
@@ -130,7 +149,7 @@ class TestTextWeightPriorityMatching:
             embed_engine=MagicMock(),
             cache_manager=mock_cache,
             logic_gates=MagicMock(),
-            domain="market"
+            domain="market",
         )
 
         # Verify token_sorted_map holds both entries for the same product text

@@ -8,29 +8,32 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import onnxruntime as ort
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 import torch
+from sklearn.preprocessing import StandardScaler
 
-from engine.core import config
+from engine import config
 from engine.classification.classifier import ZeroShotClassifier
-from engine.classification.models.arcface_bt import ArcFaceHead, BTArcFaceNet, FocalLoss
+from engine.classification.models.arcface_bt import BTArcFaceNet, FocalLoss
 
 
 class TestArcFaceBT(unittest.TestCase):
-
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
         self.orig_onnx_dir = config.ONNX_DIR
         self.orig_cache_dir = config.CACHE_DIR
+        self.orig_arcface_dir = getattr(config, "ARCFACE_DIR", None)
         self.orig_food_model = config.FOOD_BT_MODEL
         self.orig_market_model = config.MARKET_BT_MODEL
 
         config.ONNX_DIR = self.test_dir
         config.CACHE_DIR = self.test_dir
+        config.ARCFACE_DIR = self.test_dir
 
     def tearDown(self):
         config.ONNX_DIR = self.orig_onnx_dir
         config.CACHE_DIR = self.orig_cache_dir
+        if self.orig_arcface_dir is not None:
+            config.ARCFACE_DIR = self.orig_arcface_dir
         config.FOOD_BT_MODEL = self.orig_food_model
         config.MARKET_BT_MODEL = self.orig_market_model
         if os.path.exists(self.test_dir):
@@ -40,7 +43,9 @@ class TestArcFaceBT(unittest.TestCase):
         """Test BTArcFaceNet forward pass for training and inference."""
         batch_size = 8
         num_classes = 10
-        model = BTArcFaceNet(in_features=1025, hidden_features=512, num_classes=num_classes, scale=30.0, margin=0.35)
+        model = BTArcFaceNet(
+            in_features=1025, hidden_features=512, num_classes=num_classes, scale=30.0, margin=0.35
+        )
 
         # Training forward pass with labels
         model.train()
@@ -62,7 +67,6 @@ class TestArcFaceBT(unittest.TestCase):
     def test_focal_loss_behavior(self):
         """Test FocalLoss computation and long-tail error penalization."""
         criterion = FocalLoss(gamma=2.0, reduction="mean")
-        num_classes = 5
 
         # Well-separated confident logits -> low loss
         easy_logits = torch.tensor([[10.0, -5.0, -5.0, -5.0, -5.0]])
@@ -103,6 +107,7 @@ class TestArcFaceBT(unittest.TestCase):
 
         # 2. Dynamic INT8 Quantization
         from onnxruntime.quantization import QuantType, quantize_dynamic
+
         quantize_dynamic(
             model_input=fp32_path,
             model_output=int8_path,
@@ -114,7 +119,9 @@ class TestArcFaceBT(unittest.TestCase):
         # 3. Load via ORT with mmap configuration
         sess_opts = ort.SessionOptions()
         sess_opts.add_session_config_entry("session.use_mmap_for_weights", "1")
-        session = ort.InferenceSession(int8_path, sess_options=sess_opts, providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(
+            int8_path, sess_options=sess_opts, providers=["CPUExecutionProvider"]
+        )
 
         test_inputs = np.random.randn(3, 1025).astype(np.float32)
         ort_out = session.run(None, {session.get_inputs()[0].name: test_inputs})[0]
@@ -254,17 +261,23 @@ class TestArcFaceBT(unittest.TestCase):
         mock_sess = MagicMock()
         # Item 0: confident Pizza, Item 1: ambiguous (falls back to zero-shot Burger)
         mock_sess.run.return_value = [
-            np.array([
-                [5.0, 0.0, -1.0],  # item 0
-                [1.0, 1.0, 1.0],   # item 1
-            ], dtype=np.float32)
+            np.array(
+                [
+                    [5.0, 0.0, -1.0],  # item 0
+                    [1.0, 1.0, 1.0],  # item 1
+                ],
+                dtype=np.float32,
+            )
         ]
         clf._arcface_session = mock_sess
 
-        test_vecs = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ], dtype=np.float32)
+        test_vecs = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
 
         results = clf.batch_predict_bt(test_vecs, [100.0, 200.0])
         self.assertEqual(len(results), 2)
@@ -324,13 +337,15 @@ class TestArcFaceBT(unittest.TestCase):
         mock_extract.return_value = np.random.randn(20, 1024).astype(np.float32)
 
         # Create synthetic catalog CSV
-        sample_df = pd.DataFrame({
-            "Name": [f"Item {i}" for i in range(20)],
-            "basictype": [f"BT_{i % 3}" for i in range(20)],
-            "Description": [f"Desc {i}" for i in range(20)],
-            "Category": [f"Cat {i % 2}" for i in range(20)],
-            "Price": [10.0 + i for i in range(20)],
-        })
+        sample_df = pd.DataFrame(
+            {
+                "Name": [f"Item {i}" for i in range(20)],
+                "basictype": [f"BT_{i % 3}" for i in range(20)],
+                "Description": [f"Desc {i}" for i in range(20)],
+                "Category": [f"Cat {i % 2}" for i in range(20)],
+                "Price": [10.0 + i for i in range(20)],
+            }
+        )
         sample_path = os.path.join(self.test_dir, "sample.xlsx")
         with pd.ExcelWriter(sample_path) as writer:
             sample_df.to_excel(writer, sheet_name=config.FOOD_CATALOG_SHEET, index=False)
@@ -344,6 +359,7 @@ class TestArcFaceBT(unittest.TestCase):
             from_sample=True,
             sample_file=sample_path,
             no_quantize=False,
+            output_dir=self.test_dir,
         )
 
         self.assertTrue(os.path.exists(artifacts["fp32_onnx"]))
@@ -352,7 +368,7 @@ class TestArcFaceBT(unittest.TestCase):
         self.assertTrue(os.path.exists(artifacts["meta_joblib"]))
 
         # Verify labels JSON contents
-        with open(artifacts["labels_json"], "r", encoding="utf-8") as f:
+        with open(artifacts["labels_json"], encoding="utf-8") as f:
             labels_data = json.load(f)
         self.assertEqual(labels_data["domain"], config.DOMAIN_FOOD)
         self.assertEqual(labels_data["num_classes"], 3)

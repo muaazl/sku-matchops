@@ -1,8 +1,9 @@
 import unittest
 from unittest.mock import MagicMock
 
-from engine.rules_engine.evaluator import evaluate_conditions, _evaluate_single_condition
+from engine.rules_engine.evaluator import _evaluate_single_condition, evaluate_conditions
 from engine.rules_engine.loader import Rule
+
 
 class TestRulesEvaluator(unittest.TestCase):
     def setUp(self):
@@ -18,7 +19,7 @@ class TestRulesEvaluator(unittest.TestCase):
             "gk": ["Dairy", "Ice Cream", "Vanilla"],
             "category": "Frozen Desserts",
             "region": "Colombo",
-            "price": 1500.00
+            "price": 1500.00,
         }
 
     def test_evaluate_single_condition(self):
@@ -54,40 +55,50 @@ class TestRulesEvaluator(unittest.TestCase):
     def test_or_logic_within_same_type_same_group(self):
         # If we have multiple 'sku_contains' in the same group, it should act as OR
         self.mock_rule.conditions = [
-            {"condition_group": 1, "condition_type": "sku_contains", "value": "chocolate"}, # False
-            {"condition_group": 1, "condition_type": "sku_contains", "value": "vanilla"}    # True
+            {"condition_group": 1, "condition_type": "sku_contains", "value": "chocolate"},  # False
+            {"condition_group": 1, "condition_type": "sku_contains", "value": "vanilla"},  # True
         ]
         self.assertTrue(evaluate_conditions(self.mock_rule, self.sample_record))
 
     def test_and_logic_different_types_same_group(self):
         # Different condition types in the same group act as AND
         self.mock_rule.conditions = [
-            {"condition_group": 1, "condition_type": "sku_contains", "value": "vanilla"}, # True
-            {"condition_group": 1, "condition_type": "price_below", "value": "1000"}     # False
+            {"condition_group": 1, "condition_type": "sku_contains", "value": "vanilla"},  # True
+            {"condition_group": 1, "condition_type": "price_below", "value": "1000"},  # False
         ]
         self.assertFalse(evaluate_conditions(self.mock_rule, self.sample_record))
 
-        self.mock_rule.conditions[1]["value"] = "2000" # Make it True
+        self.mock_rule.conditions[1]["value"] = "2000"  # Make it True
         self.assertTrue(evaluate_conditions(self.mock_rule, self.sample_record))
 
     def test_cross_group_logic_and(self):
         self.mock_rule.condition_logic = "AND"
         self.mock_rule.conditions = [
-            {"condition_group": 1, "condition_type": "sku_contains", "value": "vanilla"}, # Group 1 True
-            {"condition_group": 2, "condition_type": "bt_is", "value": "Beverage"}        # Group 2 False
+            {
+                "condition_group": 1,
+                "condition_type": "sku_contains",
+                "value": "vanilla",
+            },  # Group 1 True
+            {"condition_group": 2, "condition_type": "bt_is", "value": "Beverage"},  # Group 2 False
         ]
         self.assertFalse(evaluate_conditions(self.mock_rule, self.sample_record))
 
     def test_cross_group_logic_or(self):
         self.mock_rule.condition_logic = "OR"
         self.mock_rule.conditions = [
-            {"condition_group": 1, "condition_type": "sku_contains", "value": "vanilla"}, # Group 1 True
-            {"condition_group": 2, "condition_type": "bt_is", "value": "Beverage"}        # Group 2 False
+            {
+                "condition_group": 1,
+                "condition_type": "sku_contains",
+                "value": "vanilla",
+            },  # Group 1 True
+            {"condition_group": 2, "condition_type": "bt_is", "value": "Beverage"},  # Group 2 False
         ]
         self.assertTrue(evaluate_conditions(self.mock_rule, self.sample_record))
+
     def test_flavor_conditions(self):
         # Setup mock flavor cache
         import engine.rules_engine.evaluator as eval_mod
+
         eval_mod._FLAVOR_CACHE = {
             "flavors_dict": {
                 "chicken": "chicken",
@@ -95,11 +106,11 @@ class TestRulesEvaluator(unittest.TestCase):
                 "spinach": "spinach",
                 "shrimp": "prawn",
                 "prawn": "prawn",
-                "beef": "beef"
+                "beef": "beef",
             },
             "meat_flavors": {"chicken", "beef"},
             "vegetable_flavors": {"spinach"},
-            "seafood_flavors": {"prawn"}
+            "seafood_flavors": {"prawn"},
         }
 
         # 1. flavor_contains
@@ -117,7 +128,7 @@ class TestRulesEvaluator(unittest.TestCase):
         self.sample_record["sku_name"] = "Tasty Shrimp Salad"
         cond = {"condition_type": "flavor_contains", "value": "prawn"}
         self.assertTrue(_evaluate_single_condition(cond, self.sample_record))
-        
+
         # Test mismatch
         self.sample_record["sku_name"] = "Tasty Beef Burger"
         cond = {"condition_type": "flavor_contains", "value": "spinach"}
@@ -148,5 +159,6 @@ class TestRulesEvaluator(unittest.TestCase):
         cond = {"condition_type": "flavor_is", "value": "meat"}
         self.assertFalse(_evaluate_single_condition(cond, self.sample_record))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

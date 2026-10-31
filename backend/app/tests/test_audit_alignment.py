@@ -1,10 +1,64 @@
 import pytest
-from engine.core.resource_loader import get_classifier, get_pipeline, get_ner_engine
+from sqlalchemy import text
+
+from engine.classification.loader import is_conflicting_dish_tag
+from engine.core.resource_loader import get_classifier, get_ner_engine, get_pipeline
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
-from engine.classification.loader import PRIMARY_DISH_TYPES, is_conflicting_dish_tag
+from engine.rules_engine import refresh_rules_cache
+
+SEAFOOD_RULE_ID = "test_audit_seafood"
+
+# Production "Rule 1": seafood dishes get the 'Seafood' GK unless they are short eats,
+# already say "Seafood", or also contain land meat.
+SEAFOOD_CONDITIONS = [
+    (1, "flavor_is", "seafood", 0),
+    (2, "gk_contains", "Short Eats", 1),
+    (3, "sku_contains", "Seafood", 1),
+    (4, "flavor_is", "meat", 1),
+]
 
 
+@pytest.fixture(scope="class")
+def seafood_rule(pg):
+    """Seeds the food-domain Seafood rule these parity tests rely on, then removes it."""
+
+    def _delete(conn):
+        conn.execute(text("DELETE FROM rules WHERE rule_id = :r"), {"r": SEAFOOD_RULE_ID})
+
+    with pg.begin() as conn:
+        _delete(conn)
+        conn.execute(
+            text(
+                "INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic) "
+                "VALUES (:r, 'food', 1, 'Seafood GK', 'Seafood dishes get the Seafood GK', 'AND')"
+            ),
+            {"r": SEAFOOD_RULE_ID},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO conditions (rule_id, condition_group, condition_type, value, negate) "
+                "VALUES (:r, :g, :t, :v, :n)"
+            ),
+            [
+                {"r": SEAFOOD_RULE_ID, "g": g, "t": t, "v": v, "n": n}
+                for g, t, v, n in SEAFOOD_CONDITIONS
+            ],
+        )
+        conn.execute(
+            text(
+                "INSERT INTO actions (rule_id, action_type, value) VALUES (:r, 'add_gk', 'Seafood')"
+            ),
+            {"r": SEAFOOD_RULE_ID},
+        )
+    refresh_rules_cache()
+    yield
+    with pg.begin() as conn:
+        _delete(conn)  # conditions/actions cascade
+    refresh_rules_cache()
+
+
+@pytest.mark.usefixtures("pg", "seafood_rule")
 class TestAuditAlignment:
     @classmethod
     def setup_class(cls):
@@ -14,38 +68,83 @@ class TestAuditAlignment:
 
     def test_culinary_protein_prioritization(self):
         ner_food = get_ner_engine("food")
-        
+
+        def compute_suffixes(flavor_set):
+            seafood_set = getattr(ner_food, "seafood_flavors", set())
+            meat_set = getattr(ner_food, "meat_flavors", set())
+            veg_set = getattr(ner_food, "vegetable_flavors", set())
+            has_seafood = any(f in seafood_set for f in flavor_set)
+            land_meats = [
+                f
+                for f in flavor_set
+                if f in meat_set and f not in seafood_set and f not in ("egg", "mixed")
+            ]
+            meat_count = len(land_meats)
+            has_other_protein = meat_count > 0 or has_seafood
+            has_egg = ("egg" in flavor_set) and ("egg" in meat_set)
+            has_veg = any(f in veg_set for f in flavor_set)
+
+            if has_egg and not has_other_protein:
+                meat_count = 1
+                has_meat = True
+            else:
+                has_meat = meat_count > 0
+
+            suffixes = []
+            if (has_meat and has_seafood) or meat_count >= 2:
+                suffixes.append("mixed")
+            elif not has_seafood and not has_meat and has_veg:
+                suffixes.append("veg")
+            return suffixes
+
         # 1. Devilled Fish Set Menu has seafood
         sku_texts = ["Devilled Fish Set Menu"]
         ner_res = ner_food.batch_extract_entities(sku_texts)
         flavor_set = ner_res[0].get("flavor", set())
-        has_seafood = any(f in getattr(ner_food, "seafood_flavors", set()) for f in flavor_set)
-        land_meats = [
-            f for f in flavor_set
-            if f in getattr(ner_food, "meat_flavors", set())
-            and f not in getattr(ner_food, "seafood_flavors", set())
-            and f != "egg"
-        ]
-        meat_count = len(land_meats)
-        has_meat = meat_count > 0
-        has_veg = any(f in getattr(ner_food, "vegetable_flavors", set()) for f in flavor_set)
-        
-        suffixes = []
-        if (has_meat and has_seafood) or meat_count >= 2:
-            suffixes.append("mixed")
-        elif not has_seafood and not has_meat and has_veg:
-            suffixes.append("veg")
-            
-        assert suffixes == [], "Should NOT add seafood suffix (handled by rules engine) and NEVER add veg"
-        assert "veg" not in suffixes
-        assert "seafood" not in suffixes
+        assert compute_suffixes(flavor_set) == [], (
+            "Should NOT add seafood suffix (handled by rules engine) and NEVER add veg"
+        )
+
+        # 2. Chicken with 'Mix' in description (should NOT trigger 'mixed' suffix)
+        flavor_set_mix = {"chicken", "mixed", "carrot", "tomato"}
+        assert compute_suffixes(flavor_set_mix) == [], (
+            "Chicken with 'mixed' meta-flavor must NOT get 'mixed' suffix"
+        )
+
+        # 3. Egg + Real Meat (egg should be deprioritized, real meat prioritized, no mixed)
+        flavor_set_egg_meat = {"chicken", "egg", "carrot"}
+        assert compute_suffixes(flavor_set_egg_meat) == [], (
+            "Egg + Meat must prioritize meat and NOT add 'mixed'"
+        )
+
+        # 4. Egg + Veg (no other meat/seafood: egg must be kept, NOT tagged as veg)
+        flavor_set_egg_veg = {"egg", "carrot", "leek"}
+        assert compute_suffixes(flavor_set_egg_veg) == [], (
+            "Egg + Veg must keep egg and NEVER add 'veg'"
+        )
+
+        # 5. Egg alone (keep egg, no suffix)
+        flavor_set_egg_alone = {"egg"}
+        assert compute_suffixes(flavor_set_egg_alone) == []
+
+        # 6. Real meat + Real meat (2 land meats -> 'mixed')
+        flavor_set_multi_meat = {"chicken", "beef"}
+        assert compute_suffixes(flavor_set_multi_meat) == ["mixed"]
+
+        # 7. Meat + Seafood -> 'mixed'
+        flavor_set_meat_seafood = {"chicken", "prawn"}
+        assert compute_suffixes(flavor_set_meat_seafood) == ["mixed"]
+
+        # 8. Veg alone -> 'veg'
+        flavor_set_veg_alone = {"carrot", "cabbage"}
+        assert compute_suffixes(flavor_set_veg_alone) == ["veg"]
 
     def test_cross_dish_contamination_filter(self):
         # Chop Suey Rice must be marked as conflicting dish under Fried Rice
         assert is_conflicting_dish_tag("Chop Suey Rice", "Fried Rice") is True
         assert is_conflicting_dish_tag("Vegetable Chop Suey Rice", "Fried Rice") is True
         assert is_conflicting_dish_tag("Chicken Biriyani", "Fried Rice") is True
-        
+
         # Valid sub-dishes of Fried Rice must be allowed
         assert is_conflicting_dish_tag("Devilled Fish Fried Rice", "Fried Rice") is False
         assert is_conflicting_dish_tag("Fish Fried Rice", "Fried Rice") is False
@@ -60,7 +159,7 @@ class TestAuditAlignment:
             "category": "",
             "price": 1500.0,
         }
-        
+
         proc_clf = process_request(task="classifier", domain="food", skus=[sku])["results"][0]
         audit_clf = run_sku_audit(
             sku_name=sku["name"],
@@ -70,15 +169,15 @@ class TestAuditAlignment:
             description=sku["description"],
             category=sku["category"],
         )["final_output"]
-        
+
         assert proc_clf["suggested_bt"] == audit_clf["suggested_bt"]
         assert proc_clf["suggested_gk"] == audit_clf["suggested_gk"]
         assert proc_clf["suggested_region"] == audit_clf["suggested_region"]
-        
+
         # Ensure Chop Suey is NOT in suggested GK
         assert "Chop Suey" not in proc_clf["suggested_gk"]
         assert "Chop Suey" not in audit_clf["suggested_gk"]
-        
+
         # Ensure rule 1 applied
         assert "Seafood" in proc_clf["suggested_gk"]
         assert "Seafood" in audit_clf["suggested_gk"]
@@ -90,7 +189,7 @@ class TestAuditAlignment:
             "category": "",
             "price": 1500.0,
         }
-        
+
         proc_pip = process_request(task="pipeline", domain="food", skus=[sku])["results"][0]
         audit_pip = run_sku_audit(
             sku_name=sku["name"],
@@ -100,7 +199,7 @@ class TestAuditAlignment:
             description=sku["description"],
             category=sku["category"],
         )["final_output"]
-        
+
         assert proc_pip["matched_catalog_name"] == audit_pip["matched_catalog_name"]
         assert proc_pip["score"] == audit_pip["score"]
         assert proc_pip["status"] == audit_pip["status"]
@@ -165,4 +264,28 @@ class TestAuditAlignment:
         assert audit_res["status"] == "High Confidence"
         assert proc_res["score"] == audit_res["score"]
 
+    def test_chicken_noodles_mix_description_resolution(self):
+        sku = {
+            "name": "Chicken Noodles (Normal)",
+            "description": "Carrot, Leaks, Eggs, Boiled Chicken Mix With Noodles. Served With Chili Paste Chicken Gravy & Tomato Sauce",
+            "category": "NOODLES",
+            "price": 1280.0,
+        }
+        proc_res = process_request(skus=[sku], task="pipeline", domain="food")["results"][0]
+        audit_full = run_sku_audit(
+            sku_name=sku["name"],
+            domain="food",
+            task="pipeline",
+            price=sku["price"],
+            description=sku["description"],
+            category=sku["category"],
+        )
+        audit_res = audit_full["final_output"]
 
+        # Ensure neither processor nor audit appended 'mixed' or matched to Mixed Noodles
+        assert "mixed" not in proc_res.get("sku_name", "").lower()
+        assert proc_res["matched_catalog_name"] == audit_res["matched_catalog_name"]
+        assert proc_res["suggested_bt"] == "Fried Noodles"
+        assert "Chicken Fried Noodles" in proc_res["suggested_gk"]
+        assert proc_res["status"] == audit_res["status"]
+        assert proc_res["status"] in ("High Confidence", "Medium Confidence")

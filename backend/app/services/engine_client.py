@@ -6,17 +6,21 @@ Dispatches inference and batch processing workloads to the dedicated ML Engine m
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from backend.app.core.config import DEFAULT_TENANT
 from backend.app.schemas.models import BaseRequest
+from engine.core.observability import TRACE_ID
+from engine.pipeline.task_queue import get_task_queue
 
 logger = logging.getLogger("matchops.engine_client")
 
-ENGINE_URL = os.getenv("ENGINE_URL", "http://localhost:8001").rstrip("/")
-BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://localhost:8000").rstrip("/")
+ENGINE_URL = os.getenv("ENGINE_URL", "http://127.0.0.1:8001").rstrip("/")
+BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://127.0.0.1:8000").rstrip("/")
 
 # Set up requests session with connection pooling and light retry policy.
 # allowed_methods must explicitly include POST: urllib3's default excludes it (only
@@ -31,7 +35,14 @@ _retries = Retry(
 _session.mount("http://", HTTPAdapter(max_retries=_retries))
 _session.mount("https://", HTTPAdapter(max_retries=_retries))
 
-_models_status_cache: Dict[str, Any] = {}
+
+def _trace_headers() -> dict[str, str]:
+    """Propagates the current request's trace id on synchronous Gateway -> Engine calls."""
+    trace_id = TRACE_ID.get()
+    return {"X-Request-ID": trace_id} if trace_id != "-" else {}
+
+
+_models_status_cache: dict[str, Any] = {}
 _models_status_cache_time: float = 0.0
 
 
@@ -44,7 +55,7 @@ def is_engine_reachable() -> bool:
         return False
 
 
-def get_engine_health() -> Dict[str, Any]:
+def get_engine_health() -> dict[str, Any]:
     """Fetches health and loaded model status from the ML Engine."""
     try:
         resp = _session.get(f"{ENGINE_URL}/health", timeout=10.0)
@@ -56,7 +67,7 @@ def get_engine_health() -> Dict[str, Any]:
         return {"status": "offline", "error": str(e), "engine_url": ENGINE_URL}
 
 
-def get_models_status() -> Dict[str, Any]:
+def get_models_status() -> dict[str, Any]:
     """Fetches detailed model statuses from the ML Engine with short TTL cache."""
     global _models_status_cache, _models_status_cache_time
     now = time.time()
@@ -75,7 +86,7 @@ def get_models_status() -> Dict[str, Any]:
         return {"status": "offline", "error": str(e)}
 
 
-def trigger_load_models() -> Dict[str, Any]:
+def trigger_load_models() -> dict[str, Any]:
     """Triggers background model pre-loading on the ML Engine."""
     global _models_status_cache_time
     _models_status_cache_time = 0.0  # Invalidate cache immediately on load trigger
@@ -88,7 +99,7 @@ def trigger_load_models() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-def reload_engine_models() -> Dict[str, Any]:
+def reload_engine_models() -> dict[str, Any]:
     """Forces cache clearing and model reload on the ML Engine."""
     global _models_status_cache_time
     _models_status_cache_time = 0.0
@@ -101,8 +112,9 @@ def reload_engine_models() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-def refresh_engine_rules() -> Dict[str, Any]:
-    """Tells the ML Engine to reload its rules-engine cache from SQLite (no model reload)."""
+def refresh_engine_rules() -> dict[str, Any]:
+    """Tells the ML Engine to reload its rules-engine cache from PostgreSQL (no model reload).
+    Fallback for when Redis pub/sub invalidation is unavailable."""
     try:
         resp = _session.post(f"{ENGINE_URL}/engine/refresh-rules", timeout=5.0)
         if resp.status_code == 200:
@@ -113,7 +125,42 @@ def refresh_engine_rules() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> Dict[str, Any]:
+def _enqueue_or_post(job_id: str, payload: dict[str, Any], label: str) -> dict[str, Any]:
+    """Puts the job on the Redis queue (any engine worker can take it). Falls back to a direct
+    HTTP POST to ENGINE_URL when the queue is disabled or Redis is unreachable."""
+    try:
+        queue = get_task_queue()
+        if queue is not None:
+            task_id = queue.enqueue(payload)
+            return {"status": "queued", "job_id": str(job_id), "task_id": task_id}
+    except Exception as e:
+        logger.warning(f"Redis queue unavailable ({e}); dispatching {label} {job_id} over HTTP.")
+
+    try:
+        logger.info(
+            f"Dispatching {label} {job_id} ({len(payload['skus'])} SKUs) to Engine at {ENGINE_URL}/engine/process-batch"
+        )
+        resp = _session.post(
+            f"{ENGINE_URL}/engine/process-batch",
+            json={"tenant_id": "default", "trace_id": "-", **payload},
+            timeout=10.0,
+        )
+        if resp.status_code in (200, 202):
+            return resp.json()
+        error_msg = (
+            f"ML Engine rejected {label} {job_id} with status {resp.status_code}: {resp.text}"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    except requests.RequestException as re:
+        error_msg = f"Failed to connect to ML Engine at {ENGINE_URL}: {re}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
+def dispatch_batch_job(
+    job_id: str, request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT
+) -> dict[str, Any]:
     """
     Dispatches a batch job to the dedicated ML Engine microservice for async execution.
     """
@@ -122,7 +169,7 @@ def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> Dict[str
             "name": sku.name,
             "price": sku.price or 0.0,
             "description": sku.description or "",
-            "category": sku.category or ""
+            "category": sku.category or "",
         }
         for sku in request.skus
     ]
@@ -135,21 +182,59 @@ def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> Dict[str
         "backend_url": BACKEND_INTERNAL_URL,
         "callback_url": request.callback_url,
         "sheet_name": request.sheet_name,
-        "spreadsheet_id": request.spreadsheet_id
+        "spreadsheet_id": request.spreadsheet_id,
+        "tenant_id": tenant_id,
+        "trace_id": TRACE_ID.get(),
     }
+    return _enqueue_or_post(job_id, payload, "job")
 
-    try:
-        logger.info(f"Dispatching job {job_id} ({len(skus_payload)} SKUs) to Engine at {ENGINE_URL}/engine/process-batch")
-        resp = _session.post(f"{ENGINE_URL}/engine/process-batch", json=payload, timeout=10.0)
-        if resp.status_code in (200, 202):
-            return resp.json()
-        error_msg = f"ML Engine rejected job {job_id} with status {resp.status_code}: {resp.text}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-    except requests.RequestException as re:
-        error_msg = f"Failed to connect to ML Engine at {ENGINE_URL}: {re}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
+
+def dispatch_upload_job(
+    job_id: str, request: Any, task: str, tenant_id: str = DEFAULT_TENANT
+) -> dict[str, Any]:
+    """
+    Dispatches an upload job to the ML Engine microservice for async execution.
+    Filters the SKU dict to only include specific columns.
+    """
+    allowed_columns = [
+        "Name",
+        "RefID",
+        "Description",
+        "Price",
+        "Category",
+        "Individually Sellable",
+        "Brands",
+        "Categories",
+        "Generic keywords",
+        "Promotions",
+        "Special Properties and Ingredients",
+        "Uncategrized",
+        "basictype",
+        "dietarypreference",
+        "foodstate",
+        "mealtime",
+        "other",
+        "region",
+    ]
+
+    filtered_skus = []
+    for sku in request.skus:
+        filtered_sku = {col: sku.get(col, "") for col in allowed_columns}
+        filtered_skus.append(filtered_sku)
+
+    payload = {
+        "job_id": str(job_id),
+        "task": task,
+        "domain": request.domain or "market",
+        "skus": filtered_skus,
+        "backend_url": BACKEND_INTERNAL_URL,
+        "sheet_name": request.outlet_id_or_name,
+        "callback_url": None,
+        "spreadsheet_id": None,
+        "tenant_id": tenant_id,
+        "trace_id": TRACE_ID.get(),
+    }
+    return _enqueue_or_post(job_id, payload, "upload job")
 
 
 def run_single(
@@ -158,20 +243,24 @@ def run_single(
     task: str = "pipeline",
     price: float = 0.0,
     description: str = "",
-    category: str = ""
-) -> Dict[str, Any]:
-    """Runs synchronous single-SKU inference on the ML Engine."""
+    category: str = "",
+    tenant_id: str = DEFAULT_TENANT,
+) -> dict[str, Any]:
+    """Runs synchronous single-SKU inference on the ML Engine (with the tenant's rules)."""
     payload = {
         "sku_name": sku_name,
         "domain": domain,
         "task": task,
         "price": price,
         "description": description,
-        "category": category
+        "category": category,
+        "tenant_id": tenant_id,
     }
 
     try:
-        resp = _session.post(f"{ENGINE_URL}/engine/run-single", json=payload, timeout=60.0)
+        resp = _session.post(
+            f"{ENGINE_URL}/engine/run-single", json=payload, headers=_trace_headers(), timeout=60.0
+        )
         if resp.status_code == 200:
             return resp.json()
         raise RuntimeError(f"Engine single-run returned {resp.status_code}: {resp.text}")
@@ -184,15 +273,15 @@ def suggest_tags(
     domain: str = "market",
     current_bt: str = "",
     exclude_bt: str = "",
-    exclude_gk: str = ""
-) -> Dict[str, Any]:
+    exclude_gk: str = "",
+) -> dict[str, Any]:
     """Requests template-aware tag suggestions from the ML Engine."""
     payload = {
         "sku_name": sku_name,
         "domain": domain,
         "current_bt": current_bt,
         "exclude_bt": exclude_bt,
-        "exclude_gk": exclude_gk
+        "exclude_gk": exclude_gk,
     }
 
     try:
@@ -205,7 +294,14 @@ def suggest_tags(
 
 
 def cancel_engine_job(job_id: str) -> bool:
-    """Notifies the ML Engine to abort processing for the given job."""
+    """Notifies the ML Engine to abort processing for the given job. The Redis flag reaches
+    whichever worker holds the job; the HTTP call covers legacy (in-memory) jobs."""
+    try:
+        queue = get_task_queue()
+        if queue is not None:
+            queue.request_cancel(str(job_id))
+    except Exception as e:
+        logger.warning(f"Could not set Redis cancellation flag for job {job_id}: {e}")
     try:
         resp = _session.post(f"{ENGINE_URL}/engine/jobs/{job_id}/cancel", timeout=5.0)
         return resp.status_code == 200
@@ -214,7 +310,7 @@ def cancel_engine_job(job_id: str) -> bool:
         return False
 
 
-def list_vector_collections() -> Dict[str, Any]:
+def list_vector_collections() -> dict[str, Any]:
     """Fetches vector database collection names from the ML Engine."""
     try:
         resp = _session.get(f"{ENGINE_URL}/engine/vector-db/collections", timeout=5.0)
@@ -225,7 +321,7 @@ def list_vector_collections() -> Dict[str, Any]:
         raise RuntimeError(f"Could not reach ML Engine at {ENGINE_URL}: {re}")
 
 
-def get_vector_collection(name: str) -> Dict[str, Any]:
+def get_vector_collection(name: str) -> dict[str, Any]:
     """Fetches info for a specific vector collection from the ML Engine."""
     try:
         resp = _session.get(f"{ENGINE_URL}/engine/vector-db/collections/{name}", timeout=5.0)
@@ -236,10 +332,12 @@ def get_vector_collection(name: str) -> Dict[str, Any]:
         raise RuntimeError(f"Could not reach ML Engine at {ENGINE_URL}: {re}")
 
 
-def search_vector_collection(name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def search_vector_collection(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Dispatches vector search request to the ML Engine."""
     try:
-        resp = _session.post(f"{ENGINE_URL}/engine/vector-db/collections/{name}/search", json=payload, timeout=15.0)
+        resp = _session.post(
+            f"{ENGINE_URL}/engine/vector-db/collections/{name}/search", json=payload, timeout=15.0
+        )
         if resp.status_code == 200:
             return resp.json()
         raise RuntimeError(f"Engine vector search returned {resp.status_code}: {resp.text}")
@@ -253,23 +351,26 @@ def run_sku_audit(
     task: str = "pipeline",
     price: float = 0.0,
     description: str = "",
-    category: str = ""
-) -> Dict[str, Any]:
-    """Runs single-SKU diagnostic audit on the ML Engine."""
+    category: str = "",
+    tenant_id: str = DEFAULT_TENANT,
+) -> dict[str, Any]:
+    """Runs single-SKU diagnostic audit on the ML Engine (with the tenant's rules)."""
     payload = {
         "sku_name": sku_name,
         "domain": domain,
         "task": task,
         "price": price,
         "description": description,
-        "category": category
+        "category": category,
+        "tenant_id": tenant_id,
     }
 
     try:
-        resp = _session.post(f"{ENGINE_URL}/engine/audit", json=payload, timeout=60.0)
+        resp = _session.post(
+            f"{ENGINE_URL}/engine/audit", json=payload, headers=_trace_headers(), timeout=60.0
+        )
         if resp.status_code == 200:
             return resp.json()
         raise RuntimeError(f"Engine audit returned {resp.status_code}: {resp.text}")
     except requests.RequestException as re:
         raise RuntimeError(f"Could not reach ML Engine at {ENGINE_URL}: {re}")
-
