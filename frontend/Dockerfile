@@ -16,8 +16,11 @@ RUN pnpm install --no-frozen-lockfile
 # Copy all source files
 COPY . .
 
-# Expose Vite dev server port
+# Build production assets for preview
+RUN pnpm build
+
+# Expose Vite preview port
 EXPOSE 5173
 
-# Start Vite server, bound to all interfaces
-CMD ["pnpm", "start", "--host", "0.0.0.0"]
+# Start Vite preview server, bound to all interfaces
+CMD ["pnpm", "vite", "preview", "--host", "0.0.0.0", "--port", "5173"]

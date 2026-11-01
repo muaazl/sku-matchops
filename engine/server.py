@@ -3,6 +3,7 @@ SKU MatchOps Engine - Standalone Inference & Processing Microservice
 Runs on port 8001 (or ENGINE_PORT) to handle compute-intensive ML workloads.
 """
 
+import gc
 import logging
 import os
 import sys
@@ -142,6 +143,7 @@ class VectorSearchRequest(BaseModel):
 
 def _bg_load_models():
     global _loading_in_progress, _queue_worker
+    _loading_in_progress = True
     logger.info("[ENGINE] Background model loading and warmup started...")
     try:
         for d in _model_statuses:
@@ -153,6 +155,7 @@ def _bg_load_models():
             embed_engine.warmup()
         if hasattr(ner_engine, "warmup"):
             ner_engine.warmup()
+        gc.collect()
     except Exception as e:
         logger.warning(f"[ENGINE] Warmup failed: {e}")
 
@@ -168,8 +171,10 @@ def _bg_load_models():
             except Exception as e:
                 logger.error(f"[ENGINE] Failed to pre-load domain {d}: {e}")
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            list(executor.map(_init_domain, [config.DOMAIN_MARKET, config.DOMAIN_FOOD]))
+        # Load domains sequentially with explicit gc to minimize peak memory allocation
+        for d in [config.DOMAIN_MARKET, config.DOMAIN_FOOD]:
+            _init_domain(d)
+            gc.collect()
 
         logger.info("[ENGINE] All ML models loaded and cached successfully.")
         # Only take queued jobs once models are ready; until then other workers can serve them

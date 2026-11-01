@@ -20,11 +20,13 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Postgres web UI at http://localhost:5050 (no login; the matchops server is pre-registered).
+  # Postgres web UI at http://localhost:5050 (start with `docker compose --profile debug up -d pgadmin`).
   # Bound to 127.0.0.1 only because desktop mode has no authentication.
   pgadmin:
     image: dpage/pgadmin4:8.14
     container_name: sku_matchops_pgadmin
+    profiles:
+      - debug
     ports:
       - "127.0.0.1:5050:80"
     environment:
@@ -37,22 +39,6 @@ services:
     depends_on:
       - postgres
     restart: unless-stopped
-
-  # One-shot: applies Alembic migrations before the Gateway starts.
-  migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    container_name: sku_matchops_migrate
-    entrypoint: ["alembic", "upgrade", "head"]
-    env_file:
-      - .env
-    environment:
-      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
 
   redis:
     image: redis:7-alpine
@@ -70,12 +56,13 @@ services:
       - ./data/qdrant:/qdrant/storage:z
     restart: unless-stopped
 
-  # Horizontally scalable: every replica consumes the shared Redis job queue and serves gRPC inference.
-  #   docker compose up -d --scale engine=3
+  # Dedicated ML Engine Microservice
   engine:
     build:
       context: .
       dockerfile: Dockerfile.engine
+    container_name: sku_matchops_engine
+    mem_limit: 4800m
     expose:
       - "8001"
       - "50051"
@@ -87,13 +74,18 @@ services:
       - USE_INT8_MODELS=true
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
+      - UVICORN_RELOAD=false
     env_file:
       - .env
     volumes:
       - ./engine:/app/engine
       - ./data:/app/data
-      - ./models:/app/models:ro
+      - cache_data:/app/data/cache
+      - models_data:/app/models
+      - ./models:/host_models:ro
+      - ./data/cache:/host_cache:ro
       - ./scripts:/app/scripts
+      - ./docker-entrypoint-engine.py:/app/docker-entrypoint-engine.py
     depends_on:
       qdrant:
         condition: service_started
@@ -106,6 +98,7 @@ services:
       context: .
       dockerfile: Dockerfile.backend
     container_name: sku_matchops_backend
+    mem_limit: 512m
     ports:
       - "8000:8000"
     environment:
@@ -115,21 +108,26 @@ services:
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - UVICORN_RELOAD=false
     env_file:
       - .env
     volumes:
       - ./backend:/app/backend
       - ./engine:/app/engine
       - ./data:/app/data
+      - cache_data:/app/data/cache
       - ./scripts:/app/scripts
-      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+      - ./docker-entrypoint-backend.py:/app/docker-entrypoint-backend.py
     depends_on:
+      postgres:
+        condition: service_healthy
       engine:
         condition: service_started
       redis:
         condition: service_started
-      migrate:
-        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:
@@ -137,6 +135,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: sku_matchops_frontend
+    mem_limit: 512m
     ports:
       - "5173:5173"
     environment:
@@ -147,3 +146,7 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  models_data:
+  cache_data:

@@ -28,14 +28,26 @@ def main():
     print("SKU MatchOps Backend API Gateway starting...", flush=True)
     print("=" * 60, flush=True)
 
-    # Launch uvicorn for the Backend API Gateway
+    # Wait for PostgreSQL
+    pg_host = os.getenv("POSTGRES_HOST", "postgres")
+    pg_port = int(os.getenv("POSTGRES_PORT", "5432"))
+    wait_for_service(pg_host, pg_port, timeout=30.0)
+
+    # Launch uvicorn for the Backend API Gateway (single process, no reload bloat)
     port = os.getenv("PORT", "8000")
+    reload_env = os.getenv("UVICORN_RELOAD", "false").strip().lower()
+    reload_enabled = reload_env in ("true", "1", "yes")
+
     print(f"Starting SKU MatchOps Backend API Gateway on 0.0.0.0:{port}...", flush=True)
     print("=" * 60, flush=True)
     sys.stdout.flush()
     sys.stderr.flush()
 
-    os.execvp("uvicorn", ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", port])
+    cmd = ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", port]
+    if reload_enabled:
+        cmd.extend(["--reload", "--reload-dir", "/app/backend"])
+
+    os.execvp("uvicorn", cmd)
 
 
 if __name__ == "__main__":

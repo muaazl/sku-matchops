@@ -217,8 +217,8 @@ class TaxonomyLifecycleRegistry:
             try:
                 cached = joblib.load(cache_path)
                 cached_classes = cached.get("classes", [])
-                # Verify that warm classes match cached classes
-                if set(cached_classes) == set(self.warm_classes):
+                # Compare the warm set used at build time ("classes" can be a subset: warm classes without cached SKU vectors get no centroid)
+                if set(cached.get("warm_classes", cached_classes)) == set(self.warm_classes):
                     self.warm_centroids = cached["centroids"]
                     self.warm_index_to_class = cached_classes
                     self.class_to_warm_index = {
@@ -250,13 +250,14 @@ class TaxonomyLifecycleRegistry:
         df_clean = cat_df.dropna(subset=[bt_col]).copy()
         df_clean[bt_col] = df_clean[bt_col].astype(str).str.strip()
 
+        # fillna("") first: keys must match classifier training (df.fillna("")), not "nan"
         names = (
-            df_clean["Name"].astype(str).str.strip().tolist()
+            df_clean["Name"].fillna("").astype(str).str.strip().tolist()
             if "Name" in df_clean.columns
             else [""] * len(df_clean)
         )
         descs = (
-            df_clean["Description"].astype(str).str.strip().tolist()
+            df_clean["Description"].fillna("").astype(str).str.strip().tolist()
             if "Description" in df_clean.columns
             else [""] * len(df_clean)
         )
@@ -266,7 +267,9 @@ class TaxonomyLifecycleRegistry:
             else ("Category" if "Category" in df_clean.columns else "")
         )
         cats = (
-            df_clean[col_cat].astype(str).str.strip().tolist() if col_cat else [""] * len(df_clean)
+            df_clean[col_cat].fillna("").astype(str).str.strip().tolist()
+            if col_cat
+            else [""] * len(df_clean)
         )
 
         centroids_list = []
@@ -312,7 +315,11 @@ class TaxonomyLifecycleRegistry:
             self.class_to_warm_index = {c: i for i, c in enumerate(self.warm_index_to_class)}
 
             joblib.dump(
-                {"classes": self.warm_index_to_class, "centroids": self.warm_centroids},
+                {
+                    "classes": self.warm_index_to_class,
+                    "centroids": self.warm_centroids,
+                    "warm_classes": list(self.warm_classes),
+                },
                 cache_path,
             )
             logger.info(f"[CENTROIDS] Successfully cached {len(self.warm_centroids)} prototypes.")

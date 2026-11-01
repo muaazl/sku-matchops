@@ -1,4 +1,5 @@
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -24,6 +25,37 @@ def wait_for_service(host: str, port: int, timeout: float = 60.0):
             time.sleep(1.0)
 
 
+def sync_host_directory(host_dir: str, target_dir: str, label: str):
+    """Syncs missing or updated files from host bind-mount into fast Docker volume."""
+    if not os.path.exists(host_dir):
+        return
+    synced = 0
+    start = time.time()
+    for root, _dirs, files in os.walk(host_dir):
+        rel = os.path.relpath(root, host_dir)
+        dest_root = target_dir if rel == "." else os.path.join(target_dir, rel)
+        os.makedirs(dest_root, exist_ok=True)
+        for f in files:
+            src_file = os.path.join(root, f)
+            dest_file = os.path.join(dest_root, f)
+            try:
+                s_stat = os.stat(src_file)
+                if not os.path.exists(dest_file):
+                    shutil.copy2(src_file, dest_file)
+                    synced += 1
+                else:
+                    d_stat = os.stat(dest_file)
+                    if s_stat.st_size != d_stat.st_size or s_stat.st_mtime > d_stat.st_mtime + 2:
+                        shutil.copy2(src_file, dest_file)
+                        synced += 1
+            except Exception as e:
+                print(f"Warning: could not sync {src_file} -> {dest_file}: {e}", flush=True)
+
+    if synced > 0:
+        elapsed = time.time() - start
+        print(f"[SYNC] Synced {synced} {label} files from host to fast volume in {elapsed:.2f}s", flush=True)
+
+
 def main():
     print("=" * 60, flush=True)
     print("SKU MatchOps ML Engine Container starting...", flush=True)
@@ -43,6 +75,10 @@ def main():
         wait_for_service(q_host, q_port, timeout=45.0)
     except Exception as e:
         print(f"Could not parse or connect to QDRANT_URL={qdrant_url}: {e}", flush=True)
+
+    # Sync from host bind-mounts to fast Docker volumes if present
+    sync_host_directory("/host_models", "/app/models", "model")
+    sync_host_directory("/host_cache", "/app/data/cache", "cache")
 
     # Check and prepare ONNX & INT8 models (Idempotent)
     sys.path.insert(0, "/app")
@@ -116,13 +152,20 @@ def main():
 
     # Launch uvicorn for the Engine microservice on port 8001
     port = os.getenv("ENGINE_PORT", "8001")
+    reload_env = os.getenv("UVICORN_RELOAD", "false").strip().lower()
+    reload_enabled = reload_env in ("true", "1", "yes")
+
     print("=" * 60, flush=True)
     print(f"Starting SKU MatchOps ML Engine on 0.0.0.0:{port}...", flush=True)
     print("=" * 60, flush=True)
     sys.stdout.flush()
     sys.stderr.flush()
 
-    os.execvp("uvicorn", ["uvicorn", "engine.server:app", "--host", "0.0.0.0", "--port", port])
+    cmd = ["uvicorn", "engine.server:app", "--host", "0.0.0.0", "--port", port]
+    if reload_enabled:
+        cmd.extend(["--reload", "--reload-dir", "/app/engine"])
+
+    os.execvp("uvicorn", cmd)
 
 
 if __name__ == "__main__":

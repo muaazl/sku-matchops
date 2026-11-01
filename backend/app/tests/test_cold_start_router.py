@@ -263,5 +263,35 @@ class TestColdStartRouter(unittest.TestCase):
         )
 
 
+    def test_centroids_match_training_cache_keys_with_missing_fields(self):
+        """NaN Description/category must key as "" (like training's fillna), and the result is cached."""
+        import joblib
+
+        cat_df = pd.DataFrame(
+            {
+                "Name": [f"item {i}" for i in range(20)],
+                "Description": [np.nan] * 20,
+                "category": [np.nan] * 20,
+                "basictype": ["Mature"] * 20,
+            }
+        )
+        vec = np.ones(1024, dtype=np.float32)
+        joblib.dump(
+            {f"item {i}||||": vec for i in range(20)},
+            os.path.join(self.test_dir, "market_weighted_skus_cache.pkl"),
+        )
+
+        registry = TaxonomyLifecycleRegistry(domain="market", cache_dir=self.test_dir)
+        registry.sync_from_catalog(["Mature"], {}, cat_df=cat_df)
+        self.assertEqual(registry.warm_index_to_class, ["Mature"])
+        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "market_warm_centroids.pkl")))
+
+        # Second boot must load the small centroid cache, not the SKU cache
+        os.remove(os.path.join(self.test_dir, "market_weighted_skus_cache.pkl"))
+        registry2 = TaxonomyLifecycleRegistry(domain="market", cache_dir=self.test_dir)
+        registry2.sync_from_catalog(["Mature"], {}, cat_df=cat_df)
+        self.assertEqual(registry2.warm_index_to_class, ["Mature"])
+
+
 if __name__ == "__main__":
     unittest.main()

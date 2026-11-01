@@ -58,7 +58,6 @@ data/*.log
 data/logs/
 data/qdrant/
 data/postgres/
-data/meilisearch/
 data/cache/
 
 # Models, Engine Caching, Vector Stores & Exports

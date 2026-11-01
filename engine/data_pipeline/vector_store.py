@@ -503,7 +503,8 @@ class VectorStore:
                         must=[FieldCondition(key="dict_type", match=MatchValue(value=dict_type))]
                     ),
                 )
-                if count_res.count >= len(tags):
+                # Point IDs are hashed from the tag, so duplicate tags collapse to one point
+                if count_res.count >= len(set(tags)):
                     logger.info(
                         f"[QDRANT] Collection '{collection_name}' already contains {count_res.count} items for ({dict_type}). Skipping redundant upsert."
                     )

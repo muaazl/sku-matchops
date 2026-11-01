@@ -16,8 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-COPY engine/requirements.txt /app/engine/requirements.txt
-RUN pip install --no-cache-dir -r /app/engine/requirements.txt
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY protos /app/protos
 COPY engine /app/engine

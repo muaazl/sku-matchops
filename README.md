@@ -175,8 +175,7 @@ py -3.11 -m venv venv
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 # Install service dependencies
-uv pip install -r backend/requirements.txt
-uv pip install -r engine/requirements.txt
+uv pip install -r requirements.txt
 
 # Ingest sample catalog data & prepare ONNX models
 python scripts/catalog/sync.py --sample

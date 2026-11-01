@@ -2,8 +2,7 @@ from alembic import context
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.core.db import get_engine
-from backend.app.core.models import metadata
+from backend.app.db import get_engine, metadata
 
 target_metadata = metadata
 

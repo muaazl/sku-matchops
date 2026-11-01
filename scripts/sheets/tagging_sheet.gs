@@ -25,7 +25,7 @@ const CONFIG = {
   CATALOG_SHEET_ID: "17wPPEUu0_KbgOPtjDy4UVS8fh76D1ZmQlB5FZMw2JEo",
 
   // Must match MATCHOPS_API_KEY in your .env (default: "bismillah")
-  API_KEY: "meilimasterkey",
+  API_KEY: "bismillah",
 
   // Your Apps Script Web App URL (for async callback).
   // Get this from: Deploy → Manage Deployments → copy the Web App URL.

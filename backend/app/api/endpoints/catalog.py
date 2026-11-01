@@ -170,6 +170,8 @@ def search_catalog(
                 "flavor": "flavor",
                 "basictype": "basictype",
                 "bt": "basictype",
+                "generic_keywords": "generic_keywords",
+                "gk": "generic_keywords",
                 "category": "category",
                 "region": "region",
                 "description": "description",
@@ -201,22 +203,14 @@ def search_catalog(
                 item = {
                     "id": str(r[0]),
                     "name": r[1],
-                    "Name": r[1],
                     "brand": r[2],
-                    "Brand": r[2],
                     "flavor": r[3],
-                    "Flavor": r[3],
                     "basictype": r[4],
                     "generic_keywords": r[5],
-                    "Generic keywords": r[5],
                     "price": r[6],
-                    "Price": r[6],
                     "category": r[7],
-                    "Category": r[7],
                     "region": r[8],
-                    "Region": r[8],
                     "description": r[9],
-                    "Description": r[9],
                     "count": 1,
                 }
                 results_list.append(item)
@@ -307,10 +301,8 @@ def search_catalog(
                     "count": r[7],
                 }
                 if domain == "market":
-                    item["brand_name"] = r[1]
                     item["is_weak"] = bool(r[3])
                 else:
-                    item["flavor_name"] = r[1]
                     item["is_meat"] = bool(r[4])
                     item["is_vegetable"] = bool(r[5])
                     item["is_seafood"] = bool(r[6])
@@ -348,7 +340,6 @@ def search_catalog(
                 {
                     "id": f"map_{r[0]}",
                     "bt": r[1],
-                    "name": r[1],
                     "gks": r[2],
                     "gk_count": r[3],
                     "count": r[4],

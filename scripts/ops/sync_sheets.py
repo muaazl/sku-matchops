@@ -51,7 +51,7 @@ DEFAULT_APPS_SCRIPT_URL = os.getenv(
 DEFAULT_BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 # CLI task name -> Gateway route (same mapping as the Apps Script)
 TASK_ENDPOINTS = {"pipeline": "pipeline", "matcher": "match", "classifier": "classify"}
-DEFAULT_API_KEY = os.getenv("MATCHOPS_API_KEY", "meilimasterkey")
+DEFAULT_API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
 
 
 def fetch_sheet_csv_gviz(sheet_id: str, sheet_name: str, timeout: int = 15) -> str:

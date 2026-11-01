@@ -307,14 +307,46 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 pipeline=s.get("pipeline", "idle"),
                 classifier=s.get("classifier", "idle"),
             )
-        return pb2.ModelsStatusResponse(domains=domain_statuses, status="ok")
+        import engine.server as s
+        is_loading = getattr(s, "_loading_in_progress", False) or any(
+            st.pipeline == "loading" or st.classifier == "training"
+            for st in domain_statuses.values()
+        )
+        market_ready = (
+            domain_statuses.get("market")
+            and domain_statuses["market"].pipeline == "ready"
+            and domain_statuses["market"].classifier == "ready"
+        )
+        food_ready = (
+            domain_statuses.get("food")
+            and domain_statuses["food"].pipeline == "ready"
+            and domain_statuses["food"].classifier == "ready"
+        )
+        is_ready = bool(market_ready and food_ready and not is_loading)
+        status_str = "ready" if is_ready else ("loading" if is_loading else "unloaded")
+        return pb2.ModelsStatusResponse(domains=domain_statuses, status=status_str)
 
     def ManageModels(self, request, context):
-        from engine.server import _bg_load_models
+        import engine.server as s
 
+        market_ready = (
+            _model_statuses.get("market", {}).get("pipeline") == "ready"
+            and _model_statuses.get("market", {}).get("classifier") == "ready"
+        )
+        food_ready = (
+            _model_statuses.get("food", {}).get("pipeline") == "ready"
+            and _model_statuses.get("food", {}).get("classifier") == "ready"
+        )
+        if market_ready and food_ready and request.action != "reload":
+            return pb2.ManageModelsResponse(status="success", message="Models are already fully loaded.")
+
+        if getattr(s, "_loading_in_progress", False) and request.action != "reload":
+            return pb2.ManageModelsResponse(status="ignored", message="Model loading is already in progress.")
+
+        s._loading_in_progress = True
         if request.action == "reload":
             reset_statuses()
-        threading.Thread(target=_bg_load_models, daemon=True).start()
+        threading.Thread(target=s._bg_load_models, daemon=True).start()
         return pb2.ManageModelsResponse(status="started", message="Model loading triggered.")
 
     def RefreshRules(self, request, context):
@@ -366,17 +398,20 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             context.abort(grpc.StatusCode.INTERNAL, str(e))
 
 
-def start_grpc_server(port: int = 50051) -> grpc.Server:
-    """Starts the gRPC inference server on port 50051."""
+def start_grpc_server(port: int | None = None) -> grpc.Server:
+    """Starts the gRPC inference server on the configured port."""
+    target_port = port if port is not None else config.ENGINE_GRPC_PORT
     server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=config.MAX_CONCURRENT_TASKS * 2),
+        futures.ThreadPoolExecutor(
+            max_workers=getattr(config, "MAX_CONCURRENT_TASKS", config.MAX_CPU_CORES) * 2
+        ),
         options=[
             ("grpc.max_send_message_length", 64 * 1024 * 1024),
             ("grpc.max_receive_message_length", 64 * 1024 * 1024),
         ],
     )
     pb2_grpc.add_EngineInferenceServiceServicer_to_server(EngineInferenceServicer(), server)
-    bind_addr = f"0.0.0.0:{port}"
+    bind_addr = f"0.0.0.0:{target_port}"
     server.add_insecure_port(bind_addr)
     server.start()
     logger.info(f"[gRPC] SKU MatchOps Engine gRPC Server listening on {bind_addr}")

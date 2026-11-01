@@ -8,6 +8,7 @@ load_dotenv()
 # --- Resource & Threading Limits ---
 # Limit CPU thread pools to half of available cores to avoid resource starvation
 MAX_CPU_CORES = max(1, (os.cpu_count() or 4) // 2)
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", str(MAX_CPU_CORES)))
 for _thread_var in (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",

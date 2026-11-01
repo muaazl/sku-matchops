@@ -98,21 +98,50 @@ def get_models_status() -> dict[str, Any]:
     """Fetches detailed model statuses from the ML Engine with short TTL cache."""
     global _models_status_cache, _models_status_cache_time
     now = time.time()
-    if _models_status_cache and (now - _models_status_cache_time) < 3.0:
+    ttl = 1.0 if _models_status_cache.get("loading_in_progress") else 3.0
+    if _models_status_cache and (now - _models_status_cache_time) < ttl:
         return _models_status_cache
 
     try:
         stub = get_stub()
         resp = stub.GetModelsStatus(pb2.Empty(), timeout=5.0)
-        data = {
+        details = {
             domain: {"pipeline": s.pipeline, "classifier": s.classifier}
             for domain, s in resp.domains.items()
+        }
+        loading_in_progress = resp.status == "loading" or any(
+            s["pipeline"] == "loading" or s["classifier"] == "training"
+            for s in details.values()
+        )
+        market_ready = (
+            details.get("market", {}).get("pipeline") == "ready"
+            and details.get("market", {}).get("classifier") == "ready"
+        )
+        food_ready = (
+            details.get("food", {}).get("pipeline") == "ready"
+            and details.get("food", {}).get("classifier") == "ready"
+        )
+        is_ready = bool(market_ready and food_ready and not loading_in_progress)
+        status_str = "ready" if is_ready else ("loading" if loading_in_progress else "unloaded")
+
+        data = {
+            "status": status_str,
+            "loaded": is_ready,
+            "all_models_ready": is_ready,
+            "loading_in_progress": loading_in_progress,
+            "details": details,
         }
         _models_status_cache = data
         _models_status_cache_time = now
         return data
     except Exception as e:
-        return {"status": "offline", "error": str(e)}
+        return {
+            "status": "offline",
+            "loaded": False,
+            "all_models_ready": False,
+            "loading_in_progress": False,
+            "error": str(e),
+        }
 
 
 def trigger_load_models() -> dict[str, Any]:
