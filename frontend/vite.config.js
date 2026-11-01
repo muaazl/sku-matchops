@@ -6,6 +6,18 @@ import eslintPlugin from 'vite-plugin-eslint';
 // https://vitejs.dev/config/
 export default defineConfig({
   base: '/',
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    watch: {
+      usePolling: true,
+      interval: 100,
+    },
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 5173,
+  },
   build: {
     outDir: 'dist',
     // The MUI vendor chunk is ~540 kB (166 kB gzip) on its own; it can't be split further without

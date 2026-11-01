@@ -28,14 +28,14 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
                       └────────────┬───────────────┬────────────┘
                                    │               │
             ┌──────────────────────┘               └──────────────────────┐
-            │ HTTP:8001                                                   │ HTTP:7700
+            │ gRPC:50051 / HTTP:8001                                      │ SQL:5432
             ▼                                                             ▼
 ┌──────────────────────────────────────┐                       ┌──────────────────────┐
-│  ML Inference Engine (FastAPI/ONNX)  │                       │ Meilisearch Engine   │
-│        http://localhost:8001         │                       │ (Typo-Tolerant BM25) │
-│  • BGE-M3 Dense + Sparse Vectors     │                       │     Port 7700        │
-│  • BGE-Reranker-v2-M3 Cross-Encoder  │                       └──────────────────────┘
-│  • GLiNER Zero-Shot Named Entity Rec │
+│  ML Inference Engine (Stateless/ONNX)│                       │ PostgreSQL 16 DB     │
+│        http://localhost:8001         │                       │ • pg_trgm GIN Search │
+│  • BGE-M3 Dense + Sparse Vectors     │                       │ • Jobs & Audit Trail │
+│  • BGE-Reranker-v2-M3 Cross-Encoder  │                       │     Port 5432        │
+│  • GLiNER Zero-Shot Named Entity Rec │                       └──────────────────────┘
 │  • INT8 Dynamic Quantization Runtime │
 └──────────────────┬───────────────────┘
                    │ (HTTP:6333)
@@ -55,8 +55,7 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 | **`backend`** | `8000` | FastAPI API gateway, deterministic rules engine, batch processing worker, and audit logger. |
 | **`engine`** | `8001` | Dedicated ML inference microservice serving INT8 ONNX models and zero-shot entity extractors. |
 | **`qdrant`** | `6333` | Vector database managing BGE-M3 dense and sparse embeddings with HNSW indexing. |
-| **`meilisearch`** | `7700` | Typo-tolerant lexical search engine for high-speed catalog candidate retrieval. |
-| **`postgres`** | `5432` | PostgreSQL 16 for jobs, rules, and per-SKU audit results. Both the gateway and the engine connect directly via a pooled SQLAlchemy engine; schema is managed by Alembic (`migrate` one-shot service runs `alembic upgrade head`). |
+| **`postgres`** | `5432` | PostgreSQL 16 for jobs, rules, and per-SKU audit results. Managed exclusively by the backend gateway via a pooled SQLAlchemy engine; schema is managed by Alembic (`migrate` one-shot service runs `alembic upgrade head`). |
 
 ---
 
@@ -82,7 +81,7 @@ docker compose up -d
 ```
 
 > [!NOTE]
-> **Development vs. hardened networking.** `docker compose up` also loads `docker-compose.override.yml`, which publishes internal service ports (Qdrant `6333`, Meilisearch `7700`, engine `8001`) to the host for local debugging. For a hardened deployment, skip the override so only the backend (`8000`) and frontend (`5173`) are exposed:
+> **Development vs. hardened networking.** `docker compose up` also loads `docker-compose.override.yml`, which publishes internal service ports (Qdrant `6333`, engine `8001`) to the host for local debugging. For a hardened deployment, skip the override so only the backend (`8000`) and frontend (`5173`) are exposed:
 >
 > ```bash
 > docker compose -f docker-compose.yml up -d
@@ -132,7 +131,7 @@ You can connect your own Google Sheet catalog by following these steps:
      GOOGLE_SHEET_ID=your_extracted_sheet_id_here
      ```
 4. **Trigger Sync**:
-   - Run the catalog sync command to fetch from Google Sheets, index into Meilisearch, vectorize embeddings into Qdrant, and train classifiers:
+   - Run the catalog sync command to fetch from Google Sheets, index into PostgreSQL, vectorize embeddings into Qdrant, and train classifiers:
      ```bash
      docker compose exec engine python scripts/catalog/sync.py
      ```
@@ -163,9 +162,9 @@ If you prefer running the Python and Node services directly on your host machine
 - Python 3.10+ (Python 3.11 recommended)
 - `uv` (recommended for ultra-fast pip installs) or `pip`
 - Node.js 18+ and `pnpm` (install via `npm install -g pnpm`)
-- Running instances of **PostgreSQL** (`localhost:5432`), **Redis** (`localhost:6379`, job queue + rule cache), **Qdrant** (`localhost:6333`) and **Meilisearch** (`localhost:7700`). You can start just these containers using Docker:
+- Running instances of **PostgreSQL** (`localhost:5432`), **Redis** (`localhost:6379`, job queue + rule cache), **Qdrant** (`localhost:6333`). You can start just these containers using Docker:
   ```bash
-  docker compose up -d postgres redis qdrant meilisearch
+  docker compose up -d postgres redis qdrant
   alembic upgrade head   # create/upgrade the schema (DATABASE_URL from .env)
   ```
 - Optional: `docker compose up -d pgadmin` for a Postgres web UI at http://localhost:5050.
@@ -180,8 +179,7 @@ py -3.11 -m venv venv
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 # Install service dependencies
-uv pip install -r backend/requirements.txt
-uv pip install -r engine/requirements.txt
+uv pip install -r requirements.txt
 
 # Ingest sample catalog data & prepare ONNX models
 python scripts/catalog/sync.py --sample
@@ -218,8 +216,6 @@ pnpm start
 | `BACKEND_INTERNAL_URL` | Yes | Internal backend gateway URL. |
 | `QDRANT_URL` | Yes | Qdrant vector database URL. |
 | `QDRANT_API_KEY` | No | Qdrant API key (for secured/cloud deployments). |
-| `MEILI_URL` | Yes | Meilisearch server URL. |
-| `MEILI_MASTER_KEY` | Yes | Meilisearch API master key. |
 | `USE_INT8_MODELS` | No | Enables INT8 dynamic quantization for CPU speedup. Defaults to `true`. |
 | `FOOD_BT_MODEL` | No | BasicType classifier for Food (`arcface` or `logreg`). Defaults to `arcface`. |
 | `MARKET_BT_MODEL` | No | BasicType classifier for Market (`arcface` or `logreg`). Defaults to `arcface`. |

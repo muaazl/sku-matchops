@@ -7,12 +7,12 @@ from sqlalchemy import Connection, text
 
 from backend.app.api.endpoints.engine_callbacks import _job_progress
 from backend.app.core.db import get_db_connection
+from backend.app.core.models import jobs as jobs_table
 from backend.app.core.security import Principal, get_principal
 from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
 from backend.app.services.engine_client import cancel_engine_job
 from backend.app.services.worker import enqueue_job
 from engine import config as engine_config
-from engine.core.models import jobs as jobs_table
 
 # The list never shows the uploaded SKUs (~15 KB a job); /jobs/{id} and retry still read them
 _JOB_LIST_COLUMNS = ", ".join(c.name for c in jobs_table.columns if c.name != "input_skus_json")

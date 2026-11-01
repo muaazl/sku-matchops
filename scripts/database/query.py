@@ -35,7 +35,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def get_connection(readonly: bool = True) -> Connection:
-    from engine.core.db import get_engine
+    from backend.app.core.db import get_engine
 
     conn = get_engine().connect()
     if readonly:

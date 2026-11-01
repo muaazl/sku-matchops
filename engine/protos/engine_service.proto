@@ -1,0 +1,253 @@
+syntax = "proto3";
+
+package matchops.engine.v1;
+
+message Empty {}
+
+message SKUInput {
+  string name = 1;
+  double price = 2;
+  string description = 3;
+  string category = 4;
+}
+
+message MatchRequest {
+  repeated SKUInput skus = 1;
+  string domain = 2;
+  string rules_json = 3;
+  string tenant_id = 4;
+}
+
+message MatchResultItem {
+  string matched_catalog_name = 1;
+  double score = 2;
+  string status = 3;
+  string logic_notes = 4;
+  string suggested_bt = 5;
+  string suggested_gk = 6;
+  string suggested_region = 7;
+  string rules_applied = 8;
+}
+
+message MatchResponse {
+  string status = 1;
+  string domain = 2;
+  int32 total = 3;
+  repeated MatchResultItem results = 4;
+  map<string, double> stage_timings = 5;
+  double duration_seconds = 6;
+  string rule_version = 7;
+}
+
+message ClassifyRequest {
+  repeated SKUInput skus = 1;
+  string domain = 2;
+  string rules_json = 3;
+  string tenant_id = 4;
+}
+
+message ClassifyResultItem {
+  string suggested_bt = 1;
+  double bt_confidence = 2;
+  string bt_status = 3;
+  string bt_source = 4;
+  string model = 5;
+  string bt_model = 6;
+  string suggested_gk = 7;
+  double gk_confidence = 8;
+  string gk_status = 9;
+  string suggested_region = 10;
+  double region_confidence = 11;
+  string region_status = 12;
+  string region_source = 13;
+  string rules_applied = 14;
+  string logic_notes = 15;
+}
+
+message ClassifyResponse {
+  string status = 1;
+  string domain = 2;
+  int32 total = 3;
+  repeated ClassifyResultItem results = 4;
+  map<string, double> stage_timings = 5;
+  double duration_seconds = 6;
+  string rule_version = 7;
+}
+
+message SingleRunRequest {
+  string task = 1; // "matcher", "classifier", or "pipeline"
+  string domain = 2;
+  repeated SKUInput skus = 3;
+  string rules_json = 4;
+  string tenant_id = 5;
+}
+
+message PipelineResultItem {
+  string matched_catalog_name = 1;
+  double score = 2;
+  string status = 3;
+  string logic_notes = 4;
+  string suggested_bt = 5;
+  double bt_confidence = 6;
+  string bt_status = 7;
+  string bt_source = 8;
+  string model = 9;
+  string bt_model = 10;
+  string suggested_gk = 11;
+  double gk_confidence = 12;
+  string gk_status = 13;
+  string suggested_region = 14;
+  double region_confidence = 15;
+  string region_status = 16;
+  string region_source = 17;
+  string rules_applied = 18;
+}
+
+message SingleRunResponse {
+  string status = 1;
+  string task = 2;
+  string domain = 3;
+  int32 total = 4;
+  repeated PipelineResultItem results = 5;
+  map<string, double> stage_timings = 6;
+  double duration_seconds = 7;
+  string rule_version = 8;
+}
+
+message SuggestRequest {
+  string sku_name = 1;
+  string domain = 2;
+  string current_bt = 3;
+  string exclude_bt = 4;
+  string exclude_gk = 5;
+}
+
+message SuggestResponse {
+  string status = 1;
+  string sku_name = 2;
+  string suggested_bt = 3;
+  string suggested_gk = 4;
+  string suggested_region = 5;
+  string template_used = 6;
+  bool is_match = 7;
+}
+
+message AuditRequest {
+  string sku_name = 1;
+  string domain = 2;
+  string task = 3;
+  double price = 4;
+  string description = 5;
+  string category = 6;
+  string tenant_id = 7;
+}
+
+message AuditResponse {
+  string audit_json = 1;
+}
+
+message BatchJobRequest {
+  string job_id = 1;
+  string task = 2;
+  string domain = 3;
+  repeated SKUInput skus = 4;
+  string callback_url = 5;
+  string sheet_name = 6;
+  string created_by = 7;
+  string tenant_id = 8;
+  string rules_json = 9;
+}
+
+message UploadJobRequest {
+  string job_id = 1;
+  string task = 2;
+  string domain = 3;
+  string file_path = 4;
+  string callback_url = 5;
+  string sheet_name = 6;
+  string created_by = 7;
+  string tenant_id = 8;
+}
+
+message JobDispatchResponse {
+  string status = 1;
+  string job_id = 2;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+}
+
+message CancelJobResponse {
+  string status = 1;
+  string message = 2;
+}
+
+message HealthResponse {
+  string status = 1;
+  string service = 2;
+  repeated string loaded_domains = 3;
+  bool all_models_ready = 4;
+}
+
+message DomainModelStatus {
+  string pipeline = 1;
+  string classifier = 2;
+}
+
+message ModelsStatusResponse {
+  map<string, DomainModelStatus> domains = 1;
+  string status = 2;
+}
+
+message ManageModelsRequest {
+  string action = 1; // "load" or "reload"
+  string domain = 2;
+}
+
+message ManageModelsResponse {
+  string status = 1;
+  string message = 2;
+}
+
+message RefreshRulesRequest {
+  string rules_json = 1;
+  string version = 2;
+}
+
+message RefreshRulesResponse {
+  string status = 1;
+  string message = 2;
+}
+
+message VectorCollectionRequest {
+  string name = 1;
+}
+
+message VectorSearchRequest {
+  string name = 1;
+  string query = 2;
+  int32 limit = 3;
+}
+
+message JsonPayloadResponse {
+  string payload_json = 1;
+}
+
+service EngineInferenceService {
+  rpc Match (MatchRequest) returns (MatchResponse);
+  rpc Classify (ClassifyRequest) returns (ClassifyResponse);
+  rpc RunSingle (SingleRunRequest) returns (SingleRunResponse);
+  rpc SuggestTags (SuggestRequest) returns (SuggestResponse);
+  rpc RunAudit (AuditRequest) returns (AuditResponse);
+  rpc DispatchBatchJob (BatchJobRequest) returns (JobDispatchResponse);
+  rpc DispatchUploadJob (UploadJobRequest) returns (JobDispatchResponse);
+  rpc CancelJob (CancelJobRequest) returns (CancelJobResponse);
+  rpc GetHealth (Empty) returns (HealthResponse);
+  rpc GetModelsStatus (Empty) returns (ModelsStatusResponse);
+  rpc ManageModels (ManageModelsRequest) returns (ManageModelsResponse);
+  rpc RefreshRules (RefreshRulesRequest) returns (RefreshRulesResponse);
+  rpc ListVectorCollections (Empty) returns (JsonPayloadResponse);
+  rpc GetVectorCollection (VectorCollectionRequest) returns (JsonPayloadResponse);
+  rpc SearchVectorCollection (VectorSearchRequest) returns (JsonPayloadResponse);
+}

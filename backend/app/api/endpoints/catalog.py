@@ -1,29 +1,24 @@
 import logging
-import re
+from typing import Any
 
-import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import text
 
+from backend.app.core.db import get_connection
 from backend.app.core.security import require_platform_admin
 from backend.app.services.catalog_service import (
     check_changes_for_domain,
     clean_record_nans,
-    escape_meili_filter_value,
     get_bt_gk_cache,
     get_build_task_callable,
     get_catalog_and_brands,
     get_classifier_dicts,
     trigger_build_cache,
 )
-from backend.app.services.meilisearch_service import get_meili_client, is_meili_healthy
-from engine import config as engine_config
-from engine.core.db import get_connection
 
 logger = logging.getLogger("matchops.catalog_api")
 router = APIRouter()
 
-# Re-export data helpers for backward-compatible references
 __all__ = [
     "router",
     "get_catalog_and_brands",
@@ -36,57 +31,20 @@ __all__ = [
 def get_catalog_summary_stats(domain: str = "market"):
     """
     Returns total document counts for all 6 catalog datasets (catalog, gk, bt, category, brands, bt_gk_map)
-    in a single lightweight call (<5ms).
+    directly from PostgreSQL in a single lightweight call (<5ms).
     """
     if domain not in ("market", "food"):
         raise HTTPException(status_code=400, detail="Invalid domain. Must be 'market' or 'food'.")
 
-    # 1. Try Meilisearch
-    if is_meili_healthy():
-        try:
-            client = get_meili_client()
-            cat_index = (
-                engine_config.MEILI_INDEX_MARKET
-                if domain == "market"
-                else engine_config.MEILI_INDEX_FOOD
-            )
-            dict_index = (
-                engine_config.MEILI_INDEX_MARKET_DICTS
-                if domain == "market"
-                else engine_config.MEILI_INDEX_FOOD_DICTS
-            )
-
-            cat_stats = client.index(cat_index).get_stats()
-            cat_count = (
-                getattr(cat_stats, "number_of_documents", 0)
-                if not isinstance(cat_stats, dict)
-                else cat_stats.get("numberOfDocuments", 0)
-            )
-
-            dict_search = client.index(dict_index).search("", {"facets": ["dataset"], "limit": 0})
-            facets = dict_search.get("facetDistribution", {}).get("dataset", {})
-
-            return {
-                "domain": domain,
-                "catalog": cat_count,
-                "gk": facets.get("gk", 0),
-                "bt": facets.get("bt", 0),
-                "category": facets.get("category", 0),
-                "brands": facets.get("brands", 0),
-                "bt_gk_map": facets.get("bt_gk_map", 0),
-            }
-        except Exception as meili_err:
-            logger.warning(
-                f"[STATS] Failed to fetch summary stats from Meilisearch: {meili_err}. Falling back to the database."
-            )
-
-    # 2. Fast database query fallback
     conn = get_connection()
     try:
         p = {"domain": domain}
-        cat_count = conn.execute(
-            text("SELECT COUNT(*) FROM catalog_items WHERE domain = :domain"), p
-        ).scalar()
+        cat_count = (
+            conn.execute(
+                text("SELECT COUNT(*) FROM catalog_items WHERE domain = :domain"), p
+            ).scalar()
+            or 0
+        )
 
         dict_counts = dict(
             conn.execute(
@@ -97,13 +55,17 @@ def get_catalog_summary_stats(domain: str = "market"):
             ).fetchall()
         )
 
-        brand_count = conn.execute(
-            text("SELECT COUNT(*) FROM brand_flavors WHERE domain = :domain"), p
-        ).scalar()
+        brand_count = (
+            conn.execute(
+                text("SELECT COUNT(*) FROM brand_flavors WHERE domain = :domain"), p
+            ).scalar()
+            or 0
+        )
 
-        map_count = conn.execute(
-            text("SELECT COUNT(*) FROM bt_gk_map WHERE domain = :domain"), p
-        ).scalar()
+        map_count = (
+            conn.execute(text("SELECT COUNT(*) FROM bt_gk_map WHERE domain = :domain"), p).scalar()
+            or 0
+        )
 
         return {
             "domain": domain,
@@ -135,6 +97,9 @@ def search_catalog(
     brand: str | None = None,
     basictype: str | None = None,
 ):
+    """
+    Fast catalog and dictionary search backed by PostgreSQL pg_trgm GIN indexing and ILIKE.
+    """
     if domain not in ("market", "food"):
         raise HTTPException(status_code=400, detail="Invalid domain. Must be 'market' or 'food'.")
 
@@ -145,304 +110,185 @@ def search_catalog(
             status_code=400, detail=f"Invalid dataset. Must be one of {valid_datasets}"
         )
 
-    # =========================================================================
-    # 1. CATALOG DATASET (Uses Meilisearch with fallback to Pandas/PostgreSQL)
-    # =========================================================================
-    if dataset == "catalog":
-        if is_meili_healthy():
-            try:
-                client = get_meili_client()
-                index_name = (
-                    engine_config.MEILI_INDEX_MARKET
-                    if domain == "market"
-                    else engine_config.MEILI_INDEX_FOOD
-                )
-                index = client.index(index_name)
+    conn = get_connection()
+    try:
+        offset = max(0, (page - 1) * page_size)
+        limit = max(1, page_size)
+        raw_q = (query or "").strip()
 
-                # Build filter list
-                meili_filters = []
-                if min_price is not None:
-                    meili_filters.append(f"price >= {min_price}")
-                if max_price is not None:
-                    meili_filters.append(f"price <= {max_price}")
+        # =========================================================================
+        # 1. CATALOG DATASET (PostgreSQL pg_trgm + ILIKE with GIN Index)
+        # =========================================================================
+        if dataset == "catalog":
+            where_clauses = ["domain = :domain"]
+            params: dict[str, Any] = {"domain": domain, "limit": limit, "offset": offset}
 
-                if region:
-                    meili_filters.append(f'region = "{escape_meili_filter_value(region)}"')
-                if category:
-                    meili_filters.append(f'category = "{escape_meili_filter_value(category)}"')
-                if gk_contains:
-                    gk_terms = [t.strip() for t in gk_contains.split(",") if t.strip()]
-                    for term in gk_terms:
-                        meili_filters.append(f'gk = "{escape_meili_filter_value(term)}"')
-                if brand:
-                    meili_filters.append(f'brand = "{escape_meili_filter_value(brand)}"')
-                if basictype:
-                    meili_filters.append(f'bt = "{escape_meili_filter_value(basictype)}"')
-
-                filter_str = " AND ".join(meili_filters) if meili_filters else None
-
-                # Build sort mapping
-                sort_map = {
-                    "name": "name",
-                    "brand": "brand",
-                    "flavor": "flavor",
-                    "price": "price",
-                    "basictype": "bt",
-                    "bt": "bt",
-                    "category": "category",
-                    "region": "region",
-                    "description": "description",
-                }
-                sort_by_meili = sort_map.get(sort_by, sort_by)
-                sort_list = []
-                if sort_by_meili:
-                    sort_list.append(f"{sort_by_meili}:{sort_order}")
-
-                search_params = {
-                    "limit": page_size,
-                    "offset": (page - 1) * page_size,
-                }
-                if filter_str:
-                    search_params["filter"] = filter_str
-                if sort_list:
-                    search_params["sort"] = sort_list
-
-                q = query if query else ""
-                res = index.search(q, search_params)
-
-                hits = res.get("hits", [])
-                total = res.get("totalHits") or res.get("estimatedTotalHits", 0)
-
-                results_list = []
-                for hit in hits:
-                    doc = dict(hit)
-                    for field in ("gk", "bt", "category", "region", "brand", "flavor"):
-                        val = doc.get(field)
-                        if isinstance(val, list):
-                            doc[field] = ", ".join(val)
-                    doc["count"] = 1
-                    results_list.append(doc)
-
-                return {
-                    "results": results_list,
-                    "total": total,
-                    "page": page,
-                    "page_size": page_size,
-                    "total_pages": (total + page_size - 1) // page_size if total > 0 else 1,
-                }
-            except Exception as e:
-                logger.warning(
-                    f"[MEILI] Search failed: {e}. Falling back to Pandas in-memory search."
+            if raw_q:
+                params["q_like"] = f"%{raw_q}%"
+                params["raw_q"] = raw_q
+                where_clauses.append(
+                    "("
+                    "name ILIKE :q_like OR description ILIKE :q_like "
+                    "OR name % :raw_q OR description % :raw_q "
+                    "OR basictype ILIKE :q_like OR generic_keywords ILIKE :q_like "
+                    "OR brand ILIKE :q_like OR flavor ILIKE :q_like"
+                    ")"
                 )
 
-        # Fallback to Pandas in-memory search for catalog
-        try:
-            catalog_df, brands_df = get_catalog_and_brands(domain)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to load catalog data: {str(e)}")
+            if min_price is not None:
+                where_clauses.append("price >= :min_price")
+                params["min_price"] = min_price
+            if max_price is not None:
+                where_clauses.append("price <= :max_price")
+                params["max_price"] = max_price
+            if region:
+                where_clauses.append("region ILIKE :region")
+                params["region"] = f"%{region.strip()}%"
+            if category:
+                where_clauses.append("category ILIKE :category")
+                params["category"] = f"%{category.strip()}%"
+            if gk_contains:
+                for idx, term in enumerate(t.strip() for t in gk_contains.split(",") if t.strip()):
+                    key = f"gk_{idx}"
+                    where_clauses.append(f"generic_keywords ILIKE :{key}")
+                    params[key] = f"%{term}%"
+            if brand:
+                col = "flavor" if domain == "food" else "brand"
+                where_clauses.append(f"{col} ILIKE :brand")
+                params["brand"] = f"%{brand.strip()}%"
+            if basictype:
+                where_clauses.append("basictype ILIKE :basictype")
+                params["basictype"] = f"%{basictype.strip()}%"
 
-        df = catalog_df.copy()
-        if "id" not in df.columns:
-            df = df.reset_index().rename(columns={"index": "id"})
-        df["id"] = df["id"].astype(str)
+            where_str = " WHERE " + " AND ".join(where_clauses)
 
-        if min_price is not None:
-            df = df[df["Price"] >= min_price]
-        if max_price is not None:
-            df = df[df["Price"] <= max_price]
-        if region and "region" in df.columns:
-            df = df[df["region"].astype(str).str.contains(region, case=False, na=False)]
-        if category and "category" in df.columns:
-            df = df[df["category"].astype(str).str.contains(category, case=False, na=False)]
-        if gk_contains and "Generic keywords" in df.columns:
-            gk_terms = [t.strip() for t in gk_contains.split(",") if t.strip()]
-            for term in gk_terms:
-                df = df[
-                    df["Generic keywords"]
-                    .astype(str)
-                    .str.contains(re.escape(term), case=False, na=False)
-                ]
-        if brand and "Brand" in df.columns:
-            df = df[df["Brand"].astype(str).str.contains(brand, case=False, na=False)]
-        if basictype and "basictype" in df.columns:
-            df = df[df["basictype"].astype(str).str.contains(basictype, case=False, na=False)]
-
-        if query:
-            q = query.lower()
-            mask = pd.Series(False, index=df.index)
-            searchable_cols = [
-                "Name",
-                "Brand",
-                "Flavor",
-                "basictype",
-                "category",
-                "region",
-                "Generic keywords",
-            ]
-            for col in searchable_cols:
-                if col in df.columns:
-                    mask = mask | df[col].astype(str).str.lower().str.contains(q, na=False)
-            df = df[mask]
-
-        if sort_by:
-            col_map = {
-                "name": "Name",
-                "brand": "Brand",
-                "flavor": "Flavor",
-                "price": "Price",
+            # Sorting
+            sort_map = {
+                "name": "name",
+                "price": "price",
+                "brand": "brand",
+                "flavor": "flavor",
                 "basictype": "basictype",
                 "bt": "basictype",
+                "generic_keywords": "generic_keywords",
+                "gk": "generic_keywords",
                 "category": "category",
                 "region": "region",
-                "gk": "Generic keywords",
-                "description": "Description",
+                "description": "description",
             }
-            target_col = col_map.get(sort_by, sort_by)
-            if target_col in df.columns:
-                df = df.sort_values(by=target_col, ascending=(sort_order == "asc"))
+            order_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
+            col_target = sort_map.get(sort_by) if sort_by else None
 
-        total = len(df)
-        start = (page - 1) * page_size
-        end = start + page_size
-        paginated_df = df.iloc[start:end]
-
-        records = paginated_df.to_dict(orient="records")
-        for r in records:
-            r["name"] = r.get("Name")
-            r["brand"] = r.get("Brand")
-            r["price"] = r.get("Price")
-            r["sellercategory"] = r.get("SellerCategory")
-            r["category"] = r.get("category")
-            r["gk"] = r.get("Generic keywords")
-            r["bt"] = r.get("basictype")
-            r["merchant"] = r.get("Merchant")
-            r["flavor"] = r.get("Flavor")
-            r["description"] = r.get("Description")
-            r["region"] = r.get("region")
-            r["count"] = 1
-
-        return {
-            "results": clean_record_nans(records),
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size if total > 0 else 1,
-        }
-
-    # =========================================================================
-    # 2. DICTIONARIES DATASETS (gk, bt, category, brands, bt_gk_map)
-    # Fast path: Meilisearch (<2ms) -> Fast fallback: Direct PostgreSQL
-    # NEVER loads the 80,000 catalog rows into memory!
-    # =========================================================================
-    if is_meili_healthy():
-        try:
-            client = get_meili_client()
-            dict_index_name = (
-                engine_config.MEILI_INDEX_MARKET_DICTS
-                if domain == "market"
-                else engine_config.MEILI_INDEX_FOOD_DICTS
-            )
-            index = client.index(dict_index_name)
-
-            meili_filters = [f'dataset = "{dataset}"']
-            filter_str = " AND ".join(meili_filters)
-
-            # Sorting mapping
-            if sort_by:
-                sort_field = sort_by
-                if sort_field in ("sku_count",):
-                    sort_field = "count"
-                elif sort_field in ("gks", "basictype", "brand_name", "flavor_name"):
-                    sort_field = "name"
-                sort_list = [f"{sort_field}:{sort_order}"]
+            if col_target:
+                order_by_sql = f"{col_target} {order_dir} NULLS LAST, id ASC"
+            elif raw_q:
+                order_by_sql = "GREATEST(similarity(COALESCE(name, ''), :raw_q), similarity(COALESCE(description, ''), :raw_q)) DESC, id ASC"
             else:
-                sort_list = ["count:desc"]
+                order_by_sql = "id ASC"
 
-            search_params = {
-                "limit": page_size,
-                "offset": (page - 1) * page_size,
-                "filter": filter_str,
-                "sort": sort_list,
-            }
-            q = query if query else ""
-            res = index.search(q, search_params)
+            count_sql = f"SELECT COUNT(*) FROM catalog_items{where_str}"
+            total = conn.execute(text(count_sql), params).scalar() or 0
 
-            hits = res.get("hits", [])
-            total = res.get("totalHits") or res.get("estimatedTotalHits", 0)
+            select_sql = f"""
+                SELECT id, name, brand, flavor, basictype, generic_keywords, price, category, region, description
+                FROM catalog_items
+                {where_str}
+                ORDER BY {order_by_sql}
+                LIMIT :limit OFFSET :offset
+            """
+            rows = conn.execute(text(select_sql), params).fetchall()
 
             results_list = []
-            for hit in hits:
-                doc = dict(hit)
-                if dataset == "bt_gk_map":
-                    doc["bt"] = doc.get("bt") or doc.get("name")
-                elif dataset == "brands":
-                    if domain == "food":
-                        doc["flavor_name"] = doc.get("name")
-                    else:
-                        doc["brand_name"] = doc.get("name")
-                results_list.append(doc)
+            for r in rows:
+                item = {
+                    "id": str(r[0]),
+                    "name": r[1],
+                    "brand": r[2],
+                    "flavor": r[3],
+                    "basictype": r[4],
+                    "generic_keywords": r[5],
+                    "price": r[6],
+                    "category": r[7],
+                    "region": r[8],
+                    "description": r[9],
+                    "count": 1,
+                }
+                results_list.append(item)
 
             return {
-                "results": results_list,
+                "results": clean_record_nans(results_list),
                 "total": total,
                 "page": page,
                 "page_size": page_size,
                 "total_pages": (total + page_size - 1) // page_size if total > 0 else 1,
             }
-        except Exception as e:
-            logger.warning(
-                f"[MEILI] Dictionary search failed: {e}. Falling back to direct database query."
-            )
 
-    # Direct database fallback (Zero catalog loading)
-    conn = get_connection()
-    try:
-        offset = (page - 1) * page_size
-        q_param = f"%{query.strip().lower()}%" if query else None
-        p = {"domain": domain, "q": q_param, "limit": page_size, "offset": offset}
+        # =========================================================================
+        # 2. DICTIONARIES DATASETS (gk, bt, category, brands, bt_gk_map)
+        # =========================================================================
+        p = {"domain": domain, "limit": limit, "offset": offset}
+        if raw_q:
+            p["q_like"] = f"%{raw_q}%"
+            p["raw_q"] = raw_q
 
         if dataset in ("gk", "bt", "category"):
             tag_type = "region" if (domain == "food" and dataset == "category") else dataset
-            if sort_by == "name":
-                sort_col = "tag"
-                order_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
-            else:
-                sort_col = "catalog_count"
-                order_dir = "ASC" if sort_by and sort_order.lower() == "asc" else "DESC"
-
             p["tag_type"] = tag_type
-            where = "WHERE domain = :domain AND tag_type = :tag_type"
-            if q_param:
-                where += " AND LOWER(tag) LIKE :q"
-            total = conn.execute(
-                text(f"SELECT COUNT(*) FROM classifier_dictionaries {where}"), p
-            ).scalar()
+            where_clauses = ["domain = :domain", "tag_type = :tag_type"]
+
+            if raw_q:
+                where_clauses.append("(tag ILIKE :q_like OR tag % :raw_q)")
+
+            where_str = " WHERE " + " AND ".join(where_clauses)
+            if sort_by == "name":
+                order_by = f"tag {'DESC' if sort_order.lower() == 'desc' else 'ASC'}"
+            elif raw_q and not sort_by:
+                order_by = "similarity(tag, :raw_q) DESC, catalog_count DESC"
+            else:
+                order_by = (
+                    f"catalog_count {'ASC' if sort_by and sort_order.lower() == 'asc' else 'DESC'}"
+                )
+
+            total = (
+                conn.execute(
+                    text(f"SELECT COUNT(*) FROM classifier_dictionaries{where_str}"), p
+                ).scalar()
+                or 0
+            )
             rows = conn.execute(
                 text(
-                    f"SELECT id, tag, catalog_count FROM classifier_dictionaries {where} ORDER BY {sort_col} {order_dir} LIMIT :limit OFFSET :offset"
+                    f"SELECT id, tag, catalog_count FROM classifier_dictionaries{where_str} ORDER BY {order_by} LIMIT :limit OFFSET :offset"
                 ),
                 p,
             ).fetchall()
             results = [{"id": f"{dataset}_{r[0]}", "name": r[1], "count": r[2]} for r in rows]
 
         elif dataset == "brands":
-            if sort_by == "name":
-                sort_col = "name"
-                order_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
-            elif sort_by in ("is_weak", "is_meat", "is_vegetable", "is_seafood"):
-                sort_col = sort_by
-                order_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
-            else:
-                sort_col = "catalog_count"
-                order_dir = "ASC" if sort_by and sort_order.lower() == "asc" else "DESC"
+            where_clauses = ["domain = :domain"]
+            if raw_q:
+                where_clauses.append(
+                    "(name ILIKE :q_like OR COALESCE(aliases, '') ILIKE :q_like OR name % :raw_q)"
+                )
 
-            where = "WHERE domain = :domain"
-            if q_param:
-                where += " AND (LOWER(name) LIKE :q OR LOWER(COALESCE(aliases, '')) LIKE :q)"
-            total = conn.execute(text(f"SELECT COUNT(*) FROM brand_flavors {where}"), p).scalar()
+            where_str = " WHERE " + " AND ".join(where_clauses)
+            if sort_by == "name":
+                order_by = f"name {'DESC' if sort_order.lower() == 'desc' else 'ASC'}"
+            elif sort_by in ("is_weak", "is_meat", "is_vegetable", "is_seafood"):
+                order_by = f"{sort_by} {'DESC' if sort_order.lower() == 'desc' else 'ASC'}"
+            elif raw_q and not sort_by:
+                order_by = "similarity(name, :raw_q) DESC, catalog_count DESC"
+            else:
+                order_by = (
+                    f"catalog_count {'ASC' if sort_by and sort_order.lower() == 'asc' else 'DESC'}"
+                )
+
+            total = (
+                conn.execute(text(f"SELECT COUNT(*) FROM brand_flavors{where_str}"), p).scalar()
+                or 0
+            )
             rows = conn.execute(
                 text(
-                    f"SELECT id, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, catalog_count FROM brand_flavors {where} ORDER BY {sort_col} {order_dir} LIMIT :limit OFFSET :offset"
+                    f"SELECT id, name, aliases, is_weak, is_meat, is_vegetable, is_seafood, catalog_count FROM brand_flavors{where_str} ORDER BY {order_by} LIMIT :limit OFFSET :offset"
                 ),
                 p,
             ).fetchall()
@@ -455,33 +301,38 @@ def search_catalog(
                     "count": r[7],
                 }
                 if domain == "market":
-                    item["brand_name"] = r[1]
                     item["is_weak"] = bool(r[3])
                 else:
-                    item["flavor_name"] = r[1]
                     item["is_meat"] = bool(r[4])
                     item["is_vegetable"] = bool(r[5])
                     item["is_seafood"] = bool(r[6])
                 results.append(item)
 
         elif dataset == "bt_gk_map":
-            if sort_by in ("name", "bt"):
-                sort_col = "basictype"
-                order_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
-            elif sort_by == "gk_count":
-                sort_col = "gk_count"
-                order_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
-            else:
-                sort_col = "catalog_count"
-                order_dir = "ASC" if sort_by and sort_order.lower() == "asc" else "DESC"
+            where_clauses = ["domain = :domain"]
+            if raw_q:
+                where_clauses.append(
+                    "(basictype ILIKE :q_like OR generic_keywords ILIKE :q_like OR basictype % :raw_q)"
+                )
 
-            where = "WHERE domain = :domain"
-            if q_param:
-                where += " AND (LOWER(basictype) LIKE :q OR LOWER(generic_keywords) LIKE :q)"
-            total = conn.execute(text(f"SELECT COUNT(*) FROM bt_gk_map {where}"), p).scalar()
+            where_str = " WHERE " + " AND ".join(where_clauses)
+            if sort_by in ("name", "bt"):
+                order_by = f"basictype {'DESC' if sort_order.lower() == 'desc' else 'ASC'}"
+            elif sort_by == "gk_count":
+                order_by = f"gk_count {'DESC' if sort_order.lower() == 'desc' else 'ASC'}"
+            elif raw_q and not sort_by:
+                order_by = "similarity(basictype, :raw_q) DESC, catalog_count DESC"
+            else:
+                order_by = (
+                    f"catalog_count {'ASC' if sort_by and sort_order.lower() == 'asc' else 'DESC'}"
+                )
+
+            total = (
+                conn.execute(text(f"SELECT COUNT(*) FROM bt_gk_map{where_str}"), p).scalar() or 0
+            )
             rows = conn.execute(
                 text(
-                    f"SELECT id, basictype, generic_keywords, gk_count, catalog_count FROM bt_gk_map {where} ORDER BY {sort_col} {order_dir} LIMIT :limit OFFSET :offset"
+                    f"SELECT id, basictype, generic_keywords, gk_count, catalog_count FROM bt_gk_map{where_str} ORDER BY {order_by} LIMIT :limit OFFSET :offset"
                 ),
                 p,
             ).fetchall()
@@ -489,7 +340,6 @@ def search_catalog(
                 {
                     "id": f"map_{r[0]}",
                     "bt": r[1],
-                    "name": r[1],
                     "gks": r[2],
                     "gk_count": r[3],
                     "count": r[4],

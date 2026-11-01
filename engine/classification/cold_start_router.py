@@ -169,26 +169,18 @@ class TaxonomyLifecycleRegistry:
                     vc = cat_df[bt_col].astype(str).str.strip().value_counts()
                     counts = {str(k): int(v) for k, v in vc.items() if str(k).strip()}
             else:
-                # Fall back to the catalog_items table
-                try:
-                    from sqlalchemy import text
-
-                    from engine.core.db import get_connection
-
-                    with get_connection() as conn:
-                        rows = conn.execute(
-                            text(
-                                "SELECT basictype, COUNT(*) FROM catalog_items WHERE domain = :domain GROUP BY basictype"
-                            ),
-                            {"domain": self.domain},
-                        ).fetchall()
-                    counts = {
-                        str(r[0]).strip(): int(r[1]) for r in rows if r[0] and str(r[0]).strip()
-                    }
-                except Exception as db_err:
-                    logger.warning(
-                        f"[{self.domain}] Could not read class counts from the database: {db_err}"
-                    )
+                # Fall back to cached Feather file
+                feather_path = os.path.join(self.cache_dir, f"{self.domain}_catalog_mmap.feather")
+                if os.path.exists(feather_path):
+                    try:
+                        f_df = pd.read_feather(feather_path)
+                        for col in ("basictype", "Basic Type", "basic_type"):
+                            if col in f_df.columns:
+                                vc = f_df[col].astype(str).str.strip().value_counts()
+                                counts = {str(k): int(v) for k, v in vc.items() if str(k).strip()}
+                                break
+                    except Exception as fe_err:
+                        logger.warning(f"[{self.domain}] Could not read feather cache: {fe_err}")
 
             # Assign counts for all known BTs
             self.class_counts = {bt: counts.get(bt, 0) for bt in self.class_descriptions.keys()}
@@ -225,8 +217,8 @@ class TaxonomyLifecycleRegistry:
             try:
                 cached = joblib.load(cache_path)
                 cached_classes = cached.get("classes", [])
-                # Verify that warm classes match cached classes
-                if set(cached_classes) == set(self.warm_classes):
+                # Compare the warm set used at build time ("classes" can be a subset: warm classes without cached SKU vectors get no centroid)
+                if set(cached.get("warm_classes", cached_classes)) == set(self.warm_classes):
                     self.warm_centroids = cached["centroids"]
                     self.warm_index_to_class = cached_classes
                     self.class_to_warm_index = {
@@ -258,13 +250,14 @@ class TaxonomyLifecycleRegistry:
         df_clean = cat_df.dropna(subset=[bt_col]).copy()
         df_clean[bt_col] = df_clean[bt_col].astype(str).str.strip()
 
+        # fillna("") first: keys must match classifier training (df.fillna("")), not "nan"
         names = (
-            df_clean["Name"].astype(str).str.strip().tolist()
+            df_clean["Name"].fillna("").astype(str).str.strip().tolist()
             if "Name" in df_clean.columns
             else [""] * len(df_clean)
         )
         descs = (
-            df_clean["Description"].astype(str).str.strip().tolist()
+            df_clean["Description"].fillna("").astype(str).str.strip().tolist()
             if "Description" in df_clean.columns
             else [""] * len(df_clean)
         )
@@ -274,7 +267,9 @@ class TaxonomyLifecycleRegistry:
             else ("Category" if "Category" in df_clean.columns else "")
         )
         cats = (
-            df_clean[col_cat].astype(str).str.strip().tolist() if col_cat else [""] * len(df_clean)
+            df_clean[col_cat].fillna("").astype(str).str.strip().tolist()
+            if col_cat
+            else [""] * len(df_clean)
         )
 
         centroids_list = []
@@ -320,7 +315,11 @@ class TaxonomyLifecycleRegistry:
             self.class_to_warm_index = {c: i for i, c in enumerate(self.warm_index_to_class)}
 
             joblib.dump(
-                {"classes": self.warm_index_to_class, "centroids": self.warm_centroids},
+                {
+                    "classes": self.warm_index_to_class,
+                    "centroids": self.warm_centroids,
+                    "warm_classes": list(self.warm_classes),
+                },
                 cache_path,
             )
             logger.info(f"[CENTROIDS] Successfully cached {len(self.warm_centroids)} prototypes.")

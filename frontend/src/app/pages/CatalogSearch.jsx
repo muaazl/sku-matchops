@@ -208,8 +208,8 @@ export default function CatalogSearch() {
           return [
             { field: 'name', headerName: 'SKU Name', flex: 1.5, minWidth: 260 },
             { field: 'category', headerName: 'Categories', width: 140 },
-            { field: 'gk', headerName: 'Generic Keywords', flex: 1.2, minWidth: 250 },
-            { field: 'bt', headerName: 'Basic Type', width: 150 },
+            { field: 'generic_keywords', headerName: 'Generic Keywords', flex: 1.2, minWidth: 250 },
+            { field: 'basictype', headerName: 'Basic Type', width: 150 },
             { field: 'brand', headerName: 'Brand', width: 140 },
             {
               field: 'price',
@@ -226,8 +226,8 @@ export default function CatalogSearch() {
         } else {
           return [
             { field: 'name', headerName: 'SKU Name', flex: 1.5, minWidth: 260 },
-            { field: 'gk', headerName: 'Generic Keywords', flex: 1.2, minWidth: 250 },
-            { field: 'bt', headerName: 'Basic Type', width: 150 },
+            { field: 'generic_keywords', headerName: 'Generic Keywords', flex: 1.2, minWidth: 250 },
+            { field: 'basictype', headerName: 'Basic Type', width: 150 },
             { field: 'region', headerName: 'Region', width: 120 },
             { field: 'flavor', headerName: 'Flavor', width: 140 },
             {
@@ -737,7 +737,7 @@ export default function CatalogSearch() {
                     (data?.results || []).map((row) => (
                       <StyledTableRow key={row.id}>
                         {columns.map((col) => {
-                          const value = row[col.field];
+                          const value = row[col.field] ?? (col.field === 'gk' || col.field === 'generic_keywords' ? (row.generic_keywords || row.gk) : (col.field === 'bt' || col.field === 'basictype' ? (row.basictype || row.bt) : undefined));
                           let cellContent = value;
                           if (col.renderCell) {
                             cellContent = col.renderCell({ value, row });

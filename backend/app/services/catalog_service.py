@@ -58,7 +58,7 @@ def get_bt_gk_cache(domain: str) -> dict[str, Any]:
 
     # Reconstruct from the bt_gk_map table if pkl cache is missing
     try:
-        from engine.core.db import get_connection
+        from backend.app.core.db import get_connection
 
         with get_connection() as conn:
             rows = conn.execute(
@@ -79,11 +79,6 @@ def get_bt_gk_cache(domain: str) -> dict[str, Any]:
 def clean_record_nans(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert pd.isna/NaN values in records to None for clean JSON serialization."""
     return [{k: (None if pd.isna(v) else v) for k, v in r.items()} for r in records]
-
-
-def escape_meili_filter_value(val: str) -> str:
-    """Escapes double quotes and backslashes for safe inclusion in Meilisearch filter strings."""
-    return val.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _build_occurrence_uids(df: pd.DataFrame, name_col: str = "Name"):
@@ -112,7 +107,7 @@ def check_changes_for_domain(domain: str, limit: int = 50) -> dict:
     """Checks differences between Google Sheets and the cached catalog items in the database."""
     import polars as pl
 
-    from engine.core.db import get_connection
+    from backend.app.core.db import get_connection
 
     conn = get_connection()
     cached_df = pd.DataFrame()
@@ -272,22 +267,25 @@ def _bg_build_cache():
     global _build_in_progress
     logger.info("Background cache build and pre-training started...")
     try:
+        from backend.app.services.catalog_sync import (
+            compute_and_store_dictionary_counts,
+            sync_bt_gk_map_to_database,
+            sync_catalog_to_database,
+            sync_classifier_dictionaries_to_database,
+        )
+
         for domain in ("market", "food"):
             logger.info(f"Rebuilding Feather cache for {domain}...")
-            cat_df, _ = DataIngestion.load_catalog(
-                engine_config.GOOGLE_SHEET_ID, domain=domain, force_fetch=True
-            )
+            cat_df, _ = sync_catalog_to_database(engine_config.GOOGLE_SHEET_ID, domain=domain)
             try:
-                DataIngestion.load_classifier_dictionaries(
-                    engine_config.GOOGLE_SHEET_ID, domain=domain, force_fetch=True
+                sync_classifier_dictionaries_to_database(
+                    engine_config.GOOGLE_SHEET_ID, domain=domain
                 )
-                DataIngestion.load_bt_gk_map_from_sheets(
-                    engine_config.GOOGLE_SHEET_ID, domain=domain, force_fetch=True
+                sync_bt_gk_map_to_database(
+                    engine_config.GOOGLE_SHEET_ID, domain=domain, cat_df=cat_df
                 )
-                DataIngestion.compute_and_store_dictionary_counts(domain, cat_df=cat_df)
-                from engine.data_pipeline.meilisearch_sync import sync_dictionaries_to_meili
+                compute_and_store_dictionary_counts(domain, cat_df=cat_df)
 
-                sync_dictionaries_to_meili(domain)
             except Exception as dict_err:
                 logger.warning(
                     f"Could not refresh dictionaries for {domain} in background build: {dict_err}"

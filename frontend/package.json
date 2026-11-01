@@ -4,8 +4,10 @@
   "license": "Apache-2.0",
   "private": true,
   "engines": {
-    "node": ">=24"
+    "node": ">=18.17.0",
+    "pnpm": ">=9.0.0"
   },
+  "packageManager": "pnpm@9.15.0",
   "dependencies": {
     "@emotion/react": "^11.10.6",
     "@emotion/styled": "^11.10.6",
@@ -33,6 +35,8 @@
   "scripts": {
     "dev": "vite",
     "test": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "start": "vite",
     "build": "vite build",
     "serve": "vite preview",
@@ -42,6 +46,7 @@
     "format:check": "prettier ./src --check"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.0",
     "@testing-library/jest-dom": "^5.16.5",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",

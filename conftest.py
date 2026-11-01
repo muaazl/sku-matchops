@@ -50,7 +50,7 @@ def pg():
     global _pg_error
     if _pg_error is None:
         try:
-            from engine.core.db import init_db
+            from backend.app.core.db import init_db
 
             _create_database_if_missing(TEST_DATABASE_URL)
             init_db()
@@ -60,6 +60,6 @@ def pg():
     if _pg_error:
         pytest.skip(_pg_error)
 
-    from engine.core.db import get_engine
+    from backend.app.core.db import get_engine
 
     return get_engine()

@@ -57,8 +57,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("matchops.sync_catalog")
 
+from backend.app.core.db import get_engine, init_db
 from engine import config
-from engine.core.db import get_engine, init_db
 from engine.core.resource_loader import _get_vector_store, get_classifier, get_pipeline
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.nlp.text_cleaner import TextPipeline
@@ -138,20 +138,17 @@ def sync_db(domain: str, sheet_id: str, mode: str):
     else:
         init_db()
 
-    cat_df, _ = DataIngestion.load_catalog(sheet_id, domain=domain, force_fetch=True)
-    DataIngestion.load_classifier_dictionaries(sheet_id, domain=domain, force_fetch=True)
-    DataIngestion.load_bt_gk_map_from_sheets(
-        sheet_id, domain=domain, force_fetch=True, cat_df=cat_df
+    from backend.app.services.catalog_sync import (
+        compute_and_store_dictionary_counts,
+        sync_bt_gk_map_to_database,
+        sync_catalog_to_database,
+        sync_classifier_dictionaries_to_database,
     )
-    DataIngestion.compute_and_store_dictionary_counts(domain, cat_df=cat_df)
 
-    try:
-        from engine.data_pipeline.meilisearch_sync import sync_dictionaries_to_meili
-
-        sync_dictionaries_to_meili(domain)
-        logger.info(f"[{domain.upper()}] Meilisearch dictionary indexes updated.")
-    except Exception as e:
-        logger.warning(f"[{domain.upper()}] Could not sync dictionaries to Meilisearch: {e}")
+    cat_df, _ = sync_catalog_to_database(sheet_id, domain=domain)
+    sync_classifier_dictionaries_to_database(sheet_id, domain=domain)
+    sync_bt_gk_map_to_database(sheet_id, domain=domain, cat_df=cat_df)
+    compute_and_store_dictionary_counts(domain, cat_df=cat_df)
 
     return cat_df
 

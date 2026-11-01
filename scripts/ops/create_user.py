@@ -17,8 +17,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from backend.app.api.endpoints.auth import create_user
+from backend.app.core.db import get_engine, init_db
 from backend.app.core.security import ROLES
-from engine.core.db import get_engine, init_db
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create a MatchOps user.")

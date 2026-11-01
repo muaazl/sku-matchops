@@ -189,17 +189,14 @@ class TaskQueue:
 
     @staticmethod
     def _mark_job_failed(task: dict, error: str) -> None:
-        from engine.pipeline.persistence import record_job_failure
-
-        started = task.get("first_claimed_at") or task.get("enqueued_at") or _now()
         try:
-            record_job_failure(
-                task["job_id"],
-                f"{error} (gave up after {task['attempts']} attempts)",
-                round((_now() - started) / 60, 4),
-            )
+            from engine.pipeline.worker_runner import _notify_failure
+
+            err_msg = f"{error} (gave up after {task.get('attempts', 1)} attempts)"
+            payload = task.get("payload") or {"job_id": task["job_id"]}
+            _notify_failure(payload, err_msg)
         except Exception as e:
-            logger.error(f"[QUEUE] Could not mark job {task['job_id']} failed: {e}")
+            logger.error(f"[QUEUE] Could not mark job {task.get('job_id')} failed: {e}")
 
     # -- dead-letter queue ----------------------------------------------------------------------
 

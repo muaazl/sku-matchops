@@ -27,6 +27,9 @@ ngrok.exe
 
 # Python & Testing Artifacts
 __pycache__/
+**/__pycache__/
+protos/__pycache__/
+*.pyc
 *.py[cod]
 *$py.class
 *.pytest_cache/
@@ -48,20 +51,11 @@ env.bak/
 venv.bak/
 
 # Runtime Database & Log Files
-*.db
-*.db-wal
-*.db-shm
-*.sqlite3
 *.log
 *.log*
 app.log
 data/*.log
 data/logs/
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/meilisearch/
-data/meilisearch_data/
 data/qdrant/
 data/postgres/
 data/cache/
@@ -106,5 +100,4 @@ scratch/
 walkthrough.md
 openwiki/
 AGENTS.md
-.github/
 *.bat

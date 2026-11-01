@@ -135,28 +135,6 @@ def _load_flavor_data():
         except Exception as e:
             logger.warning(f"Failed to read Feather cache for flavor rules: {e}")
 
-    if brands_df.empty:
-        try:
-            from sqlalchemy import text
-
-            from engine.core.db import get_connection
-
-            with get_connection() as conn:
-                brands_df = pd.read_sql_query(
-                    text(
-                        'SELECT name AS "Flavor Name", aliases AS "Aliases", is_weak AS "Is_Weak", '
-                        'is_meat AS "Is_Meat", is_vegetable AS "Is_Vegetable", is_seafood AS "Is_Seafood" '
-                        "FROM brand_flavors WHERE domain = 'food'"
-                    ),
-                    conn,
-                )
-            for col in ["Is_Weak", "Is_Meat", "Is_Vegetable", "Is_Seafood"]:
-                if col in brands_df.columns:
-                    brands_df[col] = brands_df[col].astype(bool)
-        except Exception as e:
-            logger.warning(f"Failed to load flavor data from the database for flavor rules: {e}")
-            brands_df = pd.DataFrame()
-
     flavors_dict, meat_flavors, vegetable_flavors, seafood_flavors, _ = build_food_flavors_info(
         brands_df
     )
