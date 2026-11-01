@@ -60,7 +60,7 @@ services:
   engine:
     build:
       context: .
-      dockerfile: Dockerfile.engine
+      dockerfile: docker/Dockerfile.engine
     container_name: sku_matchops_engine
     mem_limit: 4800m
     expose:
@@ -85,7 +85,7 @@ services:
       - ./models:/host_models:ro
       - ./data/cache:/host_cache:ro
       - ./scripts:/app/scripts
-      - ./docker-entrypoint-engine.py:/app/docker-entrypoint-engine.py
+      - ./docker/docker-entrypoint-engine.py:/app/docker-entrypoint-engine.py
     depends_on:
       qdrant:
         condition: service_started
@@ -96,7 +96,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: docker/Dockerfile.backend
     container_name: sku_matchops_backend
     mem_limit: 512m
     ports:
@@ -119,8 +119,7 @@ services:
       - ./data:/app/data
       - cache_data:/app/data/cache
       - ./scripts:/app/scripts
-      - ./alembic.ini:/app/alembic.ini
-      - ./docker-entrypoint-backend.py:/app/docker-entrypoint-backend.py
+      - ./docker/docker-entrypoint-backend.py:/app/docker-entrypoint-backend.py
     depends_on:
       postgres:
         condition: service_healthy

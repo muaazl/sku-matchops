@@ -17,8 +17,8 @@ from backend.app.core.config import DEFAULT_TENANT
 from backend.app.schemas.models import BaseRequest
 from engine.core.observability import TRACE_ID
 from engine.pipeline.task_queue import get_task_queue
-from protos import engine_service_pb2 as pb2
-from protos import engine_service_pb2_grpc as pb2_grpc
+from engine.protos import engine_service_pb2 as pb2
+from engine.protos import engine_service_pb2_grpc as pb2_grpc
 
 logger = logging.getLogger("matchops.engine_client")
 

@@ -1,24 +1,19 @@
 import logging
-import os
-
-from engine import config
+from sqlalchemy import text
+from backend.app.db.schema import metadata
+from backend.app.db.session import get_engine
 
 logger = logging.getLogger("matchops.db.init")
 
 
 def init_db() -> None:
-    """Applies all pending Alembic schema migrations (idempotent)."""
-    from alembic import command
-    from alembic.config import Config
-
-    # Locate alembic.ini (either in root or /app)
-    ini_path = os.path.join(config.ROOT_DIR, "alembic.ini")
-    if not os.path.exists(ini_path) and os.path.exists("/app/alembic.ini"):
-        ini_path = "/app/alembic.ini"
-
-    migrations_dir = os.path.join(os.path.dirname(__file__), "migrations")
-
-    cfg = Config(ini_path)
-    cfg.set_main_option("script_location", migrations_dir)
-    command.upgrade(cfg, "head")
-    logger.info("Database schema is fully synchronized with head.")
+    """Synchronizes PostgreSQL database schema directly using SQLAlchemy metadata."""
+    engine = get_engine()
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm;"))
+        metadata.create_all(engine)
+        logger.info("Database schema is fully synchronized.")
+    except Exception as e:
+        logger.error(f"Failed to synchronize database schema: {e}")
+        raise

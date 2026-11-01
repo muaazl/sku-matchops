@@ -28,8 +28,8 @@ from engine.rules_engine.loader import (
     snapshot_rules,
 )
 from engine.templates.template_suggest import suggest_tags_from_template
-from protos import engine_service_pb2 as pb2
-from protos import engine_service_pb2_grpc as pb2_grpc
+from engine.protos import engine_service_pb2 as pb2
+from engine.protos import engine_service_pb2_grpc as pb2_grpc
 
 logger = logging.getLogger("matchops.engine.grpc")
 
