@@ -11,8 +11,8 @@ import time
 
 import requests
 
+from backend.app.core.db import log_outbound_request
 from backend.app.schemas.models import SKUItem
-from engine.core.db import log_outbound_request
 
 logger = logging.getLogger("matchops.portal_service")
 

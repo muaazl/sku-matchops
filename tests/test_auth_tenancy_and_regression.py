@@ -210,7 +210,7 @@ def test_admin_succeeds_on_admin_endpoints(app_client, tenants, auth_on, monkeyp
     assert app_client.post("/models/reload", headers=platform).status_code == 200
     assert app_client.get("/api-requests", headers=platform).status_code == 200
 
-    from engine.core.db import get_engine
+    from backend.app.core.db import get_engine
 
     with get_engine().begin() as conn:
         conn.execute(text("DELETE FROM users WHERE username = :u"), {"u": new_user})
@@ -347,7 +347,7 @@ def test_new_jobs_and_results_are_stamped_with_the_tenant(
     pg, app_client, tenants, auth_on, monkeypatch
 ):
     from backend.app.services import worker
-    from engine.pipeline.persistence import record_job_completion
+    from backend.app.services.persistence import record_job_completion
 
     dispatched = []
     monkeypatch.setattr(worker, "dispatch_batch_job", lambda **kw: dispatched.append(kw))
@@ -400,7 +400,7 @@ def test_migration_0002_upgrade_downgrade_is_clean(pg):
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
 
-    from engine.core.models import metadata
+    from backend.app.core.models import metadata
 
     base = make_url(pg.url.render_as_string(hide_password=False))
     name = f"matchops_mig_{uuid.uuid4().hex[:8]}"
@@ -562,7 +562,7 @@ def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
         if r.name == handler_logger.name
     )
 
-    from engine.core.db import get_engine
+    from backend.app.core.db import get_engine
 
     with get_engine().begin() as conn:
         job_id = resp.json()["job_id"]
@@ -769,7 +769,7 @@ def test_system_status_is_tenant_scoped(app_client, tenants, tenant_data, auth_o
         "/system/status", headers=_hdr(app_client, tenants.user["a_reviewer"])
     ).json()
     assert a["tenant_id"] == tenants.a
-    from engine.core.db import get_engine
+    from backend.app.core.db import get_engine
 
     with get_engine().connect() as conn:
         expected = conn.execute(

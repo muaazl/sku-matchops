@@ -15,17 +15,26 @@ from engine.pipeline import task_queue
 from engine.pipeline.task_queue import BULK, DLQ, INFLIGHT, REALTIME, TASKS, TaskQueue, run_worker
 
 REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
+_redis_available: bool | None = None
 
 
 @pytest.fixture
 def redis_client():
+    global _redis_available
     import redis
 
-    client = redis.Redis.from_url(REDIS_URL, socket_connect_timeout=1, decode_responses=True)
-    try:
-        client.ping()
-    except Exception:
+    if _redis_available is False:
         pytest.skip(f"Redis not available at {REDIS_URL}")
+
+    client = redis.Redis.from_url(REDIS_URL, socket_connect_timeout=1, decode_responses=True)
+    if _redis_available is None:
+        try:
+            client.ping()
+            _redis_available = True
+        except Exception:
+            _redis_available = False
+            pytest.skip(f"Redis not available at {REDIS_URL}")
+
     client.flushdb()  # dedicated test DB
     yield client
     client.flushdb()

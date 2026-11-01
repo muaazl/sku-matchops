@@ -2,7 +2,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -224,7 +224,8 @@ class TestColdStartRouter(unittest.TestCase):
         self.assertEqual(batch_results[0][0], "Liquid Detergent")
         self.assertEqual(batch_results[1][0], "Fabric Softener")
 
-    def test_router_integration_as_classifier_fallback(self):
+    @patch.object(ZeroShotClassifier, "_load_arcface_model", return_value=None)
+    def test_router_integration_as_classifier_fallback(self, _mock_load):
         """Tests that ColdStartRouter acts as a seamless fallback inside ZeroShotClassifier."""
         descriptions = {
             "bt_descriptions": {

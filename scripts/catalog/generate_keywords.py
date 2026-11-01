@@ -91,7 +91,7 @@ def fetch_low_confidence_skus(job_ids: list[str], max_conf: float = 0.75) -> lis
     """Fetches non-high-confidence SKUs from processed_skus for the specified jobs."""
     from sqlalchemy import text
 
-    from engine.core.db import get_connection
+    from backend.app.core.db import get_connection
 
     query = """
     SELECT sku_name
@@ -119,7 +119,7 @@ def fetch_catalog_few_shots(
     """Fetches 10-20 high quality tagged SKUs from catalog_items across specified categories."""
     from sqlalchemy import text
 
-    from engine.core.db import get_connection
+    from backend.app.core.db import get_connection
 
     examples = []
     rows_by_cat = {}

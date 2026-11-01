@@ -62,6 +62,14 @@ def seafood_rule(pg):
 class TestAuditAlignment:
     @classmethod
     def setup_class(cls):
+        import os
+
+        from engine import config
+
+        if not os.path.exists(config.BI_ENCODER_ONNX) or not os.path.exists(
+            config.get_bt_arcface_onnx_path("food")
+        ):
+            pytest.skip("Local ONNX models not found on disk for TestAuditAlignment")
         # Warm up models for food domain
         get_classifier("food")
         get_pipeline("food")

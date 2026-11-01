@@ -9,10 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-from sqlalchemy import text
-
 from engine import config
-from engine.core.db import get_connection
 
 logger = logging.getLogger("matchops.rules_loader")
 
@@ -43,73 +40,22 @@ class Rule:
 
 
 def load_rules_from_db():
-    """Loads all active rules from the database into the in-memory cache."""
+    """Loads all active rules from Redis cache into the in-memory cache."""
     global _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS
     try:
-        with get_connection() as conn:
-            rules_rows = conn.execute(
-                text("""
-                SELECT id, rule_id, domain, priority, description, reasoning, condition_logic, is_active,
-                       tenant_id
-                FROM rules WHERE is_active = 1
-                ORDER BY priority ASC, rule_id ASC
-            """)
-            ).fetchall()
-            cond_rows = conn.execute(
-                text(
-                    "SELECT rule_id, condition_group, condition_type, value, negate FROM conditions ORDER BY id"
-                )
-            ).fetchall()
-            act_rows = conn.execute(
-                text("SELECT rule_id, action_type, value FROM actions ORDER BY id")
-            ).fetchall()
+        r = _redis()
+        raw = r.get("matchops:rules:data")
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                set_rules_from_dicts(data)
+                return
     except Exception as e:
-        if _RULES_CACHE is not None:
-            logger.warning(f"Could not reload rules from the database: {e}. Keeping cached rules.")
-            return
-        logger.warning(f"Could not load rules from the database: {e}. Rules engine will be empty.")
+        logger.debug(f"Redis rules cache not accessible: {e}")
+
+    if _RULES_CACHE is None:
         with _STATE_LOCK:
             _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = {}, "none", {}
-        return
-
-    rules_map = {}
-    new_cache = {}
-
-    # 1. Active rules
-    for row in rules_rows:
-        rule = Rule(row)
-        rules_map[rule.rule_id] = rule
-
-        new_cache.setdefault(rule.tenant_id, {}).setdefault(rule.domain, []).append(rule)
-
-    # 2. Conditions
-    for row in cond_rows:
-        rule_id = row[0]
-        if rule_id in rules_map:
-            rules_map[rule_id].conditions.append(
-                {
-                    "condition_group": row[1],
-                    "condition_type": row[2],
-                    "value": row[3],
-                    "negate": bool(row[4]),
-                }
-            )
-
-    # 3. Actions
-    for row in act_rows:
-        rule_id = row[0]
-        if rule_id in rules_map:
-            rules_map[rule_id].actions.append({"action_type": row[1], "value": row[2]})
-
-    all_rules = list(rules_map.values())
-    # Global fingerprint drives cross-process invalidation; per-tenant ones version job results
-    version = _fingerprint(all_rules)
-    tenant_versions = {
-        t: _fingerprint([r for r in all_rules if r.tenant_id == t]) for t in new_cache
-    }
-    with _STATE_LOCK:
-        _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = new_cache, version, tenant_versions
-    logger.info(f"Loaded {len(rules_map)} active rules into memory.")
 
 
 def _fingerprint(rules: list) -> str:
@@ -292,3 +238,36 @@ def start_invalidation_listener() -> threading.Thread:
     thread = threading.Thread(target=_listen, name="rules-invalidation", daemon=True)
     thread.start()
     return thread
+
+
+def set_rules_from_dicts(rules_data: list[dict], version: str | None = None) -> None:
+    """Sets rules in cache from a list of rule dictionaries (e.g. from Redis or gRPC)."""
+    global _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS
+    rules_map = {}
+    new_cache = {}
+    for r in rules_data:
+        rule_row = (
+            r.get("id", 0),
+            r["rule_id"],
+            r.get("domain", "market"),
+            r.get("priority", 100),
+            r.get("description", ""),
+            r.get("reasoning", ""),
+            r.get("condition_logic", "AND"),
+            r.get("is_active", 1),
+            r.get("tenant_id", DEFAULT_TENANT),
+        )
+        rule = Rule(rule_row)
+        rule.conditions = list(r.get("conditions", []))
+        rule.actions = list(r.get("actions", []))
+        rules_map[rule.rule_id] = rule
+        new_cache.setdefault(rule.tenant_id, {}).setdefault(rule.domain, []).append(rule)
+
+    all_rules = list(rules_map.values())
+    v = version or _fingerprint(all_rules)
+    tenant_versions = {
+        t: _fingerprint([r for r in all_rules if r.tenant_id == t]) for t in new_cache
+    }
+    with _STATE_LOCK:
+        _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = new_cache, v, tenant_versions
+    logger.info(f"Loaded {len(rules_map)} rules from payload into memory.")

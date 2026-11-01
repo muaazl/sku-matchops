@@ -10,8 +10,8 @@ from sqlalchemy import text
 from backend.app.api.routes import api_router
 from backend.app.core.db import get_engine
 from backend.app.schemas.models import BaseRequest, SKUItem
+from backend.app.services.persistence import record_job_completion
 from backend.app.services.worker import enqueue_job
-from engine.pipeline.persistence import record_job_completion
 
 app = FastAPI()
 app.include_router(api_router)

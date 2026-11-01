@@ -1,5 +1,5 @@
 services:
-  # Internal-only services (postgres, qdrant, meilisearch, engine) are NOT published to the
+  # Internal-only services (postgres, qdrant, engine) are NOT published to the
   # host. They communicate over the private compose network by service name.
   # For local debugging, docker-compose.override.yml re-publishes their ports.
   postgres:
@@ -38,7 +38,7 @@ services:
       - postgres
     restart: unless-stopped
 
-  # One-shot: applies Alembic migrations before the Gateway and Engine start.
+  # One-shot: applies Alembic migrations before the Gateway starts.
   migrate:
     build:
       context: .
@@ -70,39 +70,23 @@ services:
       - ./data/qdrant:/qdrant/storage:z
     restart: unless-stopped
 
-  meilisearch:
-    image: getmeili/meilisearch:v1.11.0
-    container_name: sku_matchops_meilisearch
-    expose:
-      - "7700"
-    environment:
-      - MEILI_HOST=0.0.0.0:7700
-      - MEILI_ENV=development
-      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-meilimasterkey}
-    volumes:
-      - ./data/meilisearch:/meili_data
-    restart: unless-stopped
-
-  # Horizontally scalable: every replica consumes the shared Redis job queue.
+  # Horizontally scalable: every replica consumes the shared Redis job queue and serves gRPC inference.
   #   docker compose up -d --scale engine=3
-  # (no container_name, so Compose can name the replicas; the override file's fixed
-  #  host port 8001 only works with a single replica.)
   engine:
     build:
       context: .
       dockerfile: Dockerfile.engine
     expose:
       - "8001"
+      - "50051"
     environment:
       - QDRANT_URL=http://qdrant:6333
-      - MEILI_URL=http://meilisearch:7700
-      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-meilimasterkey}
       - BACKEND_URL=http://backend:8000
       - ENGINE_PORT=8001
+      - ENGINE_GRPC_PORT=50051
       - USE_INT8_MODELS=true
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
     env_file:
       - .env
     volumes:
@@ -113,12 +97,8 @@ services:
     depends_on:
       qdrant:
         condition: service_started
-      meilisearch:
-        condition: service_started
       redis:
         condition: service_started
-      migrate:
-        condition: service_completed_successfully
     restart: unless-stopped
 
   backend:
@@ -129,9 +109,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MEILI_URL=http://meilisearch:7700
-      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-meilimasterkey}
       - ENGINE_URL=http://engine:8001
+      - ENGINE_GRPC_URL=engine:50051
       - BACKEND_INTERNAL_URL=http://backend:8000
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
@@ -145,8 +124,6 @@ services:
       - ./scripts:/app/scripts
       - ./migrations:/app/migrations
     depends_on:
-      meilisearch:
-        condition: service_started
       engine:
         condition: service_started
       redis:
@@ -170,4 +147,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-

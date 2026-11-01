@@ -5,19 +5,16 @@ SKU MatchOps – FastAPI Application Entry Point (Lightweight API Gateway)
 import logging
 import os
 import sys
-import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from backend.app.api.routes import api_router
-from backend.app.core.db import get_engine
+from backend.app.core.db import get_engine, init_db
 from backend.app.middleware.audit_logging import AuditLoggingMiddleware
 from backend.app.middleware.etag import ETagMiddleware
-from backend.app.services.meilisearch_service import check_and_sync_meilisearch
 from engine import config
-from engine.core.db import init_db
 from engine.core.observability import TraceIdMiddleware, configure_logging
 from engine.pipeline.task_queue import get_task_queue
 from engine.rules_engine import refresh_rules_cache
@@ -138,9 +135,3 @@ def startup_event():
             )
     except Exception as e:
         logger.error(f"Failed to reconcile stuck jobs on startup: {e}")
-
-    # Start Meilisearch verification and sync in a background daemon thread
-    try:
-        threading.Thread(target=check_and_sync_meilisearch, daemon=True).start()
-    except Exception as e:
-        logger.error(f"Failed to initiate startup Meilisearch check: {e}")

@@ -1,6 +1,6 @@
 """
-SKU MatchOps Engine - Direct PostgreSQL persistence of job outcomes.
-Writes per-SKU results and terminal job status through the shared connection pool.
+SKU MatchOps Backend - PostgreSQL persistence of job outcomes.
+Writes per-SKU results and terminal job status through the backend connection pool.
 """
 
 import json
@@ -10,10 +10,10 @@ from typing import Any
 
 from sqlalchemy import text
 
-from engine.core.db import get_engine, upsert_processed_skus
+from backend.app.core.db import get_engine, upsert_processed_skus
 from engine.core.observability import MATCH_CONFIDENCE
 
-logger = logging.getLogger("matchops.engine.persistence")
+logger = logging.getLogger("matchops.backend.persistence")
 
 
 def _to_float(val) -> float | None:
@@ -69,9 +69,13 @@ def build_processed_sku_rows(
                 source = "Classifier"
             elif p_src in ("matcher", "catalogue"):
                 source = "Matcher"
-            elif res.get("matched_catalog_name") or (res.get("score") and float(res.get("score", 0)) > 0):
+            elif res.get("matched_catalog_name") or (
+                res.get("score") and float(res.get("score", 0)) > 0
+            ):
                 source = "Matcher"
-            elif (res.get("bt_confidence") and float(res.get("bt_confidence", 0)) > 0) or res.get("suggested_bt"):
+            elif (res.get("bt_confidence") and float(res.get("bt_confidence", 0)) > 0) or res.get(
+                "suggested_bt"
+            ):
                 source = "Classifier"
             else:
                 source = "Matcher"
@@ -170,7 +174,6 @@ def record_job_completion(
             },
         )
         # Mirror the terminal status onto the batches row, if this job originated from one
-        # (CSV upload/merchant fetch) — a no-op UPDATE for jobs with no corresponding batch.
         conn.execute(
             text("UPDATE batches SET status = 'completed', completed_at = now() WHERE id = :id"),
             {"id": job_id},
@@ -182,22 +185,32 @@ def record_job_completion(
     return len(rows)
 
 
-def record_job_failure(job_id: str, error_message: str, duration_minutes: float) -> None:
-    """Marks the job (and its batch, if any) failed."""
+def record_job_failure(
+    job_id: str, error_message: str, duration_minutes: float = 0.0, is_cancelled: bool = False
+) -> None:
+    """Marks the job (and its batch, if any) failed or cancelled."""
+    status = "cancelled" if is_cancelled else "failed"
+    current_stage = "cancelled" if is_cancelled else "failed"
     with get_engine().begin() as conn:
         conn.execute(
             text("""
                 UPDATE jobs SET
-                    status = 'failed',
-                    current_stage = 'failed',
+                    status = :status,
+                    current_stage = :current_stage,
                     error_message = :error_message,
                     duration_minutes = :duration_minutes,
                     completed_at = now()
                 WHERE id = :id
             """),
-            {"error_message": error_message, "duration_minutes": duration_minutes, "id": job_id},
+            {
+                "status": status,
+                "current_stage": current_stage,
+                "error_message": error_message,
+                "duration_minutes": duration_minutes,
+                "id": job_id,
+            },
         )
         conn.execute(
-            text("UPDATE batches SET status = 'failed', completed_at = now() WHERE id = :id"),
-            {"id": job_id},
+            text("UPDATE batches SET status = :status, completed_at = now() WHERE id = :id"),
+            {"status": status, "id": job_id},
         )

@@ -59,9 +59,11 @@ DB_BULK_CHUNK_SIZE = int(os.getenv("DB_BULK_CHUNK_SIZE", "1000"))
 # --- External Services & Integrations ---
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-MEILI_URL = os.getenv("MEILI_URL", "http://localhost:7700")
 # Rule-cache invalidation (pub/sub + version key); optional, PostgreSQL is the fallback
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# --- Engine gRPC Service ---
+ENGINE_GRPC_PORT = int(os.getenv("ENGINE_GRPC_PORT", "50051"))
 
 # --- Distributed job queue (Redis) ---
 # Off -> legacy HTTP dispatch to a single engine. On but Redis unreachable -> same fallback.
@@ -75,7 +77,6 @@ TASK_RETRY_BACKOFF_SECONDS = float(os.getenv("TASK_RETRY_BACKOFF_SECONDS", "5"))
 # A worker must renew its lease within this window or the task is reclaimed
 TASK_LEASE_SECONDS = float(os.getenv("TASK_LEASE_SECONDS", "120"))
 TASK_POLL_INTERVAL = float(os.getenv("TASK_POLL_INTERVAL", "0.5"))
-MEILI_MASTER_KEY = os.getenv("MEILI_MASTER_KEY", "meilimasterkey")
 
 # --- Qdrant Vector DB Settings ---
 QDRANT_HNSW_M = 16
@@ -91,10 +92,6 @@ DOMAIN_MARKET = "market"
 DOMAIN_FOOD = "food"
 QDRANT_COLLECTION_MARKET = "market_catalog"
 QDRANT_COLLECTION_FOOD = "food_catalog"
-MEILI_INDEX_MARKET = "market_catalog"
-MEILI_INDEX_FOOD = "food_catalog"
-MEILI_INDEX_MARKET_DICTS = "market_dictionaries"
-MEILI_INDEX_FOOD_DICTS = "food_dictionaries"
 CACHE_SALT = "MatchOps_v2"
 
 # --- Model Artifacts & Quantization ---

@@ -41,7 +41,10 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.Text(), server_default="default", nullable=False),
         sa.Column("is_active", sa.Integer(), server_default="1", nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("username"),

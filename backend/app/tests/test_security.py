@@ -2,24 +2,10 @@ import unittest
 
 from pydantic import ValidationError
 
-from backend.app.api.endpoints.catalog import escape_meili_filter_value
 from backend.app.schemas.models import RuleModel
 
 
 class TestSecurityHardening(unittest.TestCase):
-    def test_meili_filter_escaping(self):
-        # Escape simple values
-        self.assertEqual(escape_meili_filter_value("Colombo"), "Colombo")
-
-        # Escape double quotes
-        self.assertEqual(escape_meili_filter_value('food" OR price >= 0'), 'food\\" OR price >= 0')
-
-        # Escape backslashes
-        self.assertEqual(escape_meili_filter_value("a\\b"), "a\\\\b")
-
-        # Escape mixed characters
-        self.assertEqual(escape_meili_filter_value('a\\"b'), 'a\\\\\\"b')
-
     def test_pydantic_rule_validation_valid(self):
         # Valid rule schema should not raise validation errors
         valid_payload = {

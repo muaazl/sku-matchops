@@ -378,81 +378,10 @@ class CacheManager:
             f"[CACHE] [{domain.upper()}] ✓ Successfully synced {len(changed_df)} catalog items to Qdrant."
         )
 
-        # 6. Finalize Local Cache (update the database)
-        from sqlalchemy import text
-
-        from engine.core.db import get_connection
-
-        conn = get_connection()
-        try:
-            update_rows = []
-            records = changed_df.to_dict(orient="records")
-            for row in records:
-                entities_val = row.get("entities")
-                ent_json = None
-                if entities_val:
-                    # Convert sets to lists inside dictionary for JSON serialization
-                    ent_json = json.dumps(
-                        [
-                            {k: list(v) if isinstance(v, set) else v for k, v in item.items()}
-                            if item
-                            else None
-                            for item in entities_val
-                        ]
-                        if isinstance(entities_val, list)
-                        else {
-                            k: list(v) if isinstance(v, set) else v for k, v in entities_val.items()
-                        }
-                    )
-
-                w_val = row.get("weight_val")
-                # weight_val is a TEXT column of JSON: the (value, unit, type) tuple or a bare number
-                if w_val is None or (isinstance(w_val, float) and pd.isna(w_val)):
-                    w_json = None
-                else:
-                    w_json = w_val if isinstance(w_val, str) else json.dumps(w_val)
-
-                token_cnt = row.get("token_count")
-                token_cnt_val = (
-                    int(token_cnt) if (token_cnt is not None and not pd.isna(token_cnt)) else None
-                )
-
-                update_rows.append(
-                    {
-                        "clean_text": row.get("clean_text"),
-                        "weight_val": w_json,
-                        "entities_json": ent_json,
-                        "token_count": token_cnt_val,
-                        "clean_no_weights": row.get("clean_no_weights"),
-                        "domain": domain,
-                        "row_hash": row.get("row_hash"),
-                    }
-                )
-
-            if update_rows:
-                conn.execute(
-                    text("""
-                    UPDATE catalog_items
-                    SET clean_text = :clean_text,
-                        weight_val = :weight_val,
-                        entities_json = :entities_json,
-                        token_count = :token_count,
-                        clean_no_weights = :clean_no_weights
-                    WHERE domain = :domain AND row_hash = :row_hash
-                """),
-                    update_rows,
-                )
-            conn.commit()
-            logger.info(
-                f"[CACHE] [{domain.upper()}] Saved computed metadata for {len(changed_df)} rows directly to the database."
-            )
-        except Exception as db_err:
-            conn.rollback()
-            logger.error(
-                f"[CACHE] [{domain.upper()}] Failed to commit NLP metadata to the database: {db_err}"
-            )
-        finally:
-            conn.close()
+        # 6. Finalize Local Cache
+        logger.info(
+            f"[CACHE] [{domain.upper()}] Computed metadata for {len(changed_df)} rows cached in-memory/feather."
+        )
 
         with open(hash_file, "w") as f:
             json.dump(new_hashes, f)

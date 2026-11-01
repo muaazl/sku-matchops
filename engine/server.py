@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
@@ -25,6 +26,7 @@ from engine.core.resource_loader import (
     reset_statuses,
 )
 from engine.data_pipeline.vector_store import VectorStore
+from engine.grpc_server import start_grpc_server
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
 from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job, start_queue_worker
@@ -45,10 +47,19 @@ logging.basicConfig(
 )
 configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured output
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    grpc_server = start_grpc_server()
+    yield
+    grpc_server.stop(grace=5)
+
+
 app = FastAPI(
     title="SKU MatchOps ML Engine",
     description="Dedicated ML Inference Microservice for SKU Matching and Classification.",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 # The engine is an internal service: only the backend gateway calls it

@@ -1,8 +1,8 @@
 """
-Shared PostgreSQL schema for the Gateway and the Engine.
+PostgreSQL schema metadata and Table definitions for SKU MatchOps API Gateway.
 
 Alembic (migrations/) is the source of truth for the live schema; these Table
-definitions mirror it and back the bulk-upsert statements in engine.core.db.
+definitions mirror it and back bulk-upsert statements in backend.app.core.db.
 """
 
 from sqlalchemy import (
@@ -227,6 +227,13 @@ catalog_items = Table(
     Column("clean_no_weights", Text),
     Column("row_hash", Text, nullable=False),
     Index("idx_catalog_items_domain_hash", "domain", "row_hash"),
+    Index(
+        "catalog_search_trgm_idx",
+        "name",
+        "description",
+        postgresql_using="gin",
+        postgresql_ops={"name": "gin_trgm_ops", "description": "gin_trgm_ops"},
+    ),
 )
 
 # 6. Brand / Flavor Reference

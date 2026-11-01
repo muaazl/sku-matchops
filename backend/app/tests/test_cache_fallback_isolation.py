@@ -8,12 +8,12 @@ import pandas as pd
 import pytest
 from sqlalchemy import text
 
+from backend.app.core.db import get_engine
 from backend.app.services.catalog_service import (
     get_bt_gk_cache,
     get_classifier_dicts,
 )
 from engine import config
-from engine.core.db import get_engine
 from engine.data_pipeline.ingestion import DataIngestion
 from engine.rules_engine.evaluator import _load_flavor_data, clear_flavor_cache
 

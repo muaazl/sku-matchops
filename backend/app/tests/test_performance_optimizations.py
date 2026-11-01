@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -75,7 +75,8 @@ class TestPerformanceOptimizations(unittest.TestCase):
         res_empty = _resolve_flavors_from_text("", flavors_dict)
         self.assertEqual(res_empty, set())
 
-    def test_batch_predict_third_tag_and_gk(self):
+    @patch.object(ZeroShotClassifier, "_load_arcface_model", return_value=None)
+    def test_batch_predict_third_tag_and_gk(self, _mock_load):
         mock_model = MagicMock()
         mock_model.encode.return_value = {"dense": np.zeros((2, 1024), dtype=np.float32)}
 

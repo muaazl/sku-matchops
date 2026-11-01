@@ -1,6 +1,6 @@
 """Tests for match_source normalization and attribution logic."""
 
-from engine.pipeline.persistence import build_processed_sku_rows
+from backend.app.services.persistence import build_processed_sku_rows
 
 
 def test_build_processed_sku_rows_matcher_task():
@@ -113,7 +113,9 @@ def test_history_where_clause_syntax():
     from sqlalchemy import text
 
     where = "WHERE tenant_id = :tenant_id"
-    m_where = where + """ AND (
+    m_where = (
+        where
+        + """ AND (
         LOWER(TRIM(COALESCE(match_source, ''))) IN ('matcher', 'catalogue')
         OR (
             (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
@@ -123,10 +125,13 @@ def test_history_where_clause_syntax():
             )
         )
     )"""
+    )
     stmt = text(f"SELECT * FROM processed_skus {m_where}")
     assert stmt is not None
 
-    c_where = where + """ AND (
+    c_where = (
+        where
+        + """ AND (
         LOWER(TRIM(COALESCE(match_source, ''))) = 'classifier'
         OR (
             (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
@@ -134,6 +139,6 @@ def test_history_where_clause_syntax():
             AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
         )
     )"""
+    )
     stmt2 = text(f"SELECT * FROM processed_skus {c_where}")
     assert stmt2 is not None
-

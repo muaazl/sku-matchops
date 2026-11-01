@@ -14,9 +14,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from engine.core.db import log_outbound_request
 from engine.core.observability import SKUS_PROCESSED, trace_context
-from engine.pipeline.persistence import record_job_completion, record_job_failure
 from engine.pipeline.processor import process_request
 from engine.pipeline.task_queue import get_task_queue, run_worker
 from engine.pipeline.uploader import process_upload
@@ -153,11 +151,7 @@ def _run_legacy_job(payload: dict[str, Any]) -> None:
             logger.info(f"[ENGINE WORKER] Job {job_id} cancelled during exception.")
             return
         duration = round((time.time() - t0) / 60, 4)
-        logger.error(f"[ENGINE WORKER] Job {job_id} failed: {e}", exc_info=True)
-        try:
-            record_job_failure(job_id, str(e), duration)
-        except Exception as db_err:
-            logger.error(f"[ENGINE WORKER] Failed to record failure of job {job_id}: {db_err}")
+        logger.error(f"[ENGINE WORKER] Job {job_id} failed after {duration}m: {e}", exc_info=True)
         _notify_failure(payload, str(e))
     finally:
         _cancelled_jobs.discard(job_id)
@@ -322,30 +316,7 @@ def _execute_job(payload: dict[str, Any]) -> None:
     result_payload["task"] = task
     result_payload["spreadsheet_id"] = spreadsheet_id
 
-    # Persist results directly; a DB error raises to the caller (retry or final failure)
-    record_job_completion(
-        job_id=job_id,
-        domain=domain,
-        task=task,
-        results=res_list,
-        rule_version=rule_version,
-        duration_minutes=duration,
-        high_conf=high,
-        med_conf=med,
-        low_conf=low,
-        match_rate=match_rate,
-    )
-
-    # Notify the Backend Gateway so its in-memory progress state is finalized
-    complete_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/complete"
-    try:
-        _http_session.post(complete_endpoint, json={"status": "completed"}, timeout=10)
-        logger.info(f"[ENGINE WORKER] Job {job_id} completed in {duration}m.")
-    except Exception as be_err:
-        logger.error(
-            f"[ENGINE WORKER] Failed to notify backend of completion for job {job_id}: {be_err}"
-        )
-
+    webhook_log = None
     # Post direct Google Sheets callback if provided
     if callback_url:
         t0_cb = time.time()
@@ -356,27 +327,53 @@ def _execute_job(payload: dict[str, Any]) -> None:
             logger.info(
                 f"[ENGINE WORKER] Callback responded with status {cb_resp.status_code} in {cb_dur}ms"
             )
-            log_outbound_request(
-                url=callback_url,
-                method="POST",
-                payload=result_payload,
-                response_status=cb_resp.status_code,
-                response_text=cb_resp.text[:10000] if cb_resp.text else "",
-                duration_ms=cb_dur,
-                path="/doPost",
-            )
+            webhook_log = {
+                "url": callback_url,
+                "method": "POST",
+                "payload": result_payload,
+                "response_status": cb_resp.status_code,
+                "response_text": cb_resp.text[:10000] if cb_resp.text else "",
+                "duration_ms": cb_dur,
+                "path": "/doPost",
+            }
         except Exception as cb_err:
             cb_dur = int((time.time() - t0_cb) * 1000)
             logger.error(f"[ENGINE WORKER] Google Sheets callback delivery failed: {cb_err}")
-            log_outbound_request(
-                url=callback_url,
-                method="POST",
-                payload=result_payload,
-                response_status=500,
-                response_text=str(cb_err),
-                duration_ms=cb_dur,
-                path="/doPost",
-            )
+            webhook_log = {
+                "url": callback_url,
+                "method": "POST",
+                "payload": result_payload,
+                "response_status": 500,
+                "response_text": str(cb_err),
+                "duration_ms": cb_dur,
+                "path": "/doPost",
+            }
+
+    # Notify the Backend Gateway with results so it persists results and finalizes progress
+    complete_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/complete"
+    try:
+        _http_session.post(
+            complete_endpoint,
+            json={
+                "status": "completed",
+                "domain": domain,
+                "task": task,
+                "results": res_list,
+                "rule_version": rule_version,
+                "duration_minutes": duration,
+                "high_conf": high,
+                "med_conf": med,
+                "low_conf": low,
+                "match_rate": match_rate,
+                "webhook_log": webhook_log,
+            },
+            timeout=30,
+        )
+        logger.info(f"[ENGINE WORKER] Job {job_id} completed in {duration}m.")
+    except Exception as be_err:
+        logger.error(
+            f"[ENGINE WORKER] Failed to notify backend of completion for job {job_id}: {be_err}"
+        )
 
 
 def _notify_failure(payload: dict[str, Any], error: str) -> None:
@@ -388,12 +385,6 @@ def _notify_failure(payload: dict[str, Any], error: str) -> None:
     sheet_name = payload.get("sheet_name")
     spreadsheet_id = payload.get("spreadsheet_id")
 
-    fail_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/fail"
-    try:
-        _http_session.post(fail_endpoint, json={"status": "failed"}, timeout=15)
-    except Exception as be_err:
-        logger.error(f"[ENGINE WORKER] Failed to notify backend of job failure: {be_err}")
-
     if callback_url:
         err_payload = {
             "job_id": job_id,
@@ -402,27 +393,22 @@ def _notify_failure(payload: dict[str, Any], error: str) -> None:
             "spreadsheet_id": spreadsheet_id,
             "task": task,
         }
-        t0_cb = time.time()
         try:
-            cb_resp = _http_session.post(callback_url, json=err_payload, timeout=30)
-            cb_dur = int((time.time() - t0_cb) * 1000)
-            log_outbound_request(
-                url=callback_url,
-                method="POST",
-                payload=err_payload,
-                response_status=cb_resp.status_code,
-                response_text=cb_resp.text[:10000] if cb_resp.text else "",
-                duration_ms=cb_dur,
-                path="/doPost",
-            )
+            _http_session.post(callback_url, json=err_payload, timeout=30)
         except Exception as cb_err:
-            cb_dur = int((time.time() - t0_cb) * 1000)
-            log_outbound_request(
-                url=callback_url,
-                method="POST",
-                payload=err_payload,
-                response_status=500,
-                response_text=str(cb_err),
-                duration_ms=cb_dur,
-                path="/doPost",
-            )
+            logger.error(f"[ENGINE WORKER] Google Sheets callback delivery failed: {cb_err}")
+
+    fail_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/fail"
+    try:
+        _http_session.post(
+            fail_endpoint,
+            json={
+                "status": "failed",
+                "error_message": error,
+                "duration_minutes": 0.0,
+                "is_cancelled": False,
+            },
+            timeout=15,
+        )
+    except Exception as be_err:
+        logger.error(f"[ENGINE WORKER] Failed to notify backend of job failure: {be_err}")

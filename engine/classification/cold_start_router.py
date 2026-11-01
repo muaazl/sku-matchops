@@ -169,26 +169,18 @@ class TaxonomyLifecycleRegistry:
                     vc = cat_df[bt_col].astype(str).str.strip().value_counts()
                     counts = {str(k): int(v) for k, v in vc.items() if str(k).strip()}
             else:
-                # Fall back to the catalog_items table
-                try:
-                    from sqlalchemy import text
-
-                    from engine.core.db import get_connection
-
-                    with get_connection() as conn:
-                        rows = conn.execute(
-                            text(
-                                "SELECT basictype, COUNT(*) FROM catalog_items WHERE domain = :domain GROUP BY basictype"
-                            ),
-                            {"domain": self.domain},
-                        ).fetchall()
-                    counts = {
-                        str(r[0]).strip(): int(r[1]) for r in rows if r[0] and str(r[0]).strip()
-                    }
-                except Exception as db_err:
-                    logger.warning(
-                        f"[{self.domain}] Could not read class counts from the database: {db_err}"
-                    )
+                # Fall back to cached Feather file
+                feather_path = os.path.join(self.cache_dir, f"{self.domain}_catalog_mmap.feather")
+                if os.path.exists(feather_path):
+                    try:
+                        f_df = pd.read_feather(feather_path)
+                        for col in ("basictype", "Basic Type", "basic_type"):
+                            if col in f_df.columns:
+                                vc = f_df[col].astype(str).str.strip().value_counts()
+                                counts = {str(k): int(v) for k, v in vc.items() if str(k).strip()}
+                                break
+                    except Exception as fe_err:
+                        logger.warning(f"[{self.domain}] Could not read feather cache: {fe_err}")
 
             # Assign counts for all known BTs
             self.class_counts = {bt: counts.get(bt, 0) for bt in self.class_descriptions.keys()}
