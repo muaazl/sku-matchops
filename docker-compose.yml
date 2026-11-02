@@ -62,7 +62,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.engine
     container_name: sku_matchops_engine
-    mem_limit: 4800m
+    mem_limit: 4600m
     expose:
       - "50051"
     environment:

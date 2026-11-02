@@ -8,7 +8,7 @@ load_dotenv()
 # --- Resource & Threading Limits ---
 # Limit CPU thread pools to half of available cores to avoid resource starvation
 MAX_CPU_CORES = max(1, (os.cpu_count() or 4) // 2)
-MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", str(MAX_CPU_CORES)))
+MAX_CONCURRENT_TASKS = MAX_CPU_CORES
 for _thread_var in (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -38,7 +38,7 @@ for _warn_pattern in (
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 
-DATA_DIR = os.getenv("DATA_DIR", os.path.join(ROOT_DIR, "data"))
+DATA_DIR = os.path.join(ROOT_DIR, "data")
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
 STAGING_DIR = os.path.join(CACHE_DIR, "staged_sheets")
 QDRANT_DATA_DIR = os.path.join(DATA_DIR, "qdrant")
@@ -46,7 +46,7 @@ QDRANT_DATA_DIR = os.path.join(DATA_DIR, "qdrant")
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
 # "json" emits one JSON object per log line (with trace_id); anything else is plain text
-LOG_FORMAT = os.getenv("LOG_FORMAT", "text").lower()
+LOG_FORMAT = "text"
 
 # --- External Services & Integrations ---
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
@@ -61,16 +61,16 @@ INTERNAL_GRPC_SECRET = os.getenv("INTERNAL_GRPC_SECRET", "")
 
 # --- Distributed job queue (Redis) ---
 # Off -> direct gRPC dispatch to a single engine. On but Redis unreachable -> same fallback.
-TASK_QUEUE_ENABLED = os.getenv("TASK_QUEUE_ENABLED", "true").lower() == "true"
+TASK_QUEUE_ENABLED = True
 # Batches with at most this many SKUs go to the realtime tier, larger ones to bulk
-TASK_REALTIME_MAX_SKUS = int(os.getenv("TASK_REALTIME_MAX_SKUS", "50"))
+TASK_REALTIME_MAX_SKUS = 50
 # Total attempts per task (first run included) before it moves to the dead-letter queue
-TASK_MAX_RETRIES = int(os.getenv("TASK_MAX_RETRIES", "3"))
+TASK_MAX_RETRIES = 3
 # Retry delay after attempt n is BACKOFF * 2**(n-1) seconds
-TASK_RETRY_BACKOFF_SECONDS = float(os.getenv("TASK_RETRY_BACKOFF_SECONDS", "5"))
+TASK_RETRY_BACKOFF_SECONDS = 5.0
 # A worker must renew its lease within this window or the task is reclaimed
-TASK_LEASE_SECONDS = float(os.getenv("TASK_LEASE_SECONDS", "120"))
-TASK_POLL_INTERVAL = float(os.getenv("TASK_POLL_INTERVAL", "0.5"))
+TASK_LEASE_SECONDS = 120.0
+TASK_POLL_INTERVAL = 0.5
 
 # --- Qdrant Vector DB Settings ---
 QDRANT_HNSW_M = 16
@@ -79,7 +79,7 @@ QDRANT_INDEXING_THRESHOLD = 10000
 QDRANT_MEMMAP_THRESHOLD = 5000
 QDRANT_TIMEOUT = 60.0
 # Max requests per Qdrant query_batch_points call
-QDRANT_BATCH_CHUNK_SIZE = int(os.getenv("QDRANT_BATCH_CHUNK_SIZE", "100"))
+QDRANT_BATCH_CHUNK_SIZE = 100
 
 # --- Domain & Collection Identifiers ---
 DOMAIN_MARKET = "market"
@@ -89,7 +89,7 @@ QDRANT_COLLECTION_FOOD = "food_catalog"
 CACHE_SALT = "MatchOps_v2"
 
 # --- Model Artifacts & Quantization ---
-ONNX_DIR = os.getenv("MODELS_DIR", os.path.join(ROOT_DIR, "models"))
+ONNX_DIR = os.path.join(ROOT_DIR, "models")
 ARCFACE_DIR = os.path.join(ONNX_DIR, "arcface")
 
 USE_INT8_MODELS = os.getenv("USE_INT8_MODELS", "true").lower() == "true"
@@ -190,6 +190,7 @@ LOGIC_GATE_SIGMOID_SCALE = 0.55  # Calibrated logistic scale: 1 / (1 + exp(-scal
 FUZZY_BYPASS_RATIO = 90.0  # Token-sort ratio for bypass
 FUZZY_BYPASS_TYPO_RATIO = 80.0  # Character alignment ratio for typo bypass
 MATCHER_LOGIC_GATE_CANDIDATES = 5
+MATCHER_RERANK_CANDIDATES = 15
 
 # --- Template Tag Enrichment ---
 ENABLE_TEMPLATE_TAG_ENRICHMENT = True

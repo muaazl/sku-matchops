@@ -33,6 +33,7 @@ class EmbeddingEngine:
         def _create_sess_options() -> ort.SessionOptions:
             opts = ort.SessionOptions()
             opts.add_session_config_entry("session.use_mmap_for_weights", "1")
+            opts.enable_cpu_mem_arena = False
             opts.intra_op_num_threads = config.MAX_CPU_CORES
             opts.inter_op_num_threads = config.MAX_CPU_CORES
             return opts
@@ -205,7 +206,7 @@ class EmbeddingEngine:
                 for i in range(0, len(missing_texts), batch_size):
                     batch = missing_texts[i : i + batch_size]
                     inputs = self.tokenizer(
-                        batch, padding=True, truncation=True, return_tensors="np"
+                        batch, padding=True, truncation=True, max_length=512, return_tensors="np"
                     )
                     ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
 
@@ -241,7 +242,7 @@ class EmbeddingEngine:
             for i, text in enumerate(missing_texts):
                 self._str_cache[text] = (flat_dense[i], all_sparse[i])
 
-            max_cache_size = 500000
+            max_cache_size = int(os.getenv("STR_CACHE_MAX_SIZE", "10000"))
             while len(self._str_cache) > max_cache_size:
                 self._str_cache.popitem(last=False)
 
@@ -285,7 +286,7 @@ class EmbeddingEngine:
             texts1 = [p[0] for p in batch]
             texts2 = [p[1] for p in batch]
             inputs = self.rerank_tokenizer(
-                texts1, texts2, return_tensors="np", padding=True, truncation=True
+                texts1, texts2, return_tensors="np", padding=True, truncation=True, max_length=512
             )
             ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
             with ONNX_INFERENCE_SECONDS.labels(model="cross_encoder").time():

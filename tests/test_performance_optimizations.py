@@ -110,6 +110,11 @@ class TestPerformanceOptimizations(unittest.TestCase):
         self.assertEqual(third_res[0], ("Asian", 1.0, "override"))
         self.assertEqual(third_res[1][2], "zero-shot")
 
+    def test_matcher_rerank_candidates_limit_config(self):
+        from engine import config
+
+        self.assertEqual(config.MATCHER_RERANK_CANDIDATES, 15)
+
 
 if __name__ == "__main__":
     unittest.main()
