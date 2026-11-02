@@ -29,9 +29,10 @@ class EmbeddingEngine:
 
     def _load_models(self):
         """Loads all models in parallel using ONNX Runtime for dense/sparse/cross-encoder."""
+
         def _create_sess_options() -> ort.SessionOptions:
             opts = ort.SessionOptions()
-            opts.add_session_config_entry('session.use_mmap_for_weights', '1')
+            opts.add_session_config_entry("session.use_mmap_for_weights", "1")
             opts.intra_op_num_threads = config.MAX_CPU_CORES
             opts.inter_op_num_threads = config.MAX_CPU_CORES
             return opts
@@ -67,7 +68,9 @@ class EmbeddingEngine:
                     )
 
                 self.bi_session = ort.InferenceSession(
-                    config.BI_ENCODER_ONNX, _create_sess_options(), providers=["CPUExecutionProvider"]
+                    config.BI_ENCODER_ONNX,
+                    _create_sess_options(),
+                    providers=["CPUExecutionProvider"],
                 )
                 logger.info("[EMBED] BGE-M3 ONNX hybrid bi-encoder loaded (dense + sparse).")
             except Exception as e:
@@ -124,7 +127,9 @@ class EmbeddingEngine:
             # 2. Load ONNX Session
             try:
                 self.cross_session = ort.InferenceSession(
-                    config.CROSS_ENCODER_ONNX, _create_sess_options(), providers=["CPUExecutionProvider"]
+                    config.CROSS_ENCODER_ONNX,
+                    _create_sess_options(),
+                    providers=["CPUExecutionProvider"],
                 )
                 logger.info("[EMBED] Cross-Encoder ONNX loaded.")
             except Exception as e:

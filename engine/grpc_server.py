@@ -21,6 +21,8 @@ from engine.data_pipeline.vector_store import VectorStore
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
 from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job
+from engine.protos import engine_service_pb2 as pb2
+from engine.protos import engine_service_pb2_grpc as pb2_grpc
 from engine.rules_engine import refresh_rules_cache
 from engine.rules_engine.loader import (
     pinned_rules,
@@ -28,8 +30,6 @@ from engine.rules_engine.loader import (
     snapshot_rules,
 )
 from engine.templates.template_suggest import suggest_tags_from_template
-from engine.protos import engine_service_pb2 as pb2
-from engine.protos import engine_service_pb2_grpc as pb2_grpc
 
 logger = logging.getLogger("matchops.engine.grpc")
 
@@ -308,6 +308,7 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 classifier=s.get("classifier", "idle"),
             )
         import engine.server as s
+
         is_loading = getattr(s, "_loading_in_progress", False) or any(
             st.pipeline == "loading" or st.classifier == "training"
             for st in domain_statuses.values()
@@ -338,10 +339,14 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             and _model_statuses.get("food", {}).get("classifier") == "ready"
         )
         if market_ready and food_ready and request.action != "reload":
-            return pb2.ManageModelsResponse(status="success", message="Models are already fully loaded.")
+            return pb2.ManageModelsResponse(
+                status="success", message="Models are already fully loaded."
+            )
 
         if getattr(s, "_loading_in_progress", False) and request.action != "reload":
-            return pb2.ManageModelsResponse(status="ignored", message="Model loading is already in progress.")
+            return pb2.ManageModelsResponse(
+                status="ignored", message="Model loading is already in progress."
+            )
 
         s._loading_in_progress = True
         if request.action == "reload":

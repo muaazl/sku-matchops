@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import uuid
 
 from sqlalchemy import Connection, Engine, create_engine, text

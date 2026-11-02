@@ -8,7 +8,6 @@ import logging
 import os
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import Any
 

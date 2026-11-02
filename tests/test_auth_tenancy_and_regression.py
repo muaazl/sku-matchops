@@ -10,8 +10,7 @@ from types import SimpleNamespace
 import jwt
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import make_url
+from sqlalchemy import text
 
 from backend.app.api.endpoints.auth import create_user
 from backend.app.core import config as backend_config
@@ -385,8 +384,6 @@ def test_new_jobs_and_results_are_stamped_with_the_tenant(
 
 
 # ---------------------------------------------------------------- migration 0002
-
-
 
 
 # ---------------------------------------------------------------- observability

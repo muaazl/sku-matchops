@@ -110,8 +110,7 @@ def get_models_status() -> dict[str, Any]:
             for domain, s in resp.domains.items()
         }
         loading_in_progress = resp.status == "loading" or any(
-            s["pipeline"] == "loading" or s["classifier"] == "training"
-            for s in details.values()
+            s["pipeline"] == "loading" or s["classifier"] == "training" for s in details.values()
         )
         market_ready = (
             details.get("market", {}).get("pipeline") == "ready"
