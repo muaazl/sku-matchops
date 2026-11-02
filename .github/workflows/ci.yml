@@ -47,7 +47,9 @@ jobs:
       - name: Create virtual environment and install dependencies
         run: |
           uv venv .venv --python 3.11
-          uv pip install --python .venv/bin/python --extra-index-url https://download.pytorch.org/whl/cpu \
+          uv pip install --python .venv/bin/python \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            --index-strategy unsafe-best-match \
             -r requirements.txt \
             pytest ruff
 

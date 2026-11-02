@@ -1,5 +1,7 @@
+import os
 from unittest.mock import patch
 
+import httpx
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,10 +14,27 @@ from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
 
 
+def _require_synced_pipeline(domain: str = "food") -> None:
+    meta_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_metadata.pkl")
+    if (
+        not os.path.exists(config.BI_ENCODER_ONNX)
+        or not os.path.exists(config.get_bt_arcface_onnx_path(domain))
+        or not os.path.exists(meta_path)
+    ):
+        pytest.skip(f"Local ONNX models or synced '{domain}' catalog cache not found on disk")
+    try:
+        r = httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0)
+        if r.status_code >= 500:
+            pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
+    except Exception:
+        pytest.skip(f"Qdrant not reachable at {config.QDRANT_URL}")
+
+
 @pytest.mark.usefixtures("pg")
 class TestDefectFixes:
     def test_bypass_score_normalization_at_source(self):
         """Verify exact and fuzzy bypass paths write 1.0 instead of 100.0."""
+        _require_synced_pipeline("food")
         matcher = get_pipeline("food")
 
         # Test exact match bypass
@@ -45,6 +64,7 @@ class TestDefectFixes:
 
     def test_fallback_variable_scoping_no_cross_sku_leak(self):
         """Verify that fallback candidate from SKU 1 never leaks to SKU 2 in the same chunk."""
+        _require_synced_pipeline("food")
         matcher = get_pipeline("food")
 
         # SKU 1 is an obscure query that generates no high-confidence match
@@ -73,6 +93,7 @@ class TestDefectFixes:
 
     def test_zero_candidate_sku_preserves_positional_alignment(self):
         """Verify that when a SKU produces 0 candidates, a placeholder row is appended and positions do not shift."""
+        _require_synced_pipeline("food")
         matcher = get_pipeline("food")
 
         test_df = pd.DataFrame(
@@ -108,6 +129,7 @@ class TestDefectFixes:
 
     def test_classifier_reasoning_generation_and_escalation_chaining(self):
         """Verify classifier produces reasoning and pipeline escalation chains matcher note + classifier reasoning."""
+        _require_synced_pipeline("food")
         # 1. tag_all_skus produces 'reasoning'
         from engine.core.resource_loader import (
             _get_shared_models,
@@ -173,7 +195,10 @@ class TestDefectFixes:
 
     def test_cross_encoder_empty_pairs_and_sentinel_handling(self):
         """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if models fail."""
-        embed = EmbeddingEngine()
+        embed = EmbeddingEngine.__new__(EmbeddingEngine)
+        embed.cross_session = None
+        embed.rerank_tokenizer = None
+        embed.cross_encoder_fallback = None
 
         # 1. Empty pairs returns empty array
         empty_res = embed.score_cross_encoder([])

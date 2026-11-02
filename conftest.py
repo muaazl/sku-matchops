@@ -4,7 +4,7 @@ Points every test at a dedicated PostgreSQL database (never the app's DATABASE_U
     TEST_DATABASE_URL=postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test
     TEST_REDIS_URL=redis://localhost:6379/15
 
-The database is created if missing and migrated with Alembic once per session. Tests that
+The database is created if missing and schema-synced once per session. Tests that
 need it use the `pg` fixture and are skipped when no PostgreSQL server is reachable.
 """
 
@@ -14,14 +14,18 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from backend.app.core import config as backend_config
 from engine import config
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL", "postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test"
 )
-config.DATABASE_URL = TEST_DATABASE_URL
+backend_config.DATABASE_URL = TEST_DATABASE_URL
 # Isolated Redis DB so tests never enqueue into (or read) the app's real queues
 config.REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
+# Tests expect dev-mode auth by default unless opted in via monkeypatch (e.g. `auth_on`)
+os.environ["AUTH_ENABLED"] = "false"
+backend_config.AUTH_ENABLED = False
 
 _pg_error: str | None = None
 
@@ -46,11 +50,11 @@ def _create_database_if_missing(url_str: str) -> None:
 
 @pytest.fixture(scope="session")
 def pg():
-    """Migrated test database engine; skips the test when PostgreSQL is unavailable."""
+    """Synchronized test database engine; skips the test when PostgreSQL is unavailable."""
     global _pg_error
     if _pg_error is None:
         try:
-            from backend.app.core.db import init_db
+            from backend.app.db.init import init_db
 
             _create_database_if_missing(TEST_DATABASE_URL)
             init_db()
@@ -60,6 +64,6 @@ def pg():
     if _pg_error:
         pytest.skip(_pg_error)
 
-    from backend.app.core.db import get_engine
+    from backend.app.db.session import get_engine
 
     return get_engine()

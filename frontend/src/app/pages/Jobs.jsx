@@ -65,11 +65,12 @@ export default function Jobs() {
     refetch,
   } = useQuery({
     queryKey: ['jobs', page, rowsPerPage, filter],
-    queryFn: () => getJobs({ 
-      page: page + 1, 
-      limit: rowsPerPage, 
-      ...(filter !== 'all' ? { status: filter } : {}) 
-    }),
+    queryFn: () =>
+      getJobs({
+        page: page + 1,
+        limit: rowsPerPage,
+        ...(filter !== 'all' ? { status: filter } : {}),
+      }),
     refetchInterval: (query) => {
       // Poll if any jobs are running or queued
       const d = query.state.data?.data;
@@ -183,7 +184,7 @@ export default function Jobs() {
                       hover
                       onClick={() => {
                         if (isUpload && row.status === 'failed') return;
-                        
+
                         if (['running', 'queued'].includes(row.status)) {
                           setModalJobId(row.id);
                         } else if (row.status === 'completed') {

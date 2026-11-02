@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 
-from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
-from backend.app.core.db import get_engine
 from backend.app.core.security import Principal, get_principal, require_admin
+from backend.app.db.session import get_engine
+from backend.app.grpc_server import _job_progress, clear_job_progress
 from engine.pipeline.task_queue import TaskQueue, get_task_queue
 from engine.rules_engine.loader import snapshot_rules
 
@@ -62,8 +62,8 @@ def replay_dead_letter(task_id: str, principal: Principal = Depends(require_admi
             text("UPDATE batches SET status = 'queued', completed_at = NULL WHERE id = :id"),
             {"id": job_id},
         )
+    clear_job_progress(job_id)
     _job_progress[job_id] = 0.0
-    _job_eta.pop(job_id, None)
     return {"message": "Replay queued", "job_id": job_id, "task_id": new_task_id}
 
 
@@ -81,7 +81,11 @@ def system_status(principal: Principal = Depends(get_principal)):
     try:
         queue = get_task_queue()
         if queue is not None:
-            dlq_size = len(_tenant_items(queue, principal))
+            dlq_size = (
+                queue.dlq_count(principal.tenant_id)
+                if hasattr(queue, "dlq_count")
+                else len(_tenant_items(queue, principal))
+            )
             if principal.is_platform_admin:
                 queue_depth = queue.stats()
             queue_online = True

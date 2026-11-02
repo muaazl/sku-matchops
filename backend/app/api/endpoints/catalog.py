@@ -4,8 +4,8 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import text
 
-from backend.app.core.db import get_connection
 from backend.app.core.security import require_platform_admin
+from backend.app.db.session import get_connection
 from backend.app.services.catalog_service import (
     check_changes_for_domain,
     clean_record_nans,

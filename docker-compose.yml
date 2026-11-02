@@ -64,17 +64,15 @@ services:
     container_name: sku_matchops_engine
     mem_limit: 4800m
     expose:
-      - "8001"
       - "50051"
     environment:
       - QDRANT_URL=http://qdrant:6333
-      - BACKEND_URL=http://backend:8000
-      - ENGINE_PORT=8001
+      - BACKEND_GRPC_URL=backend:50052
       - ENGINE_GRPC_PORT=50051
+      - INTERNAL_GRPC_SECRET=${INTERNAL_GRPC_SECRET:-}
       - USE_INT8_MODELS=true
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
-      - UVICORN_RELOAD=false
     env_file:
       - .env
     volumes:
@@ -101,10 +99,13 @@ services:
     mem_limit: 512m
     ports:
       - "8000:8000"
+    expose:
+      - "50052"
     environment:
-      - ENGINE_URL=http://engine:8001
       - ENGINE_GRPC_URL=engine:50051
-      - BACKEND_INTERNAL_URL=http://backend:8000
+      - BACKEND_GRPC_PORT=50052
+      - BACKEND_GRPC_URL=backend:50052
+      - INTERNAL_GRPC_SECRET=${INTERNAL_GRPC_SECRET:-}
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
@@ -133,15 +134,12 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     container_name: sku_matchops_frontend
-    mem_limit: 512m
+    mem_limit: 256m
     ports:
       - "5173:5173"
-    environment:
-      - VITE_API_URL=http://localhost:8000
-    volumes:
-      - ./frontend:/app/frontend
-      - /app/frontend/node_modules
     depends_on:
       - backend
     restart: unless-stopped

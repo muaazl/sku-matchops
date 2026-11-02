@@ -10,7 +10,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from backend.app.core.db import get_engine, upsert_processed_skus
+from backend.app.db.session import get_engine, upsert_processed_skus
 from engine.core.observability import MATCH_CONFIDENCE
 
 logger = logging.getLogger("matchops.backend.persistence")

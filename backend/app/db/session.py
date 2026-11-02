@@ -1,13 +1,12 @@
 import json
 import logging
-import os
 import uuid
 
 from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from backend.app.core import config
 from backend.app.db.schema import api_requests, processed_skus
-from engine import config
 
 logger = logging.getLogger("matchops.db")
 
@@ -54,12 +53,25 @@ def get_db_connection():
         conn.close()
 
 
-def get_next_job_id(conn: Connection) -> str:
-    """Gets the next sequential job ID starting from 1."""
+def next_seq_id(conn: Connection, seq_name: str, table: str, col: str) -> str:
+    """Allocates the next sequential numeric ID in O(1) via PostgreSQL sequence (MAX+1 fallback)."""
+    val = conn.execute(
+        text("SELECT CASE WHEN to_regclass(:seq) IS NOT NULL THEN nextval(:seq) END"),
+        {"seq": seq_name},
+    ).scalar()
+    if val is not None:
+        return str(val)
     row = conn.execute(
-        text("SELECT COALESCE(MAX(CAST(id AS BIGINT)), 0) + 1 FROM jobs WHERE id ~ '^[0-9]+$'")
+        text(
+            f"SELECT COALESCE(MAX(CAST({col} AS BIGINT)), 0) + 1 FROM {table} WHERE {col} ~ '^[0-9]+$'"
+        )
     ).fetchone()
     return str(row[0] if row and row[0] else 1)
+
+
+def get_next_job_id(conn: Connection) -> str:
+    """Gets the next sequential job ID starting from 1."""
+    return next_seq_id(conn, "jobs_id_seq", "jobs", "id")
 
 
 def upsert_processed_skus(conn: Connection, rows: list[dict], chunk_size: int | None = None) -> int:

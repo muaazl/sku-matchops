@@ -1,8 +1,27 @@
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Override in .env for production
 API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
 APPSCRIPT_WEBHOOK_URL = os.getenv("APPSCRIPT_WEBHOOK_URL", "")
+
+# --- PostgreSQL (owned exclusively by the Backend Gateway) ---
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql+psycopg://matchops:matchops@localhost:5432/matchops"
+)
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
+DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+# Rows per INSERT statement when bulk-writing per-SKU results
+DB_BULK_CHUNK_SIZE = int(os.getenv("DB_BULK_CHUNK_SIZE", "1000"))
+
+# --- gRPC Endpoints (Backend <-> Engine) ---
+ENGINE_GRPC_URL = os.getenv("ENGINE_GRPC_URL", "127.0.0.1:50051")
+BACKEND_GRPC_PORT = int(os.getenv("BACKEND_GRPC_PORT", "50052"))
+BACKEND_GRPC_URL = os.getenv("BACKEND_GRPC_URL", f"127.0.0.1:{BACKEND_GRPC_PORT}")
+INTERNAL_GRPC_SECRET = os.getenv("INTERNAL_GRPC_SECRET", "")
 
 # --- Authentication / RBAC ---
 # Off (dev default): unauthenticated requests act as an admin of the X-Tenant-ID tenant

@@ -24,12 +24,27 @@ export const useStore = create(
       // in sessionStorage only. The tenant comes from the signed-in account (server side).
       authToken: '',
       apiKey: '',
+      loginModalOpen: false,
+      loginPromptDismissed: false,
+      openLoginModal: () => set({ loginModalOpen: true }),
+      closeLoginModal: () => set({ loginModalOpen: false, loginPromptDismissed: true }),
+      resetLoginPrompt: () => set({ loginPromptDismissed: false }),
+      promptLoginOn401: () =>
+        set((state) => {
+          const hadSession = Boolean(state.authToken || state.apiKey);
+          if (hadSession) {
+            sessionStorage.removeItem('matchops_auth');
+            return { authToken: '', apiKey: '', loginModalOpen: true, loginPromptDismissed: false };
+          }
+          if (state.loginPromptDismissed) return state;
+          return { loginModalOpen: true };
+        }),
       setSession: ({ token = '', apiKey = '' }) => {
-        set({ authToken: token, apiKey });
+        set({ authToken: token, apiKey, loginModalOpen: false, loginPromptDismissed: false });
         sessionStorage.setItem('matchops_auth', JSON.stringify({ token, apiKey }));
       },
       clearSession: () => {
-        set({ authToken: '', apiKey: '' });
+        set({ authToken: '', apiKey: '', loginPromptDismissed: false });
         sessionStorage.removeItem('matchops_auth');
       },
     }),

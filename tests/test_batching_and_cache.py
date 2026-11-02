@@ -1,5 +1,6 @@
 """ONNX/Qdrant micro-batching with order preservation, Redis-backed rule caching, evaluator."""
 
+import json
 import os
 import time
 import uuid
@@ -9,6 +10,7 @@ import numpy as np
 import pytest
 from sqlalchemy import text
 
+from backend.app.services import rules_service
 from engine import config
 from engine.classification.classifier import ZeroShotClassifier
 from engine.data_pipeline.vector_store import VectorStore
@@ -242,7 +244,7 @@ class DownRedis:
 
 @pytest.fixture
 def rule_db(pg, monkeypatch):
-    """A test rule in PostgreSQL, a fresh in-memory cache, and a DB-load counter."""
+    """A test rule in PostgreSQL, a fresh Engine in-memory cache, and a Redis-load counter."""
     rid = f"t{uuid.uuid4().hex[:10]}"
     with pg.begin() as conn:
         conn.execute(
@@ -260,13 +262,13 @@ def rule_db(pg, monkeypatch):
         )
 
     loads = []
-    real_load = loader.load_rules_from_db
+    real_load = loader.load_rules_from_cache
 
     def counting_load():
         loads.append(1)
         real_load()
 
-    monkeypatch.setattr(loader, "load_rules_from_db", counting_load)
+    monkeypatch.setattr(loader, "load_rules_from_cache", counting_load)
     monkeypatch.setattr(loader, "_RULES_CACHE", None)
     loader._cached_rules.cache_clear()
 
@@ -274,7 +276,8 @@ def rule_db(pg, monkeypatch):
 
     with pg.begin() as conn:
         conn.execute(text("DELETE FROM rules WHERE rule_id = :r"), {"r": rid})
-    loader.refresh_rules_cache()
+    monkeypatch.setattr(rules_service, "refresh_engine_rules", lambda **kw: {"status": "ok"})
+    rules_service.sync_rules_everywhere()
 
 
 def _set_priority(pg, rule_id: str, priority: int):
@@ -284,9 +287,17 @@ def _set_priority(pg, rule_id: str, priority: int):
         )
 
 
-def test_rules_load_once_and_cache_hits_skip_db(rule_db, monkeypatch):
+def test_rules_load_once_and_cache_hits_skip_redis_reload(rule_db, monkeypatch):
     fake = FakeRedis()
     monkeypatch.setattr(loader, "_redis", lambda: fake)
+    # Gateway publishes PostgreSQL rules snapshot into Redis
+    rules_service.sync_rules_everywhere()
+
+    # Simulate a cold Engine worker starting with empty memory and missing version key
+    monkeypatch.setattr(loader, "_RULES_CACHE", None)
+    loader._cached_rules.cache_clear()
+    rule_db.loads.clear()
+    fake.kv.pop(loader.RULES_VERSION_KEY, None)
 
     for _ in range(50):  # many SKU evaluations
         assert any(r.rule_id == rule_db.rule_id for r in loader.get_rules("market"))
@@ -295,23 +306,32 @@ def test_rules_load_once_and_cache_hits_skip_db(rule_db, monkeypatch):
         assert loader.sync_rules_version() == v1
 
     assert len(rule_db.loads) == 1
-    assert fake.kv[loader.RULES_VERSION_KEY] == v1  # empty Redis is seeded
+    assert fake.kv[loader.RULES_VERSION_KEY] == v1  # missing version key is seeded
 
 
 def test_rule_change_bumps_version_publishes_and_engine_reloads(rule_db, monkeypatch):
     fake = FakeRedis()
     monkeypatch.setattr(loader, "_redis", lambda: fake)
+    rules_service.sync_rules_everywhere()
     v1 = loader.sync_rules_version()
+    old_cache = loader._RULES_CACHE
+    old_tenant_versions = loader._TENANT_VERSIONS
+    fake.published.clear()
 
-    # Gateway: rule updated + invalidation published (this is a separate process in prod)
+    # Gateway: rule updated in PostgreSQL + snapshot/invalidation published to Redis
     _set_priority(rule_db.engine, rule_db.rule_id, 7)
-    assert loader.publish_rules_invalidation() is True
-    v2 = fake.kv[loader.RULES_VERSION_KEY]
+    v2, published = rules_service.sync_rules_everywhere()
+    assert published is True
+    assert fake.kv[loader.RULES_VERSION_KEY] == v2
     assert v2 != v1
     assert fake.published == [(loader.RULES_INVALIDATE_CHANNEL, v2)]
 
-    # Engine whose cache is stale picks it up at the next job start
+    # Separate Engine worker whose in-memory cache is still on v1 picks up v2 at next job start
+    monkeypatch.setattr(loader, "_RULES_CACHE", old_cache)
     monkeypatch.setattr(loader, "_RULES_VERSION", v1)
+    monkeypatch.setattr(loader, "_TENANT_VERSIONS", old_tenant_versions)
+    loader._cached_rules.cache_clear()
+
     loads_before = len(rule_db.loads)
     assert loader.sync_rules_version() == v2
     assert len(rule_db.loads) == loads_before + 1
@@ -319,43 +339,57 @@ def test_rule_change_bumps_version_publishes_and_engine_reloads(rule_db, monkeyp
     assert rule.priority == 7
 
 
-def test_redis_down_falls_back_to_postgres(rule_db, monkeypatch):
+def test_redis_down_pushes_rules_via_grpc_refresh(rule_db, monkeypatch):
     monkeypatch.setattr(loader, "_redis", lambda: DownRedis())
-    loader.sync_rules_version()
+    grpc_pushes = []
+
+    def fake_grpc_refresh(rules_data=None, version=""):
+        grpc_pushes.append((rules_data, version))
+        loader.set_rules_from_dicts(rules_data or [], version=version or None)
+        return {"status": "success"}
+
+    monkeypatch.setattr(rules_service, "refresh_engine_rules", fake_grpc_refresh)
 
     _set_priority(rule_db.engine, rule_db.rule_id, 9)
-    assert loader.publish_rules_invalidation() is False  # gateway then uses the HTTP fallback
+    v2, published = rules_service.sync_rules_everywhere()
+    assert published is False
+    assert len(grpc_pushes) == 1
+    assert grpc_pushes[0][1] == v2
 
-    loads_before = len(rule_db.loads)
-    loader.sync_rules_version()  # engine reloads straight from PostgreSQL
-    assert len(rule_db.loads) == loads_before + 1
+    # Engine keeps the gRPC-pushed rule snapshot when Redis remains unreachable
+    assert loader.sync_rules_version() == v2
     rule = next(r for r in loader.get_rules("market") if r.rule_id == rule_db.rule_id)
     assert rule.priority == 9
 
 
-def test_gateway_falls_back_to_http_refresh_when_redis_down(monkeypatch):
-    from backend.app.services import rules_service
-
+def test_gateway_falls_back_to_grpc_refresh_when_redis_down(monkeypatch):
     calls = []
-    monkeypatch.setattr(rules_service, "publish_rules_invalidation", lambda: False)
-    monkeypatch.setattr(rules_service, "refresh_engine_rules", lambda: calls.append("http"))
+    monkeypatch.setattr(
+        rules_service, "load_active_rules_from_db", lambda db=None: [{"rule_id": "1"}]
+    )
+    monkeypatch.setattr(rules_service, "publish_rules_snapshot", lambda data: ("v1", False))
+    monkeypatch.setattr(
+        rules_service,
+        "refresh_engine_rules",
+        lambda rules_data=None, version="": calls.append((rules_data, version)),
+    )
     rules_service._refresh_rules_everywhere()
-    assert calls == ["http"]
+    assert calls == [([{"rule_id": "1"}], "v1")]
 
     calls.clear()
-    monkeypatch.setattr(rules_service, "publish_rules_invalidation", lambda: True)
+    monkeypatch.setattr(rules_service, "publish_rules_snapshot", lambda data: ("v1", True))
     rules_service._refresh_rules_everywhere()
     assert calls == []
 
 
 def test_failed_reload_keeps_previous_rules(rule_db, monkeypatch):
+    fake = FakeRedis()
+    monkeypatch.setattr(loader, "_redis", lambda: fake)
+    rules_service.sync_rules_everywhere()
     loader.get_rules("market")
     version = loader.get_rules_version()
 
-    def broken():
-        raise ConnectionError("db down")
-
-    monkeypatch.setattr(loader, "get_connection", broken)
+    monkeypatch.setattr(loader, "_redis", lambda: DownRedis())
     loader.refresh_rules_cache()
     assert loader.get_rules_version() == version
     assert any(r.rule_id == rule_db.rule_id for r in loader.get_rules("market"))
@@ -377,7 +411,7 @@ def test_pinned_snapshot_prevents_mid_job_rule_drift(rule_db, monkeypatch):
             ),
             {"r": rule_db.rule_id},
         )
-    loader.refresh_rules_cache()
+    rules_service.sync_rules_everywhere()
 
     def run_chunk(n):
         return [
@@ -391,14 +425,14 @@ def test_pinned_snapshot_prevents_mid_job_rule_drift(rule_db, monkeypatch):
     with loader.pinned_rules(snapshot):
         chunk1 = run_chunk(3)
 
-        # Rule edited and broadcast mid-job; the listener reloads the live cache
+        # Rule edited and broadcast mid-job; live cache moves on
         with rule_db.engine.begin() as conn:
             conn.execute(
                 text("UPDATE actions SET value = 'NewTag' WHERE rule_id = :r"),
                 {"r": rule_db.rule_id},
             )
-        loader.refresh_rules_cache()
-        assert loader.get_rules_version() != snapshot.version  # live cache moved on
+        rules_service.sync_rules_everywhere()
+        assert loader.get_rules_version() != snapshot.version
 
         chunk2 = run_chunk(3)
 
@@ -408,7 +442,9 @@ def test_pinned_snapshot_prevents_mid_job_rule_drift(rule_db, monkeypatch):
     assert run_chunk(1) == [["NewTag"]]
 
 
-def test_snapshot_is_consistent_pair_and_pin_is_scoped(rule_db):
+def test_snapshot_is_consistent_pair_and_pin_is_scoped(rule_db, monkeypatch):
+    monkeypatch.setattr(loader, "_redis", lambda: FakeRedis())
+    rules_service.sync_rules_everywhere()
     snapshot = loader.snapshot_rules()
     assert snapshot.version == loader.get_rules_version()
     with loader.pinned_rules(snapshot):
@@ -430,14 +466,19 @@ def test_pubsub_listener_reloads_immediately(rule_db, monkeypatch):
 
     monkeypatch.setattr(config, "REDIS_URL", REDIS_URL)
     monkeypatch.setattr(loader, "_redis_client", None)
+    rules_service.sync_rules_everywhere()
     loader.get_rules("market")
     loader.start_invalidation_listener()
 
     _set_priority(rule_db.engine, rule_db.rule_id, 11)
-    publisher = redis.Redis.from_url(REDIS_URL)
+    updated_rules = rules_service.load_active_rules_from_db()
+    publisher = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    publisher.set(loader.RULES_DATA_KEY, json.dumps(updated_rules, default=str))
+    publisher.set(loader.RULES_VERSION_KEY, "new-version")
 
-    # Publish the way the gateway does, but without reloading this process first
+    # Publish the way the gateway does, without mutating this process's in-memory cache directly
     deadline = time.time() + 5
+    rule = next(r for r in loader.get_rules("market") if r.rule_id == rule_db.rule_id)
     while time.time() < deadline:
         publisher.publish(loader.RULES_INVALIDATE_CHANNEL, "new-version")
         time.sleep(0.2)

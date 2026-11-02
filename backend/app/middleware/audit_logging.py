@@ -7,8 +7,8 @@ from fastapi import Request
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from backend.app.core.db import get_engine
-from backend.app.core.models import api_requests
+from backend.app.db.schema import api_requests
+from backend.app.db.session import get_engine
 
 logger = logging.getLogger("matchops.middleware")
 

@@ -1,11 +1,10 @@
 import pytest
-from sqlalchemy import text
 
 from engine.classification.loader import is_conflicting_dish_tag
 from engine.core.resource_loader import get_classifier, get_ner_engine, get_pipeline
 from engine.pipeline.audit_engine import run_sku_audit
 from engine.pipeline.processor import process_request
-from engine.rules_engine import refresh_rules_cache
+from engine.rules_engine import loader
 
 SEAFOOD_RULE_ID = "test_audit_seafood"
 
@@ -20,56 +19,58 @@ SEAFOOD_CONDITIONS = [
 
 
 @pytest.fixture(scope="class")
-def seafood_rule(pg):
-    """Seeds the food-domain Seafood rule these parity tests rely on, then removes it."""
-
-    def _delete(conn):
-        conn.execute(text("DELETE FROM rules WHERE rule_id = :r"), {"r": SEAFOOD_RULE_ID})
-
-    with pg.begin() as conn:
-        _delete(conn)
-        conn.execute(
-            text(
-                "INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic) "
-                "VALUES (:r, 'food', 1, 'Seafood GK', 'Seafood dishes get the Seafood GK', 'AND')"
-            ),
-            {"r": SEAFOOD_RULE_ID},
-        )
-        conn.execute(
-            text(
-                "INSERT INTO conditions (rule_id, condition_group, condition_type, value, negate) "
-                "VALUES (:r, :g, :t, :v, :n)"
-            ),
-            [
-                {"r": SEAFOOD_RULE_ID, "g": g, "t": t, "v": v, "n": n}
-                for g, t, v, n in SEAFOOD_CONDITIONS
-            ],
-        )
-        conn.execute(
-            text(
-                "INSERT INTO actions (rule_id, action_type, value) VALUES (:r, 'add_gk', 'Seafood')"
-            ),
-            {"r": SEAFOOD_RULE_ID},
-        )
-    refresh_rules_cache()
+def seafood_rule():
+    """Seeds the food-domain Seafood rule directly into the Engine rule cache, then restores it."""
+    prev = (loader._RULES_CACHE, loader._RULES_VERSION, loader._TENANT_VERSIONS)
+    loader.set_rules_from_dicts(
+        [
+            {
+                "rule_id": SEAFOOD_RULE_ID,
+                "domain": "food",
+                "priority": 1,
+                "description": "Seafood GK",
+                "reasoning": "Seafood dishes get the Seafood GK",
+                "condition_logic": "AND",
+                "conditions": [
+                    {
+                        "condition_group": g,
+                        "condition_type": t,
+                        "value": v,
+                        "negate": bool(n),
+                    }
+                    for g, t, v, n in SEAFOOD_CONDITIONS
+                ],
+                "actions": [{"action_type": "add_gk", "value": "Seafood"}],
+            }
+        ]
+    )
     yield
-    with pg.begin() as conn:
-        _delete(conn)  # conditions/actions cascade
-    refresh_rules_cache()
+    loader._RULES_CACHE, loader._RULES_VERSION, loader._TENANT_VERSIONS = prev
+    loader._cached_rules.cache_clear()
 
 
-@pytest.mark.usefixtures("pg", "seafood_rule")
+@pytest.mark.usefixtures("seafood_rule")
 class TestAuditAlignment:
     @classmethod
     def setup_class(cls):
         import os
 
+        import httpx
+
         from engine import config
 
-        if not os.path.exists(config.BI_ENCODER_ONNX) or not os.path.exists(
-            config.get_bt_arcface_onnx_path("food")
+        meta_path = os.path.join(config.CACHE_DIR, "food_catalog_metadata.pkl")
+        if (
+            not os.path.exists(config.BI_ENCODER_ONNX)
+            or not os.path.exists(config.get_bt_arcface_onnx_path("food"))
+            or not os.path.exists(meta_path)
         ):
-            pytest.skip("Local ONNX models not found on disk for TestAuditAlignment")
+            pytest.skip("Local ONNX models or synced food catalog cache not found on disk")
+        try:
+            if httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0).status_code >= 500:
+                pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
+        except Exception:
+            pytest.skip(f"Qdrant not reachable at {config.QDRANT_URL}")
         # Warm up models for food domain
         get_classifier("food")
         get_pipeline("food")

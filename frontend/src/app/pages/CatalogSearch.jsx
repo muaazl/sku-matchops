@@ -737,7 +737,14 @@ export default function CatalogSearch() {
                     (data?.results || []).map((row) => (
                       <StyledTableRow key={row.id}>
                         {columns.map((col) => {
-                          const value = row[col.field] ?? (col.field === 'gk' || col.field === 'generic_keywords' ? (row.generic_keywords || row.gk) : (col.field === 'bt' || col.field === 'basictype' ? (row.basictype || row.bt) : undefined));
+                          const isGk = col.field === 'gk' || col.field === 'generic_keywords';
+                          const isBt = col.field === 'bt' || col.field === 'basictype';
+                          const fallback = isGk
+                            ? row.generic_keywords || row.gk
+                            : isBt
+                            ? row.basictype || row.bt
+                            : undefined;
+                          const value = row[col.field] ?? fallback;
                           let cellContent = value;
                           if (col.renderCell) {
                             cellContent = col.renderCell({ value, row });

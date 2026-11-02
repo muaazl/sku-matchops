@@ -262,7 +262,6 @@ class TestColdStartRouter(unittest.TestCase):
             ClassLifecycleTier.TIER_1_ZERO_SHOT,
         )
 
-
     def test_centroids_match_training_cache_keys_with_missing_fields(self):
         """NaN Description/category must key as "" (like training's fillna), and the result is cached."""
         import joblib

@@ -89,14 +89,15 @@ export default function SkuResults() {
   // Fetch Jobs
   const { data: jobsResponse = { data: [], total: 0 }, isLoading: isLoadingJobs } = useQuery({
     queryKey: ['jobs_processed', page, rowsPerPage, domainFilter, sheetFilter, taskFilter],
-    queryFn: () => getJobs({
-      page: page + 1,
-      limit: rowsPerPage,
-      status: 'completed',
-      ...(domainFilter !== 'all' ? { domain: domainFilter } : {}),
-      ...(taskFilter !== 'all' ? { type: taskFilter } : {}),
-      ...(sheetFilter.trim() ? { sheet_name: sheetFilter.trim() } : {}),
-    }),
+    queryFn: () =>
+      getJobs({
+        page: page + 1,
+        limit: rowsPerPage,
+        status: 'completed',
+        ...(domainFilter !== 'all' ? { domain: domainFilter } : {}),
+        ...(taskFilter !== 'all' ? { type: taskFilter } : {}),
+        ...(sheetFilter.trim() ? { sheet_name: sheetFilter.trim() } : {}),
+      }),
   });
 
   const serverJobs = jobsResponse.data;
@@ -119,16 +120,26 @@ export default function SkuResults() {
 
   // Fetch SKUs for selected Job
   const { data: skusResponse = { data: [], total: 0 }, isLoading: isLoadingSkus } = useQuery({
-    queryKey: ['processed_skus', selectedJob?.id, skuPage, skuRowsPerPage, debouncedSkuSearch, debouncedSkuBtFilter, debouncedSkuGkFilter, skuSourceFilter],
-    queryFn: () => getProcessedSkus({ 
-      batch_id: selectedJob?.batch_id || selectedJob?.id, 
-      page: skuPage + 1,
-      limit: skuRowsPerPage,
-      ...(debouncedSkuSearch.trim() ? { sku_name: debouncedSkuSearch.trim() } : {}),
-      ...(debouncedSkuBtFilter.trim() ? { bt: debouncedSkuBtFilter.trim() } : {}),
-      ...(debouncedSkuGkFilter.trim() ? { gk: debouncedSkuGkFilter.trim() } : {}),
-      ...(skuSourceFilter !== 'all' ? { match_source: skuSourceFilter } : {}),
-    }),
+    queryKey: [
+      'processed_skus',
+      selectedJob?.id,
+      skuPage,
+      skuRowsPerPage,
+      debouncedSkuSearch,
+      debouncedSkuBtFilter,
+      debouncedSkuGkFilter,
+      skuSourceFilter,
+    ],
+    queryFn: () =>
+      getProcessedSkus({
+        batch_id: selectedJob?.batch_id || selectedJob?.id,
+        page: skuPage + 1,
+        limit: skuRowsPerPage,
+        ...(debouncedSkuSearch.trim() ? { sku_name: debouncedSkuSearch.trim() } : {}),
+        ...(debouncedSkuBtFilter.trim() ? { bt: debouncedSkuBtFilter.trim() } : {}),
+        ...(debouncedSkuGkFilter.trim() ? { gk: debouncedSkuGkFilter.trim() } : {}),
+        ...(skuSourceFilter !== 'all' ? { match_source: skuSourceFilter } : {}),
+      }),
     enabled: !!selectedJob,
   });
 
@@ -154,70 +165,70 @@ export default function SkuResults() {
         return;
       }
 
-    const rawSheetName = selectedJob.target_sheet || selectedJob.sheet_name || 'Sheet';
-    const baseSheetName = rawSheetName.replace(/\.[^/.]+$/, '');
-    const safeSheetName = baseSheetName.replace(/[/\\?%*:|"<>]/g, '_').trim() || 'Sheet';
+      const rawSheetName = selectedJob.target_sheet || selectedJob.sheet_name || 'Sheet';
+      const baseSheetName = rawSheetName.replace(/\.[^/.]+$/, '');
+      const safeSheetName = baseSheetName.replace(/[/\\?%*:|"<>]/g, '_').trim() || 'Sheet';
 
-    if (type === 'clean') {
-      const cleanRows = skusList.map((row) => {
-        const cleanGk = row._cleanGk ?? formatGkText(row.generic_keywords || row.gk_json || row.gk);
-        if (selectedJob.domain === 'market') {
-          return {
-            'SKU Name': row.sku_name || '',
-            Categories: row.categories || row.region || '',
-            'Generic Keywords': cleanGk,
-            'Basic Type': row.basic_type || row.bt || '',
-          };
-        } else if (selectedJob.domain === 'food') {
-          return {
-            'SKU Name': row.sku_name || '',
-            'Generic Keywords': cleanGk,
-            'Basic Type': row.basic_type || row.bt || '',
-            Region: row.region || '',
-          };
-        } else {
-          return {
-            'SKU Name': row.sku_name || '',
-            Categories: row.categories || '',
-            'Generic Keywords': cleanGk,
-            'Basic Type': row.basic_type || row.bt || '',
-            Region: row.region || '',
-          };
-        }
-      });
+      if (type === 'clean') {
+        const cleanRows = skusList.map((row) => {
+          const cleanGk = row._cleanGk ?? formatGkText(row.generic_keywords || row.gk_json || row.gk);
+          if (selectedJob.domain === 'market') {
+            return {
+              'SKU Name': row.sku_name || '',
+              Categories: row.categories || row.region || '',
+              'Generic Keywords': cleanGk,
+              'Basic Type': row.basic_type || row.bt || '',
+            };
+          } else if (selectedJob.domain === 'food') {
+            return {
+              'SKU Name': row.sku_name || '',
+              'Generic Keywords': cleanGk,
+              'Basic Type': row.basic_type || row.bt || '',
+              Region: row.region || '',
+            };
+          } else {
+            return {
+              'SKU Name': row.sku_name || '',
+              Categories: row.categories || '',
+              'Generic Keywords': cleanGk,
+              'Basic Type': row.basic_type || row.bt || '',
+              Region: row.region || '',
+            };
+          }
+        });
 
-      const filename = `Job_${selectedJob.id}_${safeSheetName}_clean.csv`;
-      download(filename, toCsv(cleanRows));
-      enqueueSnackbar(`Exported ${cleanRows.length} rows to ${filename} (Clean Version)`, { variant: 'success' });
-    } else if (type === 'audit') {
-      const auditRows = skusList.map((row) => ({
-        ID: row.id,
-        'Batch ID': row.batch_id,
-        Domain: row.domain,
-        'SKU Name': row.sku_name || '',
-        'Generic Keywords': row._cleanGk ?? formatGkText(row.generic_keywords || row.gk_json || row.gk),
-        'Basic Type': row.basic_type || row.bt || '',
-        Region: row.region || '',
-        Categories: row.categories || '',
-        'Match Source': row.match_source || '',
-        'Matched Catalog Name': row.matched_catalog_name || '',
-        'Match Score': row.match_score != null ? row.match_score : '',
-        'BT Confidence': row.bt_confidence != null ? row.bt_confidence : '',
-        'GK Confidence': row.gk_confidence != null ? row.gk_confidence : '',
-        'Region Confidence': row.region_confidence != null ? row.region_confidence : '',
-        'Final Confidence': row.confidence != null ? row.confidence : '',
-        'Logic Notes': row.logic_notes || '',
-        'Rules Applied':
-          typeof row.rules_applied_json === 'object'
-            ? JSON.stringify(row.rules_applied_json)
-            : row.rules_applied_json || '',
-        'Created At': row.created_at || '',
-      }));
+        const filename = `Job_${selectedJob.id}_${safeSheetName}_clean.csv`;
+        download(filename, toCsv(cleanRows));
+        enqueueSnackbar(`Exported ${cleanRows.length} rows to ${filename} (Clean Version)`, { variant: 'success' });
+      } else if (type === 'audit') {
+        const auditRows = skusList.map((row) => ({
+          ID: row.id,
+          'Batch ID': row.batch_id,
+          Domain: row.domain,
+          'SKU Name': row.sku_name || '',
+          'Generic Keywords': row._cleanGk ?? formatGkText(row.generic_keywords || row.gk_json || row.gk),
+          'Basic Type': row.basic_type || row.bt || '',
+          Region: row.region || '',
+          Categories: row.categories || '',
+          'Match Source': row.match_source || '',
+          'Matched Catalog Name': row.matched_catalog_name || '',
+          'Match Score': row.match_score != null ? row.match_score : '',
+          'BT Confidence': row.bt_confidence != null ? row.bt_confidence : '',
+          'GK Confidence': row.gk_confidence != null ? row.gk_confidence : '',
+          'Region Confidence': row.region_confidence != null ? row.region_confidence : '',
+          'Final Confidence': row.confidence != null ? row.confidence : '',
+          'Logic Notes': row.logic_notes || '',
+          'Rules Applied':
+            typeof row.rules_applied_json === 'object'
+              ? JSON.stringify(row.rules_applied_json)
+              : row.rules_applied_json || '',
+          'Created At': row.created_at || '',
+        }));
 
-      const filename = `Job_${selectedJob.id}_${safeSheetName}_audit.csv`;
-      download(filename, toCsv(auditRows));
-      enqueueSnackbar(`Exported ${auditRows.length} rows to ${filename} (Audit Version)`, { variant: 'success' });
-    }
+        const filename = `Job_${selectedJob.id}_${safeSheetName}_audit.csv`;
+        download(filename, toCsv(auditRows));
+        enqueueSnackbar(`Exported ${auditRows.length} rows to ${filename} (Audit Version)`, { variant: 'success' });
+      }
     } catch (err) {
       enqueueSnackbar('Failed to fetch data for export', { variant: 'error' });
     }
@@ -586,18 +597,13 @@ export default function SkuResults() {
                 </Box>
               ))}
 
-            {(selectedSku.input_price != null ||
-              selectedSku.input_description ||
-              selectedSku.input_category) && (
+            {(selectedSku.input_price != null || selectedSku.input_description || selectedSku.input_category) && (
               <>
                 <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
                   Input Details
                 </Typography>
                 {[
-                  [
-                    'Price',
-                    selectedSku.input_price != null ? Number(selectedSku.input_price).toFixed(2) : null,
-                  ],
+                  ['Price', selectedSku.input_price != null ? Number(selectedSku.input_price).toFixed(2) : null],
                   ['Description', selectedSku.input_description],
                   ['Category', selectedSku.input_category],
                 ]
@@ -624,63 +630,63 @@ export default function SkuResults() {
               // Only for Matcher & Pipeline
               ...(!isClassifier
                 ? [
-                  ['Matched Catalog Name', selectedSku.matched_catalog_name || '—'],
-                  ['Logic Notes', selectedSku.logic_notes || '—'],
-                  [
-                    'Match Score',
-                    selectedSku.match_score != null
-                      ? `${Math.round(
-                        Number(selectedSku.match_score) > 1
-                          ? selectedSku.match_score
-                          : selectedSku.match_score * 100
-                      )}%`
-                      : '—',
-                  ],
-                ]
+                    ['Matched Catalog Name', selectedSku.matched_catalog_name || '—'],
+                    ['Logic Notes', selectedSku.logic_notes || '—'],
+                    [
+                      'Match Score',
+                      selectedSku.match_score != null
+                        ? `${Math.round(
+                            Number(selectedSku.match_score) > 1
+                              ? selectedSku.match_score
+                              : selectedSku.match_score * 100
+                          )}%`
+                        : '—',
+                    ],
+                  ]
                 : []),
 
               // Only for Classifier & Pipeline
               ...(!isMatcher
                 ? [
-                  [
-                    'BT Confidence',
-                    selectedSku.bt_confidence != null
-                      ? `${Math.round(
-                        Number(selectedSku.bt_confidence) > 1
-                          ? selectedSku.bt_confidence
-                          : selectedSku.bt_confidence * 100
-                      )}%`
-                      : '—',
-                  ],
-                  [
-                    'GK Confidence',
-                    selectedSku.gk_confidence != null
-                      ? `${Math.round(
-                        Number(selectedSku.gk_confidence) > 1
-                          ? selectedSku.gk_confidence
-                          : selectedSku.gk_confidence * 100
-                      )}%`
-                      : '—',
-                  ],
-                  [
-                    'Region/Cat Confidence',
-                    selectedSku.region_confidence != null
-                      ? `${Math.round(
-                        Number(selectedSku.region_confidence) > 1
-                          ? selectedSku.region_confidence
-                          : selectedSku.region_confidence * 100
-                      )}%`
-                      : '—',
-                  ],
-                  [
-                    'Final Confidence',
-                    selectedSku.confidence != null
-                      ? `${Math.round(
-                        Number(selectedSku.confidence) > 1 ? selectedSku.confidence : selectedSku.confidence * 100
-                      )}%`
-                      : '—',
-                  ],
-                ]
+                    [
+                      'BT Confidence',
+                      selectedSku.bt_confidence != null
+                        ? `${Math.round(
+                            Number(selectedSku.bt_confidence) > 1
+                              ? selectedSku.bt_confidence
+                              : selectedSku.bt_confidence * 100
+                          )}%`
+                        : '—',
+                    ],
+                    [
+                      'GK Confidence',
+                      selectedSku.gk_confidence != null
+                        ? `${Math.round(
+                            Number(selectedSku.gk_confidence) > 1
+                              ? selectedSku.gk_confidence
+                              : selectedSku.gk_confidence * 100
+                          )}%`
+                        : '—',
+                    ],
+                    [
+                      'Region/Cat Confidence',
+                      selectedSku.region_confidence != null
+                        ? `${Math.round(
+                            Number(selectedSku.region_confidence) > 1
+                              ? selectedSku.region_confidence
+                              : selectedSku.region_confidence * 100
+                          )}%`
+                        : '—',
+                    ],
+                    [
+                      'Final Confidence',
+                      selectedSku.confidence != null
+                        ? `${Math.round(
+                            Number(selectedSku.confidence) > 1 ? selectedSku.confidence : selectedSku.confidence * 100
+                          )}%`
+                        : '—',
+                    ],
+                  ]
                 : []),
             ]
               .filter(([, v]) => v !== null && v !== undefined)
@@ -708,8 +714,9 @@ export default function SkuResults() {
         title="Job Not Completed Fully"
         message={
           rerunJob
-            ? `Job ${rerunJob.id} (${rerunJob.target_sheet || rerunJob.sheet_name || 'N/A'}) had a status of '${rerunJob.status
-            }' and was not processed fully. Would you like to rerun it?`
+            ? `Job ${rerunJob.id} (${rerunJob.target_sheet || rerunJob.sheet_name || 'N/A'}) had a status of '${
+                rerunJob.status
+              }' and was not processed fully. Would you like to rerun it?`
             : ''
         }
         onConfirm={async () => {

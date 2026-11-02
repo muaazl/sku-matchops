@@ -25,7 +25,6 @@ function getPageName(pathname) {
   if (pathname === '/rules') return 'Rules Engine';
   if (pathname === '/catalog') return 'Catalog Search';
   if (pathname === '/logs') return 'Logs';
-  if (pathname === '/queue') return 'Queue & DLQ';
   return 'SKU MatchOps';
 }
 
@@ -218,8 +217,8 @@ export default function Layout() {
         title="Load ML models?"
         description={
           <>
-            The models aren&apos;t loaded yet. Load them now, or dismiss and use the &quot;Load
-            Models&quot; button in the top bar whenever you&apos;re ready.
+            The models aren&apos;t loaded yet. Load them now, or dismiss and use the &quot;Load Models&quot; button in
+            the top bar whenever you&apos;re ready.
           </>
         }
         actions={

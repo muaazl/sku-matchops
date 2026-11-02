@@ -1,26 +1,35 @@
-# Use node:24-slim to align with the frontend engines requirement (>=24)
-FROM node:24-slim
+# Stage 1: Build static SPA bundle with locked dependencies
+FROM node:24-slim AS build
 
-# Set working directory inside container
 WORKDIR /app/frontend
 
-# Install pnpm package manager globally
-RUN npm install -g pnpm
+RUN npm install -g pnpm@9.15.0
 
-# Copy package management files to leverage caching during builds
 COPY package.json pnpm-lock.yaml .npmrc pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 
-# Install dependencies using pnpm
-RUN pnpm install --no-frozen-lockfile
-
-# Copy all source files
 COPY . .
 
-# Build production assets for preview
+ARG VITE_API_URL=http://localhost:8000
+ENV VITE_API_URL=$VITE_API_URL
+
 RUN pnpm build
 
-# Expose Vite preview port
-EXPOSE 5173
+# Stage 2: Serve static assets via lightweight Nginx runtime
+FROM nginx:1.27-alpine
 
-# Start Vite preview server, bound to all interfaces
-CMD ["pnpm", "vite", "preview", "--host", "0.0.0.0", "--port", "5173"]
+RUN printf 'server {\n\
+    listen 5173;\n\
+    root /usr/share/nginx/html;\n\
+    index index.html;\n\
+    gzip on;\n\
+    gzip_types text/plain text/css application/json application/javascript image/svg+xml;\n\
+    location / {\n\
+        try_files $uri $uri/ /index.html;\n\
+    }\n\
+}\n' > /etc/nginx/conf.d/default.conf
+
+COPY --from=build /app/frontend/dist /usr/share/nginx/html
+
+EXPOSE 5173
+CMD ["nginx", "-g", "daemon off;"]

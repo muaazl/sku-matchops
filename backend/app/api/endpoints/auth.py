@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.core.db import get_db_connection
 from backend.app.core.security import (
     Principal,
     create_access_token,
@@ -15,6 +14,7 @@ from backend.app.core.security import (
     require_admin,
     verify_password,
 )
+from backend.app.db.session import get_db_connection
 
 router = APIRouter()  # public
 users_router = APIRouter()  # authenticated

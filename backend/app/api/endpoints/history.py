@@ -5,8 +5,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import Connection, text
 
-from backend.app.core.db import get_db_connection
 from backend.app.core.security import Principal, get_principal
+from backend.app.db.session import get_db_connection
 from backend.app.schemas.models import ProcessedSkuResponse
 
 router = APIRouter()

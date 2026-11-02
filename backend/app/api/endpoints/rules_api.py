@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import Connection
 
-from backend.app.core.db import get_db_connection
 from backend.app.core.security import Principal, get_principal, require_rule_editor
+from backend.app.db.session import get_db_connection
 from backend.app.schemas.models import (
     RuleDraftTestRequest,
     RuleModel,

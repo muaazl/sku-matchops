@@ -57,7 +57,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("matchops.sync_catalog")
 
-from backend.app.core.db import get_engine, init_db
 from engine import config
 from engine.core.resource_loader import _get_vector_store, get_classifier, get_pipeline
 from engine.data_pipeline.ingestion import DataIngestion
@@ -67,6 +66,9 @@ from engine.nlp.text_cleaner import TextPipeline
 def reset_catalog_tables(domain: str = None):
     """Empties the catalog tables (for one domain, or all) for a clean fresh import."""
     from sqlalchemy import text
+
+    from backend.app.db.init import init_db
+    from backend.app.db.session import get_engine
 
     init_db()
     try:
@@ -133,6 +135,8 @@ def sync_db(domain: str, sheet_id: str, mode: str):
              diffs by row_hash/db_uid and only inserts/updates/deletes what actually changed.
     rebuild: Wipes this domain's rows first, then does a full fresh import.
     """
+    from backend.app.db.init import init_db
+
     if mode == "rebuild":
         reset_catalog_tables(domain)
     else:
@@ -167,7 +171,12 @@ def sync_cache(domain: str, sheet_id: str, mode: str):
     Qdrant — that pairing doesn't split cleanly into a "cache-only" step.
     """
     os.makedirs(config.CACHE_DIR, exist_ok=True)
-    cat_df, brands_df = DataIngestion.load_catalog(sheet_id, domain=domain, force_fetch=False)
+    try:
+        cat_df, brands_df = DataIngestion.load_catalog(sheet_id, domain=domain, force_fetch=False)
+    except RuntimeError:
+        from backend.app.services.catalog_service import get_catalog_and_brands
+
+        cat_df, brands_df = get_catalog_and_brands(domain)
 
     catalog_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
     brands_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
@@ -194,9 +203,14 @@ def sync_cache(domain: str, sheet_id: str, mode: str):
         logger.info(f"[{domain.upper()}] Feather caches already present — skipped.")
 
     if rebuild or not os.path.exists(dicts_cache_path):
-        dicts = DataIngestion.load_classifier_dictionaries(
-            sheet_id, domain=domain, force_fetch=False
-        )
+        try:
+            dicts = DataIngestion.load_classifier_dictionaries(
+                sheet_id, domain=domain, force_fetch=False
+            )
+        except RuntimeError:
+            from backend.app.services.catalog_service import get_classifier_dicts
+
+            dicts = get_classifier_dicts(domain)
         with open(dicts_cache_path, "w", encoding="utf-8") as f:
             json.dump(dicts, f, indent=2)
         logger.info(f"[{domain.upper()}] Classifier dictionaries JSON cached.")
@@ -319,11 +333,16 @@ def run(
         )
         sys.exit(1)
 
-    init_db()
+    if db_mode:
+        from backend.app.db.init import init_db
+
+        init_db()
 
     if from_sample:
-        wipe_local_cache_files()
-        reset_catalog_tables()
+        if cache_mode:
+            wipe_local_cache_files()
+        if db_mode:
+            reset_catalog_tables()
         logger.info(f"\n>>> EXTRACTING SAMPLE DATA FROM '{sample_file}' <<<")
         if not os.path.exists(sample_file):
             logger.critical(f"Sample data file not found at '{sample_file}'.")
@@ -333,7 +352,6 @@ def run(
         except Exception as e:
             logger.critical(f"Failed during sample data extraction: {e}", exc_info=True)
             sys.exit(1)
-        db_mode = cache_mode = qdrant_mode = "rebuild"
     elif db_mode and not from_staged:
         logger.info("\n>>> PRE-FETCHING & STAGING GOOGLE SHEETS <<<")
         try:
@@ -464,14 +482,13 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.from_sample or args.rebuild:
+    if args.db or args.cache or args.qdrant:
+        db_mode, cache_mode, qdrant_mode = args.db, args.cache, args.qdrant
+    elif args.from_sample or args.rebuild:
         db_mode = cache_mode = qdrant_mode = "rebuild"
     else:
         # No target flags at all -> sync everything (safe default).
-        if not (args.db or args.cache or args.qdrant):
-            db_mode = cache_mode = qdrant_mode = "sync"
-        else:
-            db_mode, cache_mode, qdrant_mode = args.db, args.cache, args.qdrant
+        db_mode = cache_mode = qdrant_mode = "sync"
 
     if args.domain == "market":
         target_domains = [config.DOMAIN_MARKET]

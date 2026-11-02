@@ -8,9 +8,10 @@ import pandas as pd
 import pytest
 from sqlalchemy import text
 
-from backend.app.core.db import get_engine
+from backend.app.db.session import get_engine
 from backend.app.services.catalog_service import (
     get_bt_gk_cache,
+    get_catalog_and_brands,
     get_classifier_dicts,
 )
 from engine import config
@@ -23,9 +24,11 @@ _CATALOG_TABLES = "catalog_items, brand_flavors, classifier_dictionaries, bt_gk_
 @pytest.mark.usefixtures("pg")
 class TestCacheFallbackIsolation(unittest.TestCase):
     """
-    Verifies that runtime catalog, dictionary, and rules queries strictly use local
-    in-memory, Feather, and database caches without attempting any network HTTP calls
-    to Google Sheets.
+    Verifies the strict Engine vs Backend storage boundary:
+      - Engine (`DataIngestion`, `evaluator`) reads strictly from in-memory and Feather caches,
+        never querying PostgreSQL or Google Sheets when `force_fetch=False`.
+      - Backend (`catalog_service`) falls back to PostgreSQL when local cache files are absent,
+        never touching Google Sheets over the network.
     """
 
     def setUp(self):
@@ -39,7 +42,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         conn = get_engine().connect()
         conn.execute(text(f"TRUNCATE {_CATALOG_TABLES} RESTART IDENTITY"))
 
-        # Seed minimal catalog and brand records for 'market' domain
+        # Seed minimal catalog and brand records for 'market' domain in PostgreSQL
         conn.execute(
             text("""
             INSERT INTO catalog_items (domain, name, brand, category, basictype, generic_keywords, price, clean_text, row_hash)
@@ -52,7 +55,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
             VALUES ('market', 'Anchor', 'anchor,anchr', 0, 'hash_brand_1')
             """)
         )
-        # Seed minimal records for 'food' domain
+        # Seed minimal records for 'food' domain in PostgreSQL
         conn.execute(
             text("""
             INSERT INTO catalog_items (domain, name, flavor, region, basictype, generic_keywords, price, clean_text, row_hash)
@@ -80,7 +83,6 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        # Clear in-memory caches
         DataIngestion.clear_mem_cache()
         clear_flavor_cache()
 
@@ -98,13 +100,11 @@ class TestCacheFallbackIsolation(unittest.TestCase):
             shutil.rmtree(self.test_dir, ignore_errors=True)
 
     @patch("requests.get")
-    def test_load_catalog_uses_database_without_network(self, mock_get):
-        """Verify load_catalog loads from PostgreSQL without touching Google Sheets over network."""
+    def test_backend_get_catalog_and_brands_uses_database_without_network(self, mock_get):
+        """Backend catalog_service falls back to PostgreSQL without calling Google Sheets."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
-        cat_df, brands_df = DataIngestion.load_catalog(
-            "fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=False
-        )
+        cat_df, brands_df = get_catalog_and_brands(config.DOMAIN_MARKET)
 
         self.assertFalse(
             mock_get.called, "requests.get should NEVER be called when database cache is hot!"
@@ -115,11 +115,25 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.assertEqual(brands_df.iloc[0]["Brand Name"], "Anchor")
 
     @patch("requests.get")
-    def test_load_catalog_uses_feather_without_network(self, mock_get):
-        """Verify load_catalog loads from Feather files when present without touching network."""
+    def test_engine_load_catalog_never_queries_database_when_feather_missing(self, mock_get):
+        """Engine DataIngestion raises RuntimeError on Feather miss even when PostgreSQL has data."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
-        # Create Feather cache files
+        with self.assertRaises(RuntimeError) as ctx:
+            DataIngestion.load_catalog(
+                "fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=False
+            )
+
+        self.assertIn("No catalog data found in memory or Feather cache", str(ctx.exception))
+        self.assertFalse(
+            mock_get.called, "requests.get must NOT be called when force_fetch=False on cache miss!"
+        )
+
+    @patch("requests.get")
+    def test_load_catalog_uses_feather_without_network(self, mock_get):
+        """Engine DataIngestion loads from Feather files when present without touching network."""
+        mock_get.side_effect = ConnectionError("Network is disconnected!")
+
         cat_feather = os.path.join(self.test_dir, "market_catalog_mmap.feather")
         brands_feather = os.path.join(self.test_dir, "market_brands_mmap.feather")
 
@@ -139,24 +153,6 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.assertEqual(brands_df.iloc[0]["Brand Name"], "Sample Brand")
 
     @patch("requests.get")
-    def test_empty_cache_raises_error_without_network_when_not_force_fetch(self, mock_get):
-        """Verify that an empty cache raises RuntimeError immediately without calling sheets when force_fetch=False."""
-        mock_get.side_effect = ConnectionError("Network is disconnected!")
-
-        # Query an empty domain
-        with self.assertRaises(RuntimeError) as ctx:
-            DataIngestion.load_catalog(
-                "fake_sheet_id", domain="non_existent_domain", force_fetch=False
-            )
-
-        self.assertIn(
-            "No catalog data found in memory, Feather cache, or the database", str(ctx.exception)
-        )
-        self.assertFalse(
-            mock_get.called, "requests.get must NOT be called when force_fetch=False on cache miss!"
-        )
-
-    @patch("requests.get")
     def test_force_fetch_calls_network(self, mock_get):
         """Verify that force_fetch=True does attempt to fetch from Google Sheets."""
         mock_resp = MagicMock()
@@ -164,20 +160,18 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         mock_resp.text = "Name,Price\nItem 1,10.0\n"
         mock_get.return_value = mock_resp
 
-        # force_fetch=True should trigger download
         try:
             DataIngestion.load_catalog(
                 "fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=True
             )
         except Exception:
-            # We only care that requests.get was invoked
             pass
 
         self.assertTrue(mock_get.called, "requests.get SHOULD be called when force_fetch=True!")
 
     @patch("requests.get")
     def test_get_classifier_dicts_uses_database_without_network(self, mock_get):
-        """Verify get_classifier_dicts reads from PostgreSQL without calling Google Sheets."""
+        """Backend get_classifier_dicts reads from PostgreSQL without calling Google Sheets."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
         dicts = get_classifier_dicts(config.DOMAIN_MARKET)
@@ -188,9 +182,23 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.assertIn("Dairy", dicts["gk"])
 
     @patch("requests.get")
-    def test_flavor_rules_cache_evaluates_without_network(self, mock_get):
-        """Verify _get_flavor_cache compiles flavor rules from PostgreSQL without calling Google Sheets."""
+    def test_flavor_rules_cache_evaluates_from_feather_without_network(self, mock_get):
+        """Engine _load_flavor_data reads food_brands_mmap.feather without network or DB."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
+
+        flavors_feather = os.path.join(self.test_dir, "food_brands_mmap.feather")
+        flavors_df = pd.DataFrame(
+            [
+                {
+                    "Flavor Name": "Chicken",
+                    "Aliases": "chk,chick",
+                    "Is_Meat": True,
+                    "Is_Vegetable": False,
+                    "Is_Seafood": False,
+                }
+            ]
+        )
+        flavors_df.to_feather(flavors_feather)
 
         flavor_cache = _load_flavor_data()
 
@@ -199,7 +207,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.assertIn("chicken", flavor_cache["meat_flavors"])
 
     def test_get_bt_gk_cache_reconstructs_from_database(self):
-        """Verify get_bt_gk_cache reconstructs bt_gk_map from PostgreSQL when .pkl is absent."""
+        """Backend get_bt_gk_cache reconstructs bt_gk_map from PostgreSQL when .pkl is absent."""
         bt_gk_data = get_bt_gk_cache(config.DOMAIN_MARKET)
         self.assertIn("bt_gk_map", bt_gk_data)
         self.assertIn("Butter", bt_gk_data["bt_gk_map"])

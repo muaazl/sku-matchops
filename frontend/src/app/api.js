@@ -81,11 +81,12 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response && error.response.status === 401) {
+      const url = error.config?.url || '';
       const state = useStore.getState();
-      if ((error.config?.url || '').includes('/merchant-fetch')) {
+      if (url.includes('/merchant-fetch')) {
         state.clearToken(); // rejected merchant-portal token
-      } else if (state.authToken || state.apiKey) {
-        state.clearSession(); // expired / invalid app session
+      } else if (!url.includes('/auth/token')) {
+        state.promptLoginOn401(); // open Sign in modal when logged out or session expired
       }
     }
     return Promise.reject(error);
