@@ -355,7 +355,9 @@ export default function Collections() {
                                 <Chip
                                   size="small"
                                   label={r.raw_cross_score.toFixed(4)}
-                                  color={r.raw_cross_score >= 5 ? 'success' : r.raw_cross_score >= 0 ? 'primary' : 'default'}
+                                  color={
+                                    r.raw_cross_score >= 5 ? 'success' : r.raw_cross_score >= 0 ? 'primary' : 'default'
+                                  }
                                   variant="outlined"
                                 />
                               </TableCell>

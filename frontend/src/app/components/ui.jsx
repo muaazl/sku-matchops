@@ -192,9 +192,7 @@ export function IconModal({
         )}
       </Box>
 
-      {children && (
-        <Box sx={{ textAlign: 'left', mt: 3 }}>{children}</Box>
-      )}
+      {children && <Box sx={{ textAlign: 'left', mt: 3 }}>{children}</Box>}
 
       {actions && (
         <Stack direction="row" spacing={1.5} sx={{ mt: 3 }}>

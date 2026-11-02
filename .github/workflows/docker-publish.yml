@@ -21,10 +21,10 @@ jobs:
         include:
           - service: backend
             context: .
-            dockerfile: Dockerfile.backend
+            dockerfile: docker/Dockerfile.backend
           - service: engine
             context: .
-            dockerfile: Dockerfile.engine
+            dockerfile: docker/Dockerfile.engine
           - service: frontend
             context: ./frontend
             dockerfile: ./frontend/Dockerfile

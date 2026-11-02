@@ -29,22 +29,51 @@ const TAG_EXAMPLES = [
   { sku: 'French Fries', gk: 'Fast Food, Fries', bt: 'Fries', region: 'Western' },
   { sku: 'Cappuccino', gk: 'Beverage, Coffee, Cappuccino', bt: 'Cappuccino', region: 'Sri Lankan' },
   { sku: 'Chicken Fried Rice', gk: 'Fried Rice, Chicken Fried Rice', bt: 'Fried Rice', region: 'Sri Lankan Chinese' },
-  { sku: 'Sandwich Bread', gk: 'Sandwich Bread, White Sandwich Bread, Bakery', bt: 'Sandwich Bread', region: 'Sri Lankan' },
+  {
+    sku: 'Sandwich Bread',
+    gk: 'Sandwich Bread, White Sandwich Bread, Bakery',
+    bt: 'Sandwich Bread',
+    region: 'Sri Lankan',
+  },
 ];
 
 const STATUS_ROWS = [
-  { status: 'AUTO', range: '≥ 80%', color: 'success', meaning: 'Tag is trusted as-is and flows straight through the pipeline.' },
-  { status: 'REVIEW', range: '50% – 79%', color: 'warning', meaning: 'Tag is kept but flagged — worth a second look before treating it as ground truth.' },
-  { status: 'LOW', range: '< 50%', color: 'error', meaning: 'Tag is unreliable; the SKU is escalated rather than auto-approved.' },
+  {
+    status: 'AUTO',
+    range: '≥ 80%',
+    color: 'success',
+    meaning: 'Tag is trusted as-is and flows straight through the pipeline.',
+  },
+  {
+    status: 'REVIEW',
+    range: '50% – 79%',
+    color: 'warning',
+    meaning: 'Tag is kept but flagged — worth a second look before treating it as ground truth.',
+  },
+  {
+    status: 'LOW',
+    range: '< 50%',
+    color: 'error',
+    meaning: 'Tag is unreliable; the SKU is escalated rather than auto-approved.',
+  },
 ];
 
 const SOURCE_GLOSSARY = [
-  { source: 'trained', meaning: 'Predicted by a classifier trained on labeled catalog data — the default, highest-volume path.' },
-  { source: 'zero-shot', meaning: 'Predicted by embedding similarity when no trained classifier confidently covers the SKU.' },
+  {
+    source: 'trained',
+    meaning: 'Predicted by a classifier trained on labeled catalog data — the default, highest-volume path.',
+  },
+  {
+    source: 'zero-shot',
+    meaning: 'Predicted by embedding similarity when no trained classifier confidently covers the SKU.',
+  },
   { source: 'override', meaning: 'Forced by a Rules Engine rule — a human decided this SKU always gets this tag.' },
   { source: 'keyword', meaning: 'Matched directly off a keyword in the SKU name (fast, deterministic fallback).' },
   { source: 'synthetic', meaning: 'Injected automatically, e.g. combining brand + category into a Generic Keyword.' },
-  { source: 'conflict', meaning: 'Two signals disagreed on the tag — surfaced so it can be resolved rather than silently picked.' },
+  {
+    source: 'conflict',
+    meaning: 'Two signals disagreed on the tag — surfaced so it can be resolved rather than silently picked.',
+  },
 ];
 
 const OUTLET_EXAMPLES = [
@@ -112,9 +141,9 @@ export default function Guide() {
           </Stack>
 
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            The <strong>Generic Keyword</strong> stack always runs from the broadest bucket down to the most
-            specific name — that ordering is what lets search and matching work at any level of granularity.
-            The <strong>Basic Type</strong> is the single canonical name for the dish/product family, and{' '}
+            The <strong>Generic Keyword</strong> stack always runs from the broadest bucket down to the most specific
+            name — that ordering is what lets search and matching work at any level of granularity. The{' '}
+            <strong>Basic Type</strong> is the single canonical name for the dish/product family, and{' '}
             <strong>Region</strong> is its cuisine origin. A few more worked examples across categories:
           </Typography>
 
@@ -208,15 +237,11 @@ export default function Guide() {
 
         <Grid container spacing={3}>
           <Grid size={{ xs: 12, md: 6 }}>
-            <SectionCard
-              icon={UtensilsCrossed}
-              title="Food domain"
-              subheader="Basic Type + Generic Keyword + Region"
-            >
+            <SectionCard icon={UtensilsCrossed} title="Food domain" subheader="Basic Type + Generic Keyword + Region">
               <Typography variant="body2" color="text.secondary">
-                Food SKUs are tagged by cuisine — e.g. a <em>Chicken Kottu</em> gets Basic Type{' '}
-                <strong>Kottu</strong> and Region <strong>Sri Lankan</strong>. Region answers "where does this
-                dish come from," which is what powers cuisine-based search and filtering.
+                Food SKUs are tagged by cuisine — e.g. a <em>Chicken Kottu</em> gets Basic Type <strong>Kottu</strong>{' '}
+                and Region <strong>Sri Lankan</strong>. Region answers "where does this dish come from," which is what
+                powers cuisine-based search and filtering.
               </Typography>
             </SectionCard>
           </Grid>
@@ -227,9 +252,9 @@ export default function Guide() {
               subheader="Basic Type + Generic Keyword + Category"
             >
               <Typography variant="body2" color="text.secondary">
-                Market (grocery/retail) SKUs replace Region with <strong>Category</strong> — e.g.{' '}
-                <strong>Dairy</strong>, <strong>Snacks</strong>, <strong>Beverages</strong> — since retail
-                products aren't defined by cuisine of origin, but by the shelf/aisle they'd sit on.
+                Market (grocery/retail) SKUs replace Region with <strong>Category</strong> — e.g. <strong>Dairy</strong>
+                , <strong>Snacks</strong>, <strong>Beverages</strong> — since retail products aren't defined by cuisine
+                of origin, but by the shelf/aisle they'd sit on.
               </Typography>
             </SectionCard>
           </Grid>
@@ -241,9 +266,9 @@ export default function Guide() {
           subheader="Sometimes the Region tag comes from the restaurant brand itself, not just the SKU name"
         >
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            A generic name like "Chicken Fried Rice" doesn't say much about cuisine on its own — but if it's
-            sold at an outlet that's already known to be, say, an Italian restaurant, that context can drive
-            the Region tag directly.
+            A generic name like "Chicken Fried Rice" doesn't say much about cuisine on its own — but if it's sold at an
+            outlet that's already known to be, say, an Italian restaurant, that context can drive the Region tag
+            directly.
           </Typography>
           <StyledTableContainer>
             <Table aria-label="outlet examples" size="small">
@@ -269,8 +294,8 @@ export default function Guide() {
 
         <Divider sx={{ my: 1 }} />
         <Typography variant="caption" color="text.secondary">
-          Want to see this data live? The Dashboard's "Top Basic Types" and "Region / Category distribution"
-          charts reflect the actual tags currently in the catalog.
+          Want to see this data live? The Dashboard's "Top Basic Types" and "Region / Category distribution" charts
+          reflect the actual tags currently in the catalog.
         </Typography>
       </Stack>
     </PageContainer>

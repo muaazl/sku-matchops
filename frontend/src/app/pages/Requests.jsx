@@ -115,7 +115,6 @@ export default function Requests() {
     }
   }, [selectedDetail?.query_params_json]);
 
-
   const renderHeaders = () => {
     const headerEntries = Object.entries(parsedHeaders);
     if (headerEntries.length === 0) {

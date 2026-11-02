@@ -170,10 +170,7 @@ export default function Interactive() {
 
   return (
     <PageContainer>
-      <PageHeader
-        title="Interactive"
-        subtitle="Run a single SKU through the matcher, classifier or full pipeline."
-      />
+      <PageHeader title="Interactive" subtitle="Run a single SKU through the matcher, classifier or full pipeline." />
 
       <Grid container spacing={3} alignItems="flex-start">
         <Grid size={{ xs: 12, md: 5 }}>
@@ -552,4 +549,3 @@ export default function Interactive() {
     </PageContainer>
   );
 }
-

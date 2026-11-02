@@ -8,7 +8,6 @@ import * as api from '../api';
 import { useAuth } from '../hooks/useAuth';
 import Dashboard from '../pages/Dashboard';
 import RulesEngine from '../pages/RulesEngine';
-import QueueDlq from '../pages/QueueDlq';
 import SkuSidebar from '../SkuSidebar';
 import Layout from '../Layout';
 import RequireLogin from './RequireLogin';
@@ -173,37 +172,5 @@ describe('RBAC gating', () => {
   it.each(['rule_engineer', 'admin'])('allows rule creation for %s', (role) => {
     renderAs(role, <RulesEngine />);
     expect(screen.getByRole('button', { name: 'New rule' }).disabled).toBe(false);
-  });
-
-  it('shows the Queue & DLQ nav item to admins only', () => {
-    const { unmount } = renderAs('admin', <SkuSidebar />);
-    expect(screen.getByText('Queue & DLQ')).toBeTruthy();
-    unmount();
-    renderAs('reviewer', <SkuSidebar />);
-    expect(screen.queryByText('Queue & DLQ')).toBeNull();
-  });
-});
-
-describe('Queue & DLQ', () => {
-  it('shows live queue counts to admins', async () => {
-    renderAs('admin', <QueueDlq />);
-    expect(await screen.findByText('5')).toBeTruthy(); // bulk waiting
-    expect(screen.getByText('Running now')).toBeTruthy();
-  });
-
-  it('replays a dead-lettered task after confirmation', async () => {
-    renderAs('admin', <QueueDlq />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Replay' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Replay' }, { selector: '.MuiDialog-root *' }));
-    await waitFor(() => expect(api.replayDeadLetter).toHaveBeenCalled());
-    expect(api.replayDeadLetter.mock.calls[0][0]).toBe('task-0001-abcdef');
-  });
-
-  it('does not load or offer replay for non-admins', async () => {
-    renderAs('reviewer', <QueueDlq />);
-    expect(screen.getByText(/dead-letter queue is available to admins/i)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Replay' })).toBeNull();
-    expect(api.getDeadLetters).not.toHaveBeenCalled();
-    expect(api.getSystemStatus).not.toHaveBeenCalled();
   });
 });

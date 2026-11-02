@@ -244,7 +244,9 @@ export default function AuditTelemetryView({ auditTrace, sku, domain, task, resu
                             </Typography>
                             <Typography variant="body1" fontWeight={600}>
                               {auditTrace.stage1_nlp?.extracted_weights?.value != null
-                                ? `${auditTrace.stage1_nlp.extracted_weights.value} ${auditTrace.stage1_nlp.extracted_weights.unit || ''}`
+                                ? `${auditTrace.stage1_nlp.extracted_weights.value} ${
+                                    auditTrace.stage1_nlp.extracted_weights.unit || ''
+                                  }`
                                 : 'None'}
                             </Typography>
                           </Paper>
@@ -258,30 +260,89 @@ export default function AuditTelemetryView({ auditTrace, sku, domain, task, resu
                               {(() => {
                                 if (auditTrace.stage1_nlp?.ner_entities) {
                                   const entries = Object.entries(auditTrace.stage1_nlp.ner_entities).flatMap(([k, v]) =>
-                                    Array.isArray(v) && v.length > 0 ? v.map((item, idx) => <Chip key={`${k}-${idx}`} label={`${k}: ${item}`} size="small" variant="outlined" />) : []
+                                    Array.isArray(v) && v.length > 0
+                                      ? v.map((item, idx) => (
+                                          <Chip
+                                            key={`${k}-${idx}`}
+                                            label={`${k}: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      : []
                                   );
-                                  return entries.length > 0 ? entries : <Typography variant="body2" color="text.secondary">No entity tokens detected</Typography>;
+                                  return entries.length > 0 ? (
+                                    entries
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      No entity tokens detected
+                                    </Typography>
+                                  );
                                 } else {
                                   const chips = [];
                                   try {
                                     const flavs = auditTrace.final_output?.flavor_extraction;
                                     if (flavs && typeof flavs === 'string' && flavs !== '[]') {
                                       const arr = JSON.parse(flavs);
-                                      if (Array.isArray(arr)) chips.push(...arr.map((item, i) => <Chip key={`flav-${i}`} label={`flavor: ${item}`} size="small" variant="outlined" />));
+                                      if (Array.isArray(arr))
+                                        chips.push(
+                                          ...arr.map((item, i) => (
+                                            <Chip
+                                              key={`flav-${i}`}
+                                              label={`flavor: ${item}`}
+                                              size="small"
+                                              variant="outlined"
+                                            />
+                                          ))
+                                        );
                                     } else if (Array.isArray(flavs)) {
-                                      chips.push(...flavs.map((item, i) => <Chip key={`flav-${i}`} label={`flavor: ${item}`} size="small" variant="outlined" />));
+                                      chips.push(
+                                        ...flavs.map((item, i) => (
+                                          <Chip
+                                            key={`flav-${i}`}
+                                            label={`flavor: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      );
                                     }
                                     const brands = auditTrace.final_output?.brand_extraction;
                                     if (brands && typeof brands === 'string' && brands !== '[]') {
                                       const arr = JSON.parse(brands);
-                                      if (Array.isArray(arr)) chips.push(...arr.map((item, i) => <Chip key={`brand-${i}`} label={`brand: ${item}`} size="small" variant="outlined" />));
+                                      if (Array.isArray(arr))
+                                        chips.push(
+                                          ...arr.map((item, i) => (
+                                            <Chip
+                                              key={`brand-${i}`}
+                                              label={`brand: ${item}`}
+                                              size="small"
+                                              variant="outlined"
+                                            />
+                                          ))
+                                        );
                                     } else if (Array.isArray(brands)) {
-                                      chips.push(...brands.map((item, i) => <Chip key={`brand-${i}`} label={`brand: ${item}`} size="small" variant="outlined" />));
+                                      chips.push(
+                                        ...brands.map((item, i) => (
+                                          <Chip
+                                            key={`brand-${i}`}
+                                            label={`brand: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      );
                                     }
                                   } catch (e) {
-                                    console.debug("Failed to parse fallback entities", e);
+                                    console.debug('Failed to parse fallback entities', e);
                                   }
-                                  return chips.length > 0 ? chips : <Typography variant="body2" color="text.secondary">No entity tokens detected</Typography>;
+                                  return chips.length > 0 ? (
+                                    chips
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      No entity tokens detected
+                                    </Typography>
+                                  );
                                 }
                               })()}
                             </Box>
@@ -538,7 +599,9 @@ export default function AuditTelemetryView({ auditTrace, sku, domain, task, resu
                             </Typography>
                             <Typography variant="body1" fontWeight={600}>
                               {auditTrace.stage1_nlp?.extracted_weights?.value != null
-                                ? `${auditTrace.stage1_nlp.extracted_weights.value} ${auditTrace.stage1_nlp.extracted_weights.unit || ''}`
+                                ? `${auditTrace.stage1_nlp.extracted_weights.value} ${
+                                    auditTrace.stage1_nlp.extracted_weights.unit || ''
+                                  }`
                                 : 'None'}
                             </Typography>
                           </Paper>
@@ -552,30 +615,89 @@ export default function AuditTelemetryView({ auditTrace, sku, domain, task, resu
                               {(() => {
                                 if (auditTrace.stage1_nlp?.ner_entities) {
                                   const entries = Object.entries(auditTrace.stage1_nlp.ner_entities).flatMap(([k, v]) =>
-                                    Array.isArray(v) && v.length > 0 ? v.map((item, idx) => <Chip key={`${k}-${idx}`} label={`${k}: ${item}`} size="small" variant="outlined" />) : []
+                                    Array.isArray(v) && v.length > 0
+                                      ? v.map((item, idx) => (
+                                          <Chip
+                                            key={`${k}-${idx}`}
+                                            label={`${k}: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      : []
                                   );
-                                  return entries.length > 0 ? entries : <Typography variant="body2" color="text.secondary">No entity tokens detected</Typography>;
+                                  return entries.length > 0 ? (
+                                    entries
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      No entity tokens detected
+                                    </Typography>
+                                  );
                                 } else {
                                   const chips = [];
                                   try {
                                     const flavs = auditTrace.final_output?.flavor_extraction;
                                     if (flavs && typeof flavs === 'string' && flavs !== '[]') {
                                       const arr = JSON.parse(flavs);
-                                      if (Array.isArray(arr)) chips.push(...arr.map((item, i) => <Chip key={`flav-${i}`} label={`flavor: ${item}`} size="small" variant="outlined" />));
+                                      if (Array.isArray(arr))
+                                        chips.push(
+                                          ...arr.map((item, i) => (
+                                            <Chip
+                                              key={`flav-${i}`}
+                                              label={`flavor: ${item}`}
+                                              size="small"
+                                              variant="outlined"
+                                            />
+                                          ))
+                                        );
                                     } else if (Array.isArray(flavs)) {
-                                      chips.push(...flavs.map((item, i) => <Chip key={`flav-${i}`} label={`flavor: ${item}`} size="small" variant="outlined" />));
+                                      chips.push(
+                                        ...flavs.map((item, i) => (
+                                          <Chip
+                                            key={`flav-${i}`}
+                                            label={`flavor: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      );
                                     }
                                     const brands = auditTrace.final_output?.brand_extraction;
                                     if (brands && typeof brands === 'string' && brands !== '[]') {
                                       const arr = JSON.parse(brands);
-                                      if (Array.isArray(arr)) chips.push(...arr.map((item, i) => <Chip key={`brand-${i}`} label={`brand: ${item}`} size="small" variant="outlined" />));
+                                      if (Array.isArray(arr))
+                                        chips.push(
+                                          ...arr.map((item, i) => (
+                                            <Chip
+                                              key={`brand-${i}`}
+                                              label={`brand: ${item}`}
+                                              size="small"
+                                              variant="outlined"
+                                            />
+                                          ))
+                                        );
                                     } else if (Array.isArray(brands)) {
-                                      chips.push(...brands.map((item, i) => <Chip key={`brand-${i}`} label={`brand: ${item}`} size="small" variant="outlined" />));
+                                      chips.push(
+                                        ...brands.map((item, i) => (
+                                          <Chip
+                                            key={`brand-${i}`}
+                                            label={`brand: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      );
                                     }
                                   } catch (e) {
-                                    console.debug("Failed to parse fallback entities", e);
+                                    console.debug('Failed to parse fallback entities', e);
                                   }
-                                  return chips.length > 0 ? chips : <Typography variant="body2" color="text.secondary">No entity tokens detected</Typography>;
+                                  return chips.length > 0 ? (
+                                    chips
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      No entity tokens detected
+                                    </Typography>
+                                  );
                                 }
                               })()}
                             </Box>
@@ -692,7 +814,9 @@ export default function AuditTelemetryView({ auditTrace, sku, domain, task, resu
                             </Typography>
                             <Typography variant="body1" fontWeight={600}>
                               {auditTrace.stage1_nlp?.extracted_weights?.value != null
-                                ? `${auditTrace.stage1_nlp.extracted_weights.value} ${auditTrace.stage1_nlp.extracted_weights.unit || ''}`
+                                ? `${auditTrace.stage1_nlp.extracted_weights.value} ${
+                                    auditTrace.stage1_nlp.extracted_weights.unit || ''
+                                  }`
                                 : 'None'}
                             </Typography>
                           </Paper>
@@ -706,30 +830,89 @@ export default function AuditTelemetryView({ auditTrace, sku, domain, task, resu
                               {(() => {
                                 if (auditTrace.stage1_nlp?.ner_entities) {
                                   const entries = Object.entries(auditTrace.stage1_nlp.ner_entities).flatMap(([k, v]) =>
-                                    Array.isArray(v) && v.length > 0 ? v.map((item, idx) => <Chip key={`${k}-${idx}`} label={`${k}: ${item}`} size="small" variant="outlined" />) : []
+                                    Array.isArray(v) && v.length > 0
+                                      ? v.map((item, idx) => (
+                                          <Chip
+                                            key={`${k}-${idx}`}
+                                            label={`${k}: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      : []
                                   );
-                                  return entries.length > 0 ? entries : <Typography variant="body2" color="text.secondary">No entity tokens detected</Typography>;
+                                  return entries.length > 0 ? (
+                                    entries
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      No entity tokens detected
+                                    </Typography>
+                                  );
                                 } else {
                                   const chips = [];
                                   try {
                                     const flavs = auditTrace.final_output?.flavor_extraction;
                                     if (flavs && typeof flavs === 'string' && flavs !== '[]') {
                                       const arr = JSON.parse(flavs);
-                                      if (Array.isArray(arr)) chips.push(...arr.map((item, i) => <Chip key={`flav-${i}`} label={`flavor: ${item}`} size="small" variant="outlined" />));
+                                      if (Array.isArray(arr))
+                                        chips.push(
+                                          ...arr.map((item, i) => (
+                                            <Chip
+                                              key={`flav-${i}`}
+                                              label={`flavor: ${item}`}
+                                              size="small"
+                                              variant="outlined"
+                                            />
+                                          ))
+                                        );
                                     } else if (Array.isArray(flavs)) {
-                                      chips.push(...flavs.map((item, i) => <Chip key={`flav-${i}`} label={`flavor: ${item}`} size="small" variant="outlined" />));
+                                      chips.push(
+                                        ...flavs.map((item, i) => (
+                                          <Chip
+                                            key={`flav-${i}`}
+                                            label={`flavor: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      );
                                     }
                                     const brands = auditTrace.final_output?.brand_extraction;
                                     if (brands && typeof brands === 'string' && brands !== '[]') {
                                       const arr = JSON.parse(brands);
-                                      if (Array.isArray(arr)) chips.push(...arr.map((item, i) => <Chip key={`brand-${i}`} label={`brand: ${item}`} size="small" variant="outlined" />));
+                                      if (Array.isArray(arr))
+                                        chips.push(
+                                          ...arr.map((item, i) => (
+                                            <Chip
+                                              key={`brand-${i}`}
+                                              label={`brand: ${item}`}
+                                              size="small"
+                                              variant="outlined"
+                                            />
+                                          ))
+                                        );
                                     } else if (Array.isArray(brands)) {
-                                      chips.push(...brands.map((item, i) => <Chip key={`brand-${i}`} label={`brand: ${item}`} size="small" variant="outlined" />));
+                                      chips.push(
+                                        ...brands.map((item, i) => (
+                                          <Chip
+                                            key={`brand-${i}`}
+                                            label={`brand: ${item}`}
+                                            size="small"
+                                            variant="outlined"
+                                          />
+                                        ))
+                                      );
                                     }
                                   } catch (e) {
-                                    console.debug("Failed to parse fallback entities", e);
+                                    console.debug('Failed to parse fallback entities', e);
                                   }
-                                  return chips.length > 0 ? chips : <Typography variant="body2" color="text.secondary">No entity tokens detected</Typography>;
+                                  return chips.length > 0 ? (
+                                    chips
+                                  ) : (
+                                    <Typography variant="body2" color="text.secondary">
+                                      No entity tokens detected
+                                    </Typography>
+                                  );
                                 }
                               })()}
                             </Box>

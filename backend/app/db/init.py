@@ -1,5 +1,7 @@
 import logging
+
 from sqlalchemy import text
+
 from backend.app.db.schema import metadata
 from backend.app.db.session import get_engine
 

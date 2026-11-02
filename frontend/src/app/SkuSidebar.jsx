@@ -14,7 +14,6 @@ import {
   Search,
   Terminal,
   Heart,
-  Inbox,
 } from 'lucide-react';
 import {
   DrawerHeader,
@@ -38,7 +37,6 @@ export const NAV_ITEMS = [
   { title: 'SKU Results', icon: History, to: '/sku-results' },
   { title: 'Rules Engine', icon: SlidersHorizontal, to: '/rules', loginOnly: true },
   { title: 'Catalog Search', icon: Search, to: '/catalog' },
-  { title: 'Queue & DLQ', icon: Inbox, to: '/queue', adminOnly: true },
   { title: 'Logs', icon: Terminal, to: '/logs' },
 ];
 

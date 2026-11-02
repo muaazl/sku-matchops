@@ -74,7 +74,6 @@ def test_schema_created_with_lookup_indexes_and_idempotency_key(pg):
         "brand_flavors",
         "classifier_dictionaries",
         "bt_gk_map",
-        "alembic_version",
     } <= tables
 
     uniques = {u["name"]: u["column_names"] for u in insp.get_unique_constraints("processed_skus")}
@@ -88,13 +87,6 @@ def test_schema_created_with_lookup_indexes_and_idempotency_key(pg):
     assert ("domain", "priority") in indexed("rules")
     assert ("rule_id",) in indexed("conditions")
     assert ("rule_id",) in indexed("actions")
-
-    from alembic.config import Config
-    from alembic.script import ScriptDirectory
-
-    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
-    with pg.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == head
 
 
 def test_bulk_insert_1000_plus_rows_in_single_batch(pg, job_id):

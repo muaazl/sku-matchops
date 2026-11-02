@@ -19,7 +19,6 @@ const RulesEngine = lazy(() => import('./app/pages/RulesEngine'));
 const CatalogSearch = lazy(() => import('./app/pages/CatalogSearch'));
 const Logs = lazy(() => import('./app/pages/Logs'));
 const Guide = lazy(() => import('./app/pages/Guide'));
-const QueueDlq = lazy(() => import('./app/pages/QueueDlq'));
 
 const routes = () => [
   {
@@ -60,14 +59,6 @@ const routes = () => [
       },
       { path: 'catalog', element: <CatalogSearch /> },
       { path: 'logs', element: <Logs /> },
-      {
-        path: 'queue',
-        element: (
-          <RequireLogin admin>
-            <QueueDlq />
-          </RequireLogin>
-        ),
-      },
       { path: 'guide', element: <Guide /> },
       { path: '*', element: <Navigate to="/dashboard" replace /> },
     ],

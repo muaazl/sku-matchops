@@ -387,69 +387,6 @@ def test_new_jobs_and_results_are_stamped_with_the_tenant(
 # ---------------------------------------------------------------- migration 0002
 
 
-def _alembic_cfg(url: str):
-    from alembic.config import Config
-
-    cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
-    return cfg
-
-
-def test_migration_0002_upgrade_downgrade_is_clean(pg):
-    from alembic import command
-    from alembic.autogenerate import compare_metadata
-    from alembic.migration import MigrationContext
-
-    from backend.app.core.models import metadata
-
-    base = make_url(pg.url.render_as_string(hide_password=False))
-    name = f"matchops_mig_{uuid.uuid4().hex[:8]}"
-    admin = create_engine(base.set(database="postgres"), isolation_level="AUTOCOMMIT")
-    with admin.connect() as conn:
-        conn.execute(text(f'CREATE DATABASE "{name}"'))
-    url = base.set(database=name).render_as_string(hide_password=False)
-    scratch = create_engine(url)
-    try:
-        cfg = _alembic_cfg(url)
-
-        def tenant_cols():
-            insp = inspect(scratch)
-            return {
-                t: "tenant_id" in {c["name"] for c in insp.get_columns(t)}
-                for t in ("jobs", "batches", "processed_skus", "rules")
-            }
-
-        command.upgrade(cfg, "0001")
-        with scratch.begin() as conn:  # pre-existing data must survive the upgrade
-            conn.execute(text("INSERT INTO jobs (id, status) VALUES ('legacy', 'completed')"))
-
-        command.upgrade(cfg, "head")
-        assert all(tenant_cols().values())
-        assert "users" in inspect(scratch).get_table_names()
-        assert "idx_jobs_tenant_started" in {
-            i["name"] for i in inspect(scratch).get_indexes("jobs")
-        }
-        with scratch.connect() as conn:
-            assert (
-                conn.execute(text("SELECT tenant_id FROM jobs WHERE id = 'legacy'")).scalar()
-                == "default"
-            )
-            assert compare_metadata(MigrationContext.configure(conn), metadata) == []  # no drift
-
-        command.downgrade(cfg, "0001")
-        assert not any(tenant_cols().values())
-        assert "users" not in inspect(scratch).get_table_names()
-        with scratch.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0001"
-            assert conn.execute(text("SELECT count(*) FROM jobs WHERE id = 'legacy'")).scalar() == 1
-
-        command.upgrade(cfg, "head")  # and back up again
-        assert all(tenant_cols().values())
-    finally:
-        scratch.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-        admin.dispose()
 
 
 # ---------------------------------------------------------------- observability

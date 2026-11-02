@@ -337,7 +337,15 @@ export default function ProcessSKUs() {
           const sheets = parseExcelWorkbook(buf);
           const sheetNames = Object.keys(sheets);
           if (sheetNames.length === 0) {
-            jobs.push({ id: `${f.name}::empty`, name: baseName, sourceLabel: f.name, rows: [], status: 'error', jobId: null, error: 'No data found in any sheet.' });
+            jobs.push({
+              id: `${f.name}::empty`,
+              name: baseName,
+              sourceLabel: f.name,
+              rows: [],
+              status: 'error',
+              jobId: null,
+              error: 'No data found in any sheet.',
+            });
             continue;
           }
           sheetNames.forEach((sheetName) => {
@@ -369,7 +377,15 @@ export default function ProcessSKUs() {
           });
         }
       } catch (err) {
-        jobs.push({ id: f.name, name: baseName, sourceLabel: f.name, rows: [], status: 'error', jobId: null, error: err.message });
+        jobs.push({
+          id: f.name,
+          name: baseName,
+          sourceLabel: f.name,
+          rows: [],
+          status: 'error',
+          jobId: null,
+          error: err.message,
+        });
       }
     }
 
@@ -415,11 +431,7 @@ export default function ProcessSKUs() {
   const canSubmitMerchant = localMerchantId.trim() !== '';
 
   const canSubmitCsv =
-    uploadMode === 'file'
-      ? file !== null
-      : uploadMode === 'bulk'
-        ? bulkFiles.length > 0
-        : pastedText.trim().length > 0;
+    uploadMode === 'file' ? file !== null : uploadMode === 'bulk' ? bulkFiles.length > 0 : pastedText.trim().length > 0;
 
   // Render bulk-upload queue (multiple CSVs / Excel tabs) if pendingJobs is set
   if (pendingJobs) {
@@ -455,11 +467,7 @@ export default function ProcessSKUs() {
                   ) : job.status === 'error' ? (
                     <Chip label={job.error || 'Failed'} color="error" size="small" sx={{ maxWidth: 320 }} />
                   ) : job.status === 'starting' ? (
-                    <Chip
-                      icon={<CircularProgress size={12} color="inherit" />}
-                      label="Starting…"
-                      size="small"
-                    />
+                    <Chip icon={<CircularProgress size={12} color="inherit" />} label="Starting…" size="small" />
                   ) : job.rows.length === 0 ? (
                     <Chip label="No rows" color="warning" size="small" />
                   ) : null}
@@ -754,8 +762,8 @@ export default function ProcessSKUs() {
               Have a CSV to process?
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: 360 }}>
-              Upload a CSV, paste raw rows, or queue multiple CSVs / an Excel workbook at once
-              via Bulk Upload — to match, classify, or execute pipelines.
+              Upload a CSV, paste raw rows, or queue multiple CSVs / an Excel workbook at once via Bulk Upload — to
+              match, classify, or execute pipelines.
             </Typography>
 
             {file ? (
@@ -835,7 +843,13 @@ export default function ProcessSKUs() {
                   bgcolor: (t) => (dragOver ? t.palette.action.hover : 'transparent'),
                 }}
               >
-                <input ref={inputRef} type="file" accept=".csv,.tsv,.txt" hidden onChange={(e) => pick(e.target.files?.[0])} />
+                <input
+                  ref={inputRef}
+                  type="file"
+                  accept=".csv,.tsv,.txt"
+                  hidden
+                  onChange={(e) => pick(e.target.files?.[0])}
+                />
                 <UploadCloud size={40} style={{ opacity: 0.6 }} />
                 <Typography variant="subtitle1" sx={{ mt: 1 }}>
                   Drag & drop your CSV or TSV here
@@ -979,8 +993,8 @@ export default function ProcessSKUs() {
             {createMutation.isPending
               ? 'Processing…'
               : uploadMode === 'bulk'
-                ? `Review ${bulkFiles.length || ''} File${bulkFiles.length === 1 ? '' : 's'}`
-                : 'Process CSV'}
+              ? `Review ${bulkFiles.length || ''} File${bulkFiles.length === 1 ? '' : 's'}`
+              : 'Process CSV'}
           </Button>
         </DialogActions>
       </Dialog>
