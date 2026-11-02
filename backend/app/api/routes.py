@@ -9,7 +9,6 @@ from backend.app.api.endpoints.auth import router as auth_router
 from backend.app.api.endpoints.auth import users_router
 from backend.app.api.endpoints.batches import router as batches_router
 from backend.app.api.endpoints.catalog import router as catalog_router
-from backend.app.api.endpoints.engine_callbacks import router as engine_callbacks_router
 from backend.app.api.endpoints.history import router as history_router
 from backend.app.api.endpoints.interactive import router as interactive_router
 from backend.app.api.endpoints.jobs import router as jobs_router
@@ -53,8 +52,6 @@ for _router, _tag in (
 ):
     api_router.include_router(_router, tags=[_tag], dependencies=_authenticated)
 api_router.include_router(auth_router, tags=["auth"])  # public: login
-# Internal Engine -> Gateway callbacks (private network, no end-user auth)
-api_router.include_router(engine_callbacks_router)
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 

@@ -150,22 +150,15 @@ def main():
         print(f"Error checking/preparing ONNX models: {e}", flush=True)
         print("Attempting to proceed with server startup...", flush=True)
 
-    # Launch uvicorn for the Engine microservice on port 8001
-    port = os.getenv("ENGINE_PORT", "8001")
-    reload_env = os.getenv("UVICORN_RELOAD", "false").strip().lower()
-    reload_enabled = reload_env in ("true", "1", "yes")
-
+    # Launch the gRPC Engine microservice on ENGINE_GRPC_PORT (50051)
+    grpc_port = os.getenv("ENGINE_GRPC_PORT", "50051")
     print("=" * 60, flush=True)
-    print(f"Starting SKU MatchOps ML Engine on 0.0.0.0:{port}...", flush=True)
+    print(f"Starting SKU MatchOps ML Engine gRPC server on 0.0.0.0:{grpc_port}...", flush=True)
     print("=" * 60, flush=True)
     sys.stdout.flush()
     sys.stderr.flush()
 
-    cmd = ["uvicorn", "engine.server:app", "--host", "0.0.0.0", "--port", port]
-    if reload_enabled:
-        cmd.extend(["--reload", "--reload-dir", "/app/engine"])
-
-    os.execvp("uvicorn", cmd)
+    os.execvp(sys.executable, [sys.executable, "-m", "engine.server"])
 
 
 if __name__ == "__main__":

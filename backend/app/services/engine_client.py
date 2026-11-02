@@ -5,16 +5,22 @@ Dispatches inference and batch processing workloads to the dedicated ML Engine m
 
 import json
 import logging
-import os
+import threading
 import time
 from typing import Any
 
 import grpc
-import requests
-from requests.adapters import HTTPAdapter, Retry
 
+from backend.app.core import config as backend_config
 from backend.app.core.config import DEFAULT_TENANT
 from backend.app.schemas.models import BaseRequest
+from engine.core.grpc_utils import (
+    GRPC_CHANNEL_OPTIONS,
+    dict_to_sku_proto,
+    grpc_metadata,
+    pipeline_proto_to_result,
+    unwrap_rpc_error,
+)
 from engine.core.observability import TRACE_ID
 from engine.pipeline.task_queue import get_task_queue
 from engine.protos import engine_service_pb2 as pb2
@@ -22,57 +28,46 @@ from engine.protos import engine_service_pb2_grpc as pb2_grpc
 
 logger = logging.getLogger("matchops.engine_client")
 
-ENGINE_GRPC_URL = os.getenv("ENGINE_GRPC_URL", "127.0.0.1:50051")
-ENGINE_URL = os.getenv("ENGINE_URL", "http://127.0.0.1:8001").rstrip("/")
-BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://127.0.0.1:8000").rstrip("/")
+ENGINE_GRPC_URL = backend_config.ENGINE_GRPC_URL
+BACKEND_GRPC_URL = backend_config.BACKEND_GRPC_URL
 
-_session = requests.Session()
-adapter = HTTPAdapter(
-    pool_connections=20,
-    pool_maxsize=50,
-    max_retries=Retry(
-        total=2,
-        backoff_factor=0.3,
-        status_forcelist=[502, 503, 504],
-        allowed_methods=["GET", "POST", "PUT", "DELETE"],
-    ),
-)
-_session.mount("http://", adapter)
-_session.mount("https://", adapter)
-
+_client_lock = threading.Lock()
 _channel: grpc.Channel | None = None
+_channel_target: str | None = None
 _stub: pb2_grpc.EngineInferenceServiceStub | None = None
 
 
 def get_stub() -> pb2_grpc.EngineInferenceServiceStub:
-    """Returns singleton gRPC stub connected to the ML Engine."""
-    global _channel, _stub
-    if _stub is None:
-        _channel = grpc.insecure_channel(
-            ENGINE_GRPC_URL,
-            options=[
-                ("grpc.max_send_message_length", 64 * 1024 * 1024),
-                ("grpc.max_receive_message_length", 64 * 1024 * 1024),
-            ],
-        )
-        _stub = pb2_grpc.EngineInferenceServiceStub(_channel)
-    return _stub
-
-
-def _metadata() -> tuple[tuple[str, str], ...]:
-    trace_id = TRACE_ID.get()
-    return (("x-request-id", trace_id),) if trace_id != "-" else ()
+    """Returns thread-safe singleton gRPC stub connected to the ML Engine."""
+    global _channel, _channel_target, _stub
+    with _client_lock:
+        if _stub is None or _channel_target != ENGINE_GRPC_URL:
+            if _channel is not None:
+                try:
+                    _channel.close()
+                except Exception:
+                    pass
+            _channel = grpc.insecure_channel(ENGINE_GRPC_URL, options=list(GRPC_CHANNEL_OPTIONS))
+            _channel_target = ENGINE_GRPC_URL
+            _stub = pb2_grpc.EngineInferenceServiceStub(_channel)
+        return _stub
 
 
 _models_status_cache: dict[str, Any] = {}
 _models_status_cache_time: float = 0.0
 
 
+def _invalidate_models_cache() -> None:
+    global _models_status_cache_time
+    with _client_lock:
+        _models_status_cache_time = 0.0
+
+
 def is_engine_reachable() -> bool:
     """Checks if the ML Engine microservice is responding to health checks."""
     try:
         stub = get_stub()
-        resp = stub.GetHealth(pb2.Empty(), timeout=2.0)
+        resp = stub.GetHealth(pb2.Empty(), metadata=grpc_metadata(), timeout=2.0)
         return resp.status == "ok"
     except Exception:
         return False
@@ -82,7 +77,7 @@ def get_engine_health() -> dict[str, Any]:
     """Fetches health and loaded model status from the ML Engine."""
     try:
         stub = get_stub()
-        resp = stub.GetHealth(pb2.Empty(), timeout=5.0)
+        resp = stub.GetHealth(pb2.Empty(), metadata=grpc_metadata(), timeout=5.0)
         return {
             "status": resp.status,
             "service": resp.service,
@@ -98,13 +93,14 @@ def get_models_status() -> dict[str, Any]:
     """Fetches detailed model statuses from the ML Engine with short TTL cache."""
     global _models_status_cache, _models_status_cache_time
     now = time.time()
-    ttl = 1.0 if _models_status_cache.get("loading_in_progress") else 3.0
-    if _models_status_cache and (now - _models_status_cache_time) < ttl:
-        return _models_status_cache
+    with _client_lock:
+        ttl = 1.0 if _models_status_cache.get("loading_in_progress") else 3.0
+        if _models_status_cache and (now - _models_status_cache_time) < ttl:
+            return _models_status_cache
 
     try:
         stub = get_stub()
-        resp = stub.GetModelsStatus(pb2.Empty(), timeout=5.0)
+        resp = stub.GetModelsStatus(pb2.Empty(), metadata=grpc_metadata(), timeout=5.0)
         details = {
             domain: {"pipeline": s.pipeline, "classifier": s.classifier}
             for domain, s in resp.domains.items()
@@ -130,8 +126,9 @@ def get_models_status() -> dict[str, Any]:
             "loading_in_progress": loading_in_progress,
             "details": details,
         }
-        _models_status_cache = data
-        _models_status_cache_time = now
+        with _client_lock:
+            _models_status_cache = data
+            _models_status_cache_time = now
         return data
     except Exception as e:
         return {
@@ -145,11 +142,12 @@ def get_models_status() -> dict[str, Any]:
 
 def trigger_load_models() -> dict[str, Any]:
     """Triggers background model pre-loading on the ML Engine."""
-    global _models_status_cache_time
-    _models_status_cache_time = 0.0
+    _invalidate_models_cache()
     try:
         stub = get_stub()
-        resp = stub.ManageModels(pb2.ManageModelsRequest(action="load"), timeout=5.0)
+        resp = stub.ManageModels(
+            pb2.ManageModelsRequest(action="load"), metadata=grpc_metadata(), timeout=5.0
+        )
         return {"status": resp.status, "message": resp.message}
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -157,11 +155,12 @@ def trigger_load_models() -> dict[str, Any]:
 
 def reload_engine_models() -> dict[str, Any]:
     """Forces cache clearing and model reload on the ML Engine."""
-    global _models_status_cache_time
-    _models_status_cache_time = 0.0
+    _invalidate_models_cache()
     try:
         stub = get_stub()
-        resp = stub.ManageModels(pb2.ManageModelsRequest(action="reload"), timeout=5.0)
+        resp = stub.ManageModels(
+            pb2.ManageModelsRequest(action="reload"), metadata=grpc_metadata(), timeout=5.0
+        )
         return {"status": resp.status, "message": resp.message}
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -172,17 +171,17 @@ def refresh_engine_rules(rules_data: list[dict] | None = None, version: str = ""
     try:
         stub = get_stub()
         req = pb2.RefreshRulesRequest(
-            rules_json=json.dumps(rules_data) if rules_data else "", version=version
+            rules_json=json.dumps(rules_data) if rules_data is not None else "", version=version
         )
-        resp = stub.RefreshRules(req, timeout=5.0)
+        resp = stub.RefreshRules(req, metadata=grpc_metadata(), timeout=5.0)
         return {"status": resp.status, "message": resp.message}
     except Exception as e:
         logger.warning(f"Failed to notify ML Engine via gRPC to refresh rules: {e}")
         return {"status": "error", "error": str(e)}
 
 
-def _enqueue_or_post(job_id: str, payload: dict[str, Any], label: str) -> dict[str, Any]:
-    """Puts the job on the Redis queue. Falls back to direct HTTP dispatch if queue is disabled."""
+def _try_enqueue_redis(job_id: str, payload: dict[str, Any], label: str) -> dict[str, Any] | None:
+    """Attempts to enqueue the job onto the Redis distributed queue. Returns None on fallback."""
     try:
         queue = get_task_queue()
         if queue is not None:
@@ -190,30 +189,15 @@ def _enqueue_or_post(job_id: str, payload: dict[str, Any], label: str) -> dict[s
             return {"status": "queued", "job_id": str(job_id), "task_id": task_id}
     except Exception as e:
         logger.warning(
-            f"Redis queue unavailable ({e}); falling back to HTTP dispatch for {label} {job_id}."
+            f"Redis queue unavailable ({e}); falling back to gRPC dispatch for {label} {job_id}."
         )
-
-    try:
-        r = _session.post(
-            f"{ENGINE_URL}/engine/process-batch",
-            json=payload,
-            timeout=(5.0, 30.0),
-        )
-        if r.status_code not in (200, 202):
-            error_msg = f"Engine rejected {label} {job_id} with status {r.status_code}: {r.text}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        return r.json()
-    except requests.exceptions.RequestException as re:
-        error_msg = f"Failed to connect to ML Engine at {ENGINE_URL}: {re}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
+    return None
 
 
 def dispatch_batch_job(
     job_id: str, request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT
 ) -> dict[str, Any]:
-    """Dispatches a batch job to the dedicated ML Engine microservice for async execution."""
+    """Dispatches a batch job via Redis queue, falling back to direct gRPC DispatchBatchJob."""
     skus_payload = [
         {
             "name": sku.name,
@@ -229,20 +213,44 @@ def dispatch_batch_job(
         "task": task,
         "domain": request.domain or "market",
         "skus": skus_payload,
-        "backend_url": BACKEND_INTERNAL_URL,
+        "backend_grpc_url": BACKEND_GRPC_URL,
         "callback_url": request.callback_url,
         "sheet_name": request.sheet_name,
         "spreadsheet_id": request.spreadsheet_id,
         "tenant_id": tenant_id,
         "trace_id": TRACE_ID.get(),
     }
-    return _enqueue_or_post(job_id, payload, "job")
+    queued = _try_enqueue_redis(job_id, payload, "job")
+    if queued is not None:
+        return queued
+
+    try:
+        stub = get_stub()
+        req = pb2.BatchJobRequest(
+            job_id=str(job_id),
+            task=task,
+            domain=request.domain or "market",
+            skus=[dict_to_sku_proto(s) for s in skus_payload],
+            callback_url=request.callback_url or "",
+            sheet_name=request.sheet_name or "",
+            spreadsheet_id=request.spreadsheet_id or "",
+            backend_grpc_url=BACKEND_GRPC_URL,
+            tenant_id=tenant_id,
+        )
+        resp = stub.DispatchBatchJob(req, metadata=grpc_metadata(), timeout=30.0)
+        return {"status": resp.status, "job_id": resp.job_id}
+    except Exception as e:
+        error_msg = (
+            f"Failed to dispatch job {job_id} to ML Engine via gRPC ({ENGINE_GRPC_URL}): {e}"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
 
 def dispatch_upload_job(
     job_id: str, request: Any, task: str, tenant_id: str = DEFAULT_TENANT
 ) -> dict[str, Any]:
-    """Dispatches an upload job to the ML Engine microservice for async execution."""
+    """Dispatches an upload job via Redis queue, falling back to direct gRPC DispatchUploadJob."""
     allowed_columns = [
         "Name",
         "RefID",
@@ -264,24 +272,46 @@ def dispatch_upload_job(
         "region",
     ]
 
-    filtered_skus = []
-    for sku in request.skus:
-        filtered_sku = {col: sku.get(col, "") for col in allowed_columns}
-        filtered_skus.append(filtered_sku)
+    filtered_skus = [{col: sku.get(col, "") for col in allowed_columns} for sku in request.skus]
 
     payload = {
         "job_id": str(job_id),
         "task": task,
         "domain": request.domain or "market",
         "skus": filtered_skus,
-        "backend_url": BACKEND_INTERNAL_URL,
+        "backend_grpc_url": BACKEND_GRPC_URL,
         "sheet_name": request.outlet_id_or_name,
         "callback_url": None,
         "spreadsheet_id": None,
         "tenant_id": tenant_id,
         "trace_id": TRACE_ID.get(),
     }
-    return _enqueue_or_post(job_id, payload, "upload job")
+    queued = _try_enqueue_redis(job_id, payload, "upload job")
+    if queued is not None:
+        return queued
+
+    try:
+        stub = get_stub()
+        req = pb2.UploadJobRequest(
+            job_id=str(job_id),
+            task=task,
+            domain=request.domain or "market",
+            sheet_name=request.outlet_id_or_name or "",
+            tenant_id=tenant_id,
+            backend_grpc_url=BACKEND_GRPC_URL,
+            skus=[
+                pb2.UploadSkuItem(fields={k: "" if v is None else str(v) for k, v in s.items()})
+                for s in filtered_skus
+            ],
+        )
+        resp = stub.DispatchUploadJob(req, metadata=grpc_metadata(), timeout=30.0)
+        return {"status": resp.status, "job_id": resp.job_id}
+    except Exception as e:
+        error_msg = (
+            f"Failed to dispatch upload job {job_id} to ML Engine via gRPC ({ENGINE_GRPC_URL}): {e}"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
 
 def match_skus(
@@ -292,22 +322,13 @@ def match_skus(
     """Runs synchronous SKU matching via gRPC with typed Protobuf messages."""
     try:
         stub = get_stub()
-        sku_inputs = [
-            pb2.SKUInput(
-                name=s.get("name", s.get("Name", "")),
-                price=float(s.get("price", s.get("Price", 0.0)) or 0.0),
-                description=str(s.get("description", s.get("Description", "")) or ""),
-                category=str(s.get("category", s.get("Category", "")) or ""),
-            )
-            for s in skus
-        ]
         req = pb2.MatchRequest(
-            skus=sku_inputs,
+            skus=[dict_to_sku_proto(s) for s in skus],
             domain=domain,
             rules_json="",
             tenant_id=tenant_id,
         )
-        resp = stub.Match(req, metadata=_metadata(), timeout=60.0)
+        resp = stub.Match(req, metadata=grpc_metadata(), timeout=60.0)
         results = [
             {
                 "matched_catalog_name": r.matched_catalog_name,
@@ -331,7 +352,7 @@ def match_skus(
             "rule_version": resp.rule_version,
         }
     except Exception as re:
-        raise RuntimeError(f"Could not reach ML Engine via gRPC at {ENGINE_GRPC_URL}: {re}")
+        unwrap_rpc_error(re, ENGINE_GRPC_URL)
 
 
 def classify_skus(
@@ -342,22 +363,13 @@ def classify_skus(
     """Runs synchronous SKU classification via gRPC with typed Protobuf messages."""
     try:
         stub = get_stub()
-        sku_inputs = [
-            pb2.SKUInput(
-                name=s.get("name", s.get("Name", "")),
-                price=float(s.get("price", s.get("Price", 0.0)) or 0.0),
-                description=str(s.get("description", s.get("Description", "")) or ""),
-                category=str(s.get("category", s.get("Category", "")) or ""),
-            )
-            for s in skus
-        ]
         req = pb2.ClassifyRequest(
-            skus=sku_inputs,
+            skus=[dict_to_sku_proto(s) for s in skus],
             domain=domain,
             rules_json="",
             tenant_id=tenant_id,
         )
-        resp = stub.Classify(req, metadata=_metadata(), timeout=60.0)
+        resp = stub.Classify(req, metadata=grpc_metadata(), timeout=60.0)
         results = [
             {
                 "suggested_bt": r.suggested_bt,
@@ -388,7 +400,7 @@ def classify_skus(
             "rule_version": resp.rule_version,
         }
     except Exception as re:
-        raise RuntimeError(f"Could not reach ML Engine via gRPC at {ENGINE_GRPC_URL}: {re}")
+        unwrap_rpc_error(re, ENGINE_GRPC_URL)
 
 
 def run_single(
@@ -417,32 +429,9 @@ def run_single(
             rules_json="",
             tenant_id=tenant_id,
         )
-        resp = stub.RunSingle(req, metadata=_metadata(), timeout=60.0)
-        results = [
-            {
-                "matched_catalog_name": r.matched_catalog_name,
-                "score": r.score,
-                "status": r.status,
-                "logic_notes": r.logic_notes,
-                "suggested_bt": r.suggested_bt,
-                "bt_confidence": r.bt_confidence,
-                "bt_status": r.bt_status,
-                "bt_source": r.bt_source,
-                "model": r.model,
-                "bt_model": r.bt_model,
-                "suggested_gk": r.suggested_gk,
-                "gk_confidence": r.gk_confidence,
-                "gk_status": r.gk_status,
-                "suggested_region": r.suggested_region,
-                "region_confidence": r.region_confidence,
-                "region_status": r.region_status,
-                "region_source": r.region_source,
-                "rules_applied": r.rules_applied,
-            }
-            for r in resp.results
-        ]
+        resp = stub.RunSingle(req, metadata=grpc_metadata(), timeout=60.0)
         return {
-            "results": results,
+            "results": [pipeline_proto_to_result(r) for r in resp.results],
             "domain": resp.domain,
             "task": resp.task,
             "total": resp.total,
@@ -452,7 +441,7 @@ def run_single(
             "status": resp.status,
         }
     except Exception as re:
-        raise RuntimeError(f"Could not reach ML Engine via gRPC at {ENGINE_GRPC_URL}: {re}")
+        unwrap_rpc_error(re, ENGINE_GRPC_URL)
 
 
 def suggest_tags(
@@ -472,7 +461,7 @@ def suggest_tags(
             exclude_bt=exclude_bt or "",
             exclude_gk=exclude_gk or "",
         )
-        resp = stub.SuggestTags(req, metadata=_metadata(), timeout=15.0)
+        resp = stub.SuggestTags(req, metadata=grpc_metadata(), timeout=15.0)
         return {
             "status": resp.status,
             "sku_name": resp.sku_name,
@@ -483,7 +472,7 @@ def suggest_tags(
             "is_match": resp.is_match,
         }
     except Exception as re:
-        raise RuntimeError(f"Could not reach ML Engine via gRPC at {ENGINE_GRPC_URL}: {re}")
+        unwrap_rpc_error(re, ENGINE_GRPC_URL)
 
 
 def cancel_engine_job(job_id: str) -> bool:
@@ -496,7 +485,9 @@ def cancel_engine_job(job_id: str) -> bool:
         logger.warning(f"Could not set Redis cancellation flag for job {job_id}: {e}")
     try:
         stub = get_stub()
-        resp = stub.CancelJob(pb2.CancelJobRequest(job_id=str(job_id)), timeout=5.0)
+        resp = stub.CancelJob(
+            pb2.CancelJobRequest(job_id=str(job_id)), metadata=grpc_metadata(), timeout=5.0
+        )
         return resp.status == "cancelled"
     except Exception as e:
         logger.warning(f"Could not notify ML Engine of job {job_id} cancellation via gRPC: {e}")
@@ -507,35 +498,42 @@ def list_vector_collections() -> dict[str, Any]:
     """Fetches vector database collection names from the ML Engine via gRPC."""
     try:
         stub = get_stub()
-        resp = stub.ListVectorCollections(pb2.Empty(), timeout=5.0)
+        resp = stub.ListVectorCollections(pb2.Empty(), metadata=grpc_metadata(), timeout=5.0)
         return json.loads(resp.payload_json)
     except Exception as re:
-        raise RuntimeError(f"Could not reach ML Engine via gRPC at {ENGINE_GRPC_URL}: {re}")
+        unwrap_rpc_error(re, ENGINE_GRPC_URL)
 
 
 def get_vector_collection(name: str) -> dict[str, Any]:
     """Fetches info for a specific vector collection from the ML Engine via gRPC."""
     try:
         stub = get_stub()
-        resp = stub.GetVectorCollection(pb2.VectorCollectionRequest(name=name), timeout=5.0)
+        resp = stub.GetVectorCollection(
+            pb2.VectorCollectionRequest(name=name), metadata=grpc_metadata(), timeout=5.0
+        )
         return json.loads(resp.payload_json)
     except Exception as re:
-        raise RuntimeError(f"Could not reach ML Engine via gRPC at {ENGINE_GRPC_URL}: {re}")
+        unwrap_rpc_error(re, ENGINE_GRPC_URL)
 
 
 def search_vector_collection(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Dispatches vector search request to the ML Engine via gRPC."""
     try:
         stub = get_stub()
+        st = payload.get("score_threshold")
+        filters = payload.get("filters")
         req = pb2.VectorSearchRequest(
             name=name,
             query=payload.get("query", ""),
             limit=int(payload.get("top_k", 10)),
+            score_threshold=float(st) if st is not None else 0.0,
+            has_score_threshold=st is not None,
+            filters_json=json.dumps(filters) if filters else "",
         )
-        resp = stub.SearchVectorCollection(req, timeout=15.0)
+        resp = stub.SearchVectorCollection(req, metadata=grpc_metadata(), timeout=15.0)
         return json.loads(resp.payload_json)
     except Exception as re:
-        raise RuntimeError(f"Could not reach ML Engine via gRPC at {ENGINE_GRPC_URL}: {re}")
+        unwrap_rpc_error(re, ENGINE_GRPC_URL)
 
 
 def run_sku_audit(
@@ -559,7 +557,7 @@ def run_sku_audit(
             category=category or "",
             tenant_id=tenant_id,
         )
-        resp = stub.RunAudit(req, metadata=_metadata(), timeout=60.0)
+        resp = stub.RunAudit(req, metadata=grpc_metadata(), timeout=60.0)
         return json.loads(resp.audit_json)
     except Exception as re:
-        raise RuntimeError(f"Could not reach ML Engine via gRPC at {ENGINE_GRPC_URL}: {re}")
+        unwrap_rpc_error(re, ENGINE_GRPC_URL)

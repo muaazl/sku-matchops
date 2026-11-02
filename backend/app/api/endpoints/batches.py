@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import Connection, text
 
-from backend.app.core.db import get_db_connection
 from backend.app.core.security import Principal, get_principal
+from backend.app.db.session import get_db_connection
 from backend.app.schemas.models import (
     BaseRequest,
     BatchResponse,

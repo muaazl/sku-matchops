@@ -3,6 +3,7 @@ SKU MatchOps Engine - Model & Resource Loader
 Handles loading, warm-up, and singleton caching of ML pipelines, NER, and Classifiers.
 """
 
+import gc
 import logging
 import sys
 import threading
@@ -25,6 +26,8 @@ from engine.matching.logic_gates import LogicGates
 from engine.matching.matcher import SKUMatcher
 from engine.nlp.embedding_engine import EmbeddingEngine
 from engine.nlp.ner_engine import NEREngine
+from engine.rules_engine import clear_flavor_cache, refresh_rules_cache
+from engine.rules_engine.loader import start_invalidation_listener
 
 logger = logging.getLogger("matchops.engine.loader")
 
@@ -33,6 +36,8 @@ _classifiers: dict[str, ZeroShotClassifier] = {}
 _domain_ner_engines: dict[str, NEREngine] = {}
 _vector_store = None
 _loader_lock = threading.RLock()
+_model_load_lock = threading.Lock()
+_queue_worker: threading.Thread | None = None
 
 _pipeline_build_locks = {
     config.DOMAIN_MARKET: threading.Lock(),
@@ -49,10 +54,32 @@ _model_statuses = {
 }
 
 
-def reset_statuses():
-    for domain in _model_statuses:
-        _model_statuses[domain]["pipeline"] = "idle"
-        _model_statuses[domain]["classifier"] = "idle"
+def reset_statuses(clear_caches: bool = False) -> None:
+    with _loader_lock:
+        if clear_caches:
+            _pipelines.clear()
+            _classifiers.clear()
+            _domain_ner_engines.clear()
+        for domain in _model_statuses:
+            _model_statuses[domain]["pipeline"] = "idle"
+            _model_statuses[domain]["classifier"] = "idle"
+
+
+def are_all_models_ready() -> bool:
+    """True when both market and food pipeline + classifier models are ready."""
+    return all(
+        _model_statuses.get(d, {}).get("pipeline") == "ready"
+        and _model_statuses.get(d, {}).get("classifier") == "ready"
+        for d in (config.DOMAIN_MARKET, config.DOMAIN_FOOD)
+    )
+
+
+def is_model_loading() -> bool:
+    """True while a background warmup/reload is running or any domain build is active."""
+    return _model_load_lock.locked() or any(
+        st.get("pipeline") == "loading" or st.get("classifier") == "training"
+        for st in _model_statuses.values()
+    )
 
 
 # Shared heavy models
@@ -325,3 +352,62 @@ def check_models_loaded(domain: str, task: str) -> None:
             f"Models for domain '{domain}' are not loaded (missing: {', '.join(missing)}). "
             f"Please call the /load-models endpoint to load the models first."
         )
+
+
+def trigger_model_load(reload: bool = False) -> tuple[str, str]:
+    """Thread-safe entrypoint for GetModelsStatus / ManageModels background warmup."""
+    if not reload and are_all_models_ready() and not _model_load_lock.locked():
+        return "success", "Models are already fully loaded."
+    if not _model_load_lock.acquire(blocking=False):
+        return "ignored", "Model loading is already in progress."
+    try:
+        threading.Thread(target=_bg_load_models, args=(reload,), daemon=True).start()
+    except BaseException:
+        _model_load_lock.release()
+        raise
+    return "started", "Model loading triggered."
+
+
+def _bg_load_models(reload: bool = False) -> None:
+    global _queue_worker
+    try:
+        logger.info("[ENGINE] Background model loading and warmup started...")
+        if reload:
+            reset_statuses(clear_caches=True)
+            gc.collect()
+
+        try:
+            embed_engine, ner_engine = _get_shared_models()
+            if hasattr(embed_engine, "warmup"):
+                embed_engine.warmup()
+            if hasattr(ner_engine, "warmup"):
+                ner_engine.warmup()
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"[ENGINE] Warmup failed: {e}")
+
+        try:
+            refresh_rules_cache()
+            start_invalidation_listener()
+            clear_flavor_cache()
+
+            # Load domains sequentially with explicit gc to minimize peak memory allocation.
+            # get_pipeline(d) builds and attaches get_classifier(d) internally.
+            for d in (config.DOMAIN_MARKET, config.DOMAIN_FOOD):
+                try:
+                    get_pipeline(d)
+                except Exception as e:
+                    logger.error(f"[ENGINE] Failed to pre-load domain {d}: {e}")
+                gc.collect()
+
+            logger.info("[ENGINE] All ML models loaded and cached successfully.")
+            from engine.pipeline.worker_runner import start_queue_worker
+
+            # Only take queued jobs once models are ready; until then other workers can serve them
+            if _queue_worker is None or not _queue_worker.is_alive():
+                _queue_worker = start_queue_worker()
+        except Exception as e:
+            logger.error(f"[ENGINE] Background model loading failed: {e}")
+            reset_statuses()
+    finally:
+        _model_load_lock.release()

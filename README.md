@@ -20,15 +20,14 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
                       │          http://localhost:8000          │
                       │  • Business Rules Engine (AST)          │
                       │  • Batch Job Orchestration & Workers    │
-                      │  • PostgreSQL Audit Trail (SQLAlchemy)  │
                       └────────────┬───────────────┬────────────┘
                                    │               │
             ┌──────────────────────┘               └──────────────────────┐
-            │ gRPC:50051 / HTTP:8001                                      │ SQL:5432
+            │ gRPC:50051                                                  │ SQL:5432
             ▼                                                             ▼
 ┌──────────────────────────────────────┐                       ┌──────────────────────┐
 │  ML Inference Engine (Stateless/ONNX)│                       │ PostgreSQL 16 DB     │
-│        http://localhost:8001         │                       │ • pg_trgm GIN Search │
+│          gRPC Port 50051             │                       │ • pg_trgm GIN Search │
 │  • BGE-M3 Dense + Sparse Vectors     │                       │ • Jobs & Audit Trail │
 │  • BGE-Reranker-v2-M3 Cross-Encoder  │                       │     Port 5432        │
 │  • GLiNER Zero-Shot Named Entity Rec │                       └──────────────────────┘
@@ -49,7 +48,7 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 | :--- | :--- | :--- |
 | **`frontend`** | `5173` | React 18 + Vite single-page application with interactive SKU matching and rule curation. |
 | **`backend`** | `8000` | FastAPI API gateway, deterministic rules engine, batch processing worker, and audit logger. |
-| **`engine`** | `8001` | Dedicated ML inference microservice serving INT8 ONNX models and zero-shot entity extractors. |
+| **`engine`** | `50051` | Dedicated ML inference microservice (gRPC) serving INT8 ONNX models and zero-shot entity extractors. |
 | **`qdrant`** | `6333` | Vector database managing BGE-M3 dense and sparse embeddings with HNSW indexing. |
 | **`postgres`** | `5432` | PostgreSQL 16 for jobs, rules, and per-SKU audit results. Managed exclusively by the backend gateway via a pooled SQLAlchemy engine; schema is managed by Alembic (`migrate` one-shot service runs `alembic upgrade head`). |
 
@@ -77,7 +76,7 @@ docker compose up -d
 ```
 
 > [!NOTE]
-> **Development vs. hardened networking.** `docker compose up` also loads `docker-compose.override.yml`, which publishes internal service ports (Qdrant `6333`, engine `8001`) to the host for local debugging. For a hardened deployment, skip the override so only the backend (`8000`) and frontend (`5173`) are exposed:
+> **Development vs. hardened networking.** `docker compose up` also loads `docker-compose.override.yml`, which publishes internal service ports (Qdrant `6333`, engine gRPC `50051`) to the host for local debugging. For a hardened deployment, skip the override so only the backend (`8000`) and frontend (`5173`) are exposed:
 >
 > ```bash
 > docker compose -f docker-compose.yml up -d
@@ -86,11 +85,11 @@ docker compose up -d
 > Services still communicate over the private compose network; use `docker compose exec <service> …` to inspect internal ones.
 
 ### 3. Ingest Demo Sample Data (Instant Offline Mode)
-To seed the catalog, train classifiers, and vectorize embeddings from the pre-packaged sample dataset:
+To seed the PostgreSQL catalog (owned by `backend`), build local caches, train classifiers, and vectorize embeddings in `engine`:
 ```bash
-docker compose exec engine python scripts/catalog/sync.py --sample
+docker compose exec backend python -m scripts.catalog.sync --sample --keep-staged --db rebuild
+docker compose exec engine python -m scripts.catalog.sync --from-staged --cache rebuild --qdrant rebuild
 ```
-*(Optional: Run `docker compose restart backend` to refresh backend memory caches with the seeded catalog.)*
 
 > [!IMPORTANT]
 > **First-Run Model Downloads**: On the very first run, the system automatically downloads **BGE-M3**, **BGE-Reranker-v2-M3**, and **GLiNER Medium** (~2.5 GB total) and applies INT8 dynamic quantization. This initial startup will take a few minutes depending on bandwidth and CPU. Subsequent runs use cached models and initialize almost instantly.
@@ -98,7 +97,6 @@ docker compose exec engine python scripts/catalog/sync.py --sample
 ### 4. Access Services
 - **Web Dashboard**: [http://localhost:5173](http://localhost:5173)
 - **Backend API Docs (Swagger UI)**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **ML Engine API Docs**: [http://localhost:8001/docs](http://localhost:8001/docs) *(dev mode only)*
 - **Qdrant Web Dashboard**: [http://localhost:6333/dashboard](http://localhost:6333/dashboard) *(dev mode only)*
 
 ---
@@ -111,8 +109,10 @@ SKU MatchOps supports two flexible modes of catalog ingestion:
 The repository includes a ready-to-run demo dataset at [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) containing 500 Food dishes, 500 Market retail products, and taxonomy dictionaries.
 To reset and load this sample data into the system:
 ```bash
-docker compose exec engine python scripts/catalog/sync.py --sample
+docker compose exec backend python -m scripts.catalog.sync --sample --keep-staged --db rebuild
+docker compose exec engine python -m scripts.catalog.sync --from-staged --cache rebuild --qdrant rebuild
 ```
+*(Or locally outside Docker: `python -m scripts.catalog.sync --sample`)*
 
 ### Option B: Live Google Sheets Integration
 You can connect your own Google Sheet catalog by following these steps:
@@ -127,11 +127,12 @@ You can connect your own Google Sheet catalog by following these steps:
      GOOGLE_SHEET_ID=your_extracted_sheet_id_here
      ```
 4. **Trigger Sync**:
-   - Run the catalog sync command to fetch from Google Sheets, index into PostgreSQL, vectorize embeddings into Qdrant, and train classifiers:
+   - Run the catalog sync commands to stage from Google Sheets into PostgreSQL (`backend`) and vectorize embeddings + train classifiers (`engine`):
      ```bash
-     docker compose exec engine python scripts/catalog/sync.py
+     docker compose exec backend python -m scripts.catalog.sync --keep-staged --db sync
+     docker compose exec engine python -m scripts.catalog.sync --from-staged --cache sync --qdrant sync
      ```
-     *(Or locally outside Docker: `python scripts/catalog/sync.py`)*
+     *(Or locally outside Docker: `python -m scripts.catalog.sync`)*
 
 ### Google Sheet Tab Schema
 
@@ -168,8 +169,8 @@ If you prefer running the Python and Node services directly on your host machine
 ### 2. Python Environment Setup
 ```bash
 # Create and activate virtual environment (using Python 3.11)
-py -3.11 -m venv venv
-.\venv\Scripts\Activate.ps1
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
 # Install CPU PyTorch first (fast & lightweight)
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -183,12 +184,12 @@ python scripts/catalog/sync.py --sample
 
 ### 3. Run Microservices
 ```bash
-# Terminal 1 — Start ML Inference Engine
-.\venv\Scripts\Activate.ps1
-uvicorn engine.server:app --host 0.0.0.0 --port 8001
+# Terminal 1 — Start ML Inference Engine (gRPC on port 50051)
+.\.venv\Scripts\Activate.ps1
+python -m engine.server
 
 # Terminal 2 — Start Backend API Gateway
-.\venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 # Terminal 3 — Start Frontend Development Server
@@ -208,8 +209,9 @@ pnpm start
 | `DATABASE_URL` | Yes | PostgreSQL URL (`postgresql+psycopg://user:pass@host:5432/db`). |
 | `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | No | SQLAlchemy connection pool per process. Defaults to `10` / `20`. |
 | `DB_BULK_CHUNK_SIZE` | No | Rows per INSERT when bulk-writing per-SKU results. Defaults to `1000`. |
-| `ENGINE_URL` | Yes | URL of the ML inference engine microservice. |
-| `BACKEND_INTERNAL_URL` | Yes | Internal backend gateway URL. |
+| `ENGINE_GRPC_URL` | Yes | gRPC target of the ML inference engine (`127.0.0.1:50051` or `engine:50051`). |
+| `BACKEND_GRPC_URL` | Yes | gRPC callback target of the backend gateway (`127.0.0.1:50052` or `backend:50052`). |
+| `INTERNAL_GRPC_SECRET` | No | Optional shared secret enforced on all internal Gateway <-> Engine gRPC calls. |
 | `QDRANT_URL` | Yes | Qdrant vector database URL. |
 | `QDRANT_API_KEY` | No | Qdrant API key (for secured/cloud deployments). |
 | `USE_INT8_MODELS` | No | Enables INT8 dynamic quantization for CPU speedup. Defaults to `true`. |

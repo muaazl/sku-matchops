@@ -9,7 +9,7 @@ import pandas as pd
 import polars as pl
 from sqlalchemy import text
 
-from backend.app.core.db import get_connection
+from backend.app.db.session import get_connection
 from engine import config
 from engine.data_pipeline.cache_manager import calculate_row_hash, clean_price
 from engine.data_pipeline.ingestion import DataIngestion

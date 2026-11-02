@@ -5,10 +5,10 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import Connection, text
 
-from backend.app.api.endpoints.engine_callbacks import _job_progress
-from backend.app.core.db import get_db_connection
-from backend.app.core.models import jobs as jobs_table
 from backend.app.core.security import Principal, get_principal
+from backend.app.db.schema import jobs as jobs_table
+from backend.app.db.session import get_db_connection
+from backend.app.grpc_server import _job_progress, clear_job_progress
 from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
 from backend.app.services.engine_client import cancel_engine_job
 from backend.app.services.worker import enqueue_job
@@ -440,6 +440,7 @@ def cancel_job(
         {"id": id},
     )
     db.commit()
+    clear_job_progress(id)
 
     # Notify ML Engine microservice
     cancel_engine_job(id)

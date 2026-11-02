@@ -14,6 +14,7 @@ from sqlalchemy import text
 
 from backend.app.api.endpoints.auth import create_user
 from backend.app.core import config as backend_config
+from backend.app.services.rules_service import sync_rules_everywhere
 from engine.core import observability
 from engine.rules_engine import loader
 
@@ -63,7 +64,7 @@ def tenants(pg):
             conn.execute(
                 text(f"DELETE FROM {table} WHERE tenant_id IN (:a, :b)"), {"a": t_a, "b": t_b}
             )
-    loader.refresh_rules_cache()
+    sync_rules_everywhere()
 
 
 def _token(client, username: str) -> str:
@@ -209,7 +210,7 @@ def test_admin_succeeds_on_admin_endpoints(app_client, tenants, auth_on, monkeyp
     assert app_client.post("/models/reload", headers=platform).status_code == 200
     assert app_client.get("/api-requests", headers=platform).status_code == 200
 
-    from backend.app.core.db import get_engine
+    from backend.app.db.session import get_engine
 
     with get_engine().begin() as conn:
         conn.execute(text("DELETE FROM users WHERE username = :u"), {"u": new_user})
@@ -326,7 +327,7 @@ def test_rules_are_isolated_per_tenant_including_in_the_engine(app_client, tenan
     )
 
     # Engine side: a job pinned to tenant A never evaluates tenant B's rule
-    loader.refresh_rules_cache()
+    sync_rules_everywhere()
     snap_a, snap_b = loader.snapshot_rules(tenants.a), loader.snapshot_rules(tenants.b)
     assert rule_id not in {r.rule_id for r in snap_a.rules("market")}
     assert rule_id in {r.rule_id for r in snap_b.rules("market")}
@@ -399,8 +400,6 @@ METRIC_NAMES = [
 
 
 def test_gateway_and_engine_metrics_endpoints(app_client, monkeypatch):
-    from engine.server import app as engine_app
-
     stats = {"realtime": 2, "bulk": 5, "delayed": 1, "inflight": 3, "dlq": 4}
     monkeypatch.setattr(
         "engine.pipeline.task_queue.get_task_queue", lambda: SimpleNamespace(stats=lambda: stats)
@@ -411,11 +410,13 @@ def test_gateway_and_engine_metrics_endpoints(app_client, monkeypatch):
     observability.MATCH_CONFIDENCE.observe(0.92)
     observability.ONNX_INFERENCE_SECONDS.labels(model="embed").observe(0.01)
 
-    for client in (app_client, TestClient(engine_app)):
-        resp = client.get("/metrics")
-        assert resp.status_code == 200
-        assert resp.headers["content-type"].startswith("text/plain")
-        body = resp.text
+    resp = app_client.get("/metrics")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/plain")
+    raw_payload, content_type = observability.metrics_payload()
+    assert content_type.startswith("text/plain")
+
+    for body in (resp.text, raw_payload.decode("utf-8")):
         for name in METRIC_NAMES:
             assert name in body, name
         assert (
@@ -496,7 +497,7 @@ def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
         if r.name == handler_logger.name
     )
 
-    from backend.app.core.db import get_engine
+    from backend.app.db.session import get_engine
 
     with get_engine().begin() as conn:
         job_id = resp.json()["job_id"]
@@ -535,39 +536,13 @@ GOLDEN = json.loads((Path(__file__).parent / "golden_dataset.json").read_text(en
 
 
 @pytest.fixture(scope="module")
-def golden_rules(pg):
+def golden_rules():
     """Seeds the production business rules captured in the golden dataset (default tenant)."""
-    ids = [r["rule_id"] for r in GOLDEN["rules"]]
-    with pg.begin() as conn:
-        conn.execute(text("DELETE FROM rules WHERE rule_id = ANY(:ids)"), {"ids": ids})
-        for r in GOLDEN["rules"]:
-            conn.execute(
-                text(
-                    "INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic) "
-                    "VALUES (:rule_id, :domain, :priority, :description, :reasoning, :condition_logic)"
-                ),
-                r,
-            )
-            for c in r["conditions"]:
-                conn.execute(
-                    text(
-                        "INSERT INTO conditions (rule_id, condition_group, condition_type, value, negate) "
-                        "VALUES (:r, :condition_group, :condition_type, :value, :negate)"
-                    ),
-                    {"r": r["rule_id"], **c},
-                )
-            for a in r["actions"]:
-                conn.execute(
-                    text(
-                        "INSERT INTO actions (rule_id, action_type, value) VALUES (:r, :action_type, :value)"
-                    ),
-                    {"r": r["rule_id"], **a},
-                )
-    loader.refresh_rules_cache()
+    prev = (loader._RULES_CACHE, loader._RULES_VERSION, loader._TENANT_VERSIONS)
+    loader.set_rules_from_dicts(GOLDEN["rules"])
     yield
-    with pg.begin() as conn:
-        conn.execute(text("DELETE FROM rules WHERE rule_id = ANY(:ids)"), {"ids": ids})
-    loader.refresh_rules_cache()
+    loader._RULES_CACHE, loader._RULES_VERSION, loader._TENANT_VERSIONS = prev
+    loader._cached_rules.cache_clear()
 
 
 def test_golden_dataset_shape():
@@ -589,8 +564,27 @@ def test_golden_dataset_shape():
 
 
 def test_golden_regression(golden_rules):
+    import os
+
+    import httpx
+
+    from engine import config
     from engine.core.resource_loader import get_classifier, get_pipeline
     from engine.pipeline.processor import process_request
+
+    for d in ("food", "market"):
+        meta_path = os.path.join(config.CACHE_DIR, f"{d}_catalog_metadata.pkl")
+        if (
+            not os.path.exists(config.BI_ENCODER_ONNX)
+            or not os.path.exists(config.get_bt_arcface_onnx_path(d))
+            or not os.path.exists(meta_path)
+        ):
+            pytest.skip(f"Local ONNX models or synced '{d}' catalog cache not found on disk")
+    try:
+        if httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0).status_code >= 500:
+            pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
+    except Exception:
+        pytest.skip(f"Qdrant not reachable at {config.QDRANT_URL}")
 
     outcomes = []
     for domain in ("food", "market"):
@@ -631,32 +625,31 @@ def test_golden_regression(golden_rules):
     assert accuracy >= GOLDEN["min_accuracy"], f"accuracy {accuracy:.1%} below threshold:\n{misses}"
 
 
-# ---------------------------------------------------------------- HTTP fallback context
+# ---------------------------------------------------------------- gRPC fallback context
 
 
-def test_http_fallback_preserves_tenant_and_trace(monkeypatch):
-    """Redis unavailable -> Gateway POSTs to the Engine; tenant and trace must survive the hop."""
+def test_grpc_fallback_preserves_tenant_and_trace(monkeypatch):
+    """Redis unavailable -> Gateway dispatches via gRPC to the Engine; tenant and trace survive."""
     from backend.app.schemas.models import BaseRequest, SKUItem
     from backend.app.services import engine_client
-    from engine import server as engine_server
+    from engine import grpc_server
     from engine.pipeline import worker_runner
 
     monkeypatch.setattr(engine_client, "get_task_queue", lambda: None)  # queue disabled
-    engine_http = TestClient(engine_server.app)
-
-    def post_to_engine(url, json=None, timeout=None):
-        return engine_http.post(url.replace(engine_client.ENGINE_URL, ""), json=json)
-
-    monkeypatch.setattr(engine_client._session, "post", post_to_engine)
     queued = []
     monkeypatch.setattr(
-        engine_server, "enqueue_batch_job", lambda p: queued.append(p) or {"status": "accepted"}
+        grpc_server, "enqueue_batch_job", lambda p: queued.append(p) or {"status": "accepted"}
     )
 
-    trace = f"fallback-{uuid.uuid4().hex[:8]}"
-    req = BaseRequest(skus=[SKUItem(name="Coca Cola 1.5L")], domain="market", callback_url="")
-    with observability.trace_context(trace):
-        engine_client.dispatch_batch_job("fb-1", req, "pipeline", tenant_id="tenant_fb")
+    srv = grpc_server.start_grpc_server(port=0, host="127.0.0.1")
+    try:
+        monkeypatch.setattr(engine_client, "ENGINE_GRPC_URL", f"127.0.0.1:{srv._bound_port}")
+        trace = f"fallback-{uuid.uuid4().hex[:8]}"
+        req = BaseRequest(skus=[SKUItem(name="Coca Cola 1.5L")], domain="market", callback_url="")
+        with observability.trace_context(trace):
+            engine_client.dispatch_batch_job("fb-1", req, "pipeline", tenant_id="tenant_fb")
+    finally:
+        srv.stop(grace=0)
 
     payload = queued[0]
     assert payload["tenant_id"] == "tenant_fb" and payload["trace_id"] == trace
@@ -675,11 +668,28 @@ def test_http_fallback_preserves_tenant_and_trace(monkeypatch):
     assert seen == {"trace": trace, "tenant": "tenant_fb"}
 
 
-def test_http_fallback_defaults_when_context_missing():
-    from engine import server as engine_server
+def test_grpc_fallback_defaults_when_context_missing(monkeypatch):
+    import grpc
 
-    req = engine_server.BatchProcessRequest(job_id="x", skus=[{"name": "a"}])
-    assert req.tenant_id == "default" and req.trace_id == "-"
+    from engine import grpc_server
+    from engine.protos import engine_service_pb2 as pb2
+    from engine.protos import engine_service_pb2_grpc as pb2_grpc
+
+    queued = []
+    monkeypatch.setattr(
+        grpc_server, "enqueue_batch_job", lambda p: queued.append(p) or {"status": "accepted"}
+    )
+    srv = grpc_server.start_grpc_server(port=0, host="127.0.0.1")
+    try:
+        with grpc.insecure_channel(f"127.0.0.1:{srv._bound_port}") as chan:
+            stub = pb2_grpc.EngineInferenceServiceStub(chan)
+            stub.DispatchBatchJob(
+                pb2.BatchJobRequest(job_id="x", skus=[pb2.SKUInput(name="a")]), timeout=5.0
+            )
+    finally:
+        srv.stop(grace=0)
+
+    assert queued[0]["tenant_id"] == "default" and queued[0]["trace_id"] == "-"
     with observability.trace_context("-") as bound:
         assert bound != "-" and len(bound) == 32  # placeholder gets a real trace id
 
@@ -703,7 +713,7 @@ def test_system_status_is_tenant_scoped(app_client, tenants, tenant_data, auth_o
         "/system/status", headers=_hdr(app_client, tenants.user["a_reviewer"])
     ).json()
     assert a["tenant_id"] == tenants.a
-    from backend.app.core.db import get_engine
+    from backend.app.db.session import get_engine
 
     with get_engine().connect() as conn:
         expected = conn.execute(

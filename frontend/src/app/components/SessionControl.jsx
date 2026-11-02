@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, Button, Chip, Divider, IconButton, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import { useQueryClient } from '@tanstack/react-query';
+import { useLocation } from 'react-router-dom';
 import { useSnackbar } from 'notistack';
 import { KeyRound, LogIn, LogOut, ShieldCheck } from 'lucide-react';
 import { login } from '../api';
@@ -15,19 +16,30 @@ const EMPTY_FORM = { username: '', password: '', apiKey: '' };
 // logged in. Logging in unlocks the restricted pages (see RequireLogin).
 export default function SessionControl() {
   const queryClient = useQueryClient();
+  const location = useLocation();
   const { enqueueSnackbar } = useSnackbar();
-  const { setSession, clearSession } = useStore();
+  const { loginModalOpen, openLoginModal, closeLoginModal, resetLoginPrompt, setSession, clearSession } = useStore();
   const { me, role, signedIn } = useAuth();
-  const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
+
+  // Re-arm the 401 prompt when navigating to a new page, without nagging during background polls on one page
+  useEffect(() => {
+    resetLoginPrompt();
+  }, [location.pathname, resetLoginPrompt]);
+
+  // Reset form inputs whenever the modal opens (whether via button click or 401 interceptor)
+  useEffect(() => {
+    if (loginModalOpen) {
+      setForm(EMPTY_FORM);
+    }
+  }, [loginModalOpen]);
 
   // Identity changed: never show cached data from the previous session
   const resetScope = () => queryClient.resetQueries();
 
   const openDialog = () => {
-    setForm(EMPTY_FORM);
-    setOpen(true);
+    openLoginModal();
   };
 
   const apply = async () => {
@@ -41,7 +53,6 @@ export default function SessionControl() {
         setSession({ token: res.access_token });
         enqueueSnackbar(`Signed in as ${form.username} (${res.role})`, { variant: 'success' });
       }
-      setOpen(false);
       resetScope();
     } catch (e) {
       enqueueSnackbar(e.response?.data?.detail || `Sign-in failed: ${e.message}`, { variant: 'error' });
@@ -83,14 +94,14 @@ export default function SessionControl() {
       )}
 
       <IconModal
-        open={open}
-        onClose={() => setOpen(false)}
+        open={loginModalOpen}
+        onClose={closeLoginModal}
         icon={ShieldCheck}
         title="Sign in"
         description="Your role (admin, rule engineer, reviewer) comes from the account you sign in with."
         actions={
           <>
-            <Button color="inherit" variant="outlined" fullWidth onClick={() => setOpen(false)}>
+            <Button color="inherit" variant="outlined" fullWidth onClick={closeLoginModal}>
               Cancel
             </Button>
             <Button

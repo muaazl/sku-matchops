@@ -32,6 +32,6 @@ COPY scripts /app/scripts
 
 COPY docker/docker-entrypoint-backend.py /app/docker-entrypoint-backend.py
 
-EXPOSE 8000
+EXPOSE 8000 50052
 
 ENTRYPOINT ["python", "/app/docker-entrypoint-backend.py"]

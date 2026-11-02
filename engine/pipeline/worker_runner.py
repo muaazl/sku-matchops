@@ -1,67 +1,79 @@
 """
 SKU MatchOps Engine - Background Job Worker Runner
-Executes async batch jobs, persists results directly to PostgreSQL, emits progress/status
-HTTP callbacks to the Backend Gateway, and handles Google Sheets webhook callbacks.
+Executes async batch jobs, emits progress/completion/failure gRPC callbacks to the Gateway,
+and delivers external Google Sheets webhook callbacks.
 """
 
+import json
 import logging
 import queue
 import threading
 import time
 from typing import Any
 
+import grpc
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from engine import config
+from engine.core.grpc_utils import GRPC_CHANNEL_OPTIONS, grpc_metadata, result_to_pipeline_proto
 from engine.core.observability import SKUS_PROCESSED, trace_context
 from engine.pipeline.processor import process_request
 from engine.pipeline.task_queue import get_task_queue, run_worker
 from engine.pipeline.uploader import process_upload
+from engine.protos import engine_service_pb2 as pb2
+from engine.protos import engine_service_pb2_grpc as pb2_grpc
 from engine.rules_engine.loader import pinned_rules, snapshot_rules, sync_rules_version
 
 logger = logging.getLogger("matchops.engine.worker")
 
 _batch_queue = queue.Queue()
 _cancelled_jobs: set[str] = set()
-_running_jobs: dict[str, dict[str, Any]] = {}
 _worker_thread: threading.Thread | None = None
 
-# Persistent HTTP session with connection pooling.
-# allowed_methods must explicitly include POST: urllib3's default excludes it (only
-# idempotent verbs retry out of the box), and every call this session makes is a POST
-# (progress/complete/fail callbacks to the backend, and the Google Sheets webhook).
-_http_session = requests.Session()
-_retries = Retry(
-    total=1,
-    backoff_factor=0.1,
-    status_forcelist=[502, 503, 504],
-    allowed_methods=["GET", "POST"],
-)
+# Persistent HTTP session used exclusively for external Google Apps Script webhook delivery.
 # Apps Script /exec randomly hangs ~30% of requests; doPost overwrites the same cells, so re-POSTing is safe.
+_http_session = requests.Session()
 _sheets_retries = Retry(
     total=3, backoff_factor=1, status_forcelist=[502, 503, 504], allowed_methods=["GET", "POST"]
 )
 _http_session.mount(
-    "http://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_retries)
+    "http://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_sheets_retries)
 )
 _http_session.mount(
     "https://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_sheets_retries)
 )
 
+_stub_lock = threading.Lock()
+_callback_channels: dict[str, grpc.Channel] = {}
+_callback_stubs: dict[str, pb2_grpc.BackendCallbackServiceStub] = {}
 
 _exec_lock = threading.Lock()  # one job at a time per process, whichever queue it came from
 _queue_jobs: set[str] = set()  # jobs taken from the Redis queue
 _cancel_checked: dict[str, tuple[float, bool]] = {}
 
 
+def _get_backend_stub(target: str | None = None) -> pb2_grpc.BackendCallbackServiceStub:
+    """Returns a cached gRPC stub for the Gateway's BackendCallbackService."""
+    addr = target or config.BACKEND_GRPC_URL
+    with _stub_lock:
+        stub = _callback_stubs.get(addr)
+        if stub is None:
+            channel = grpc.insecure_channel(addr, options=list(GRPC_CHANNEL_OPTIONS))
+            stub = pb2_grpc.BackendCallbackServiceStub(channel)
+            _callback_channels[addr] = channel
+            _callback_stubs[addr] = stub
+        return stub
+
+
 def cancel_job(job_id: str) -> bool:
     """Marks a job as cancelled so processing aborts immediately (on any worker, via Redis)."""
     _cancelled_jobs.add(str(job_id))
     try:
-        queue = get_task_queue()
-        if queue is not None:
-            queue.request_cancel(str(job_id))
+        task_q = get_task_queue()
+        if task_q is not None:
+            task_q.request_cancel(str(job_id))
     except Exception as e:
         logger.debug(f"[ENGINE WORKER] Could not broadcast cancellation of {job_id}: {e}")
     logger.info(f"[ENGINE WORKER] Job {job_id} cancellation requested.")
@@ -78,7 +90,8 @@ def is_job_cancelled(job_id: str) -> bool:
     checked_at, cancelled = _cancel_checked.get(jid, (0.0, False))
     if time.time() - checked_at >= 1.0:
         try:
-            cancelled = get_task_queue().is_cancelled(jid)
+            task_q = get_task_queue()
+            cancelled = task_q.is_cancelled(jid) if task_q is not None else False
         except Exception:
             cancelled = False
         _cancel_checked[jid] = (time.time(), cancelled)
@@ -88,8 +101,8 @@ def is_job_cancelled(job_id: str) -> bool:
 
 
 def enqueue_batch_job(payload: dict[str, Any]) -> dict[str, Any]:
-    """Legacy path: puts a job onto this process's in-memory queue (used when the Gateway
-    could not reach the Redis queue and dispatched over HTTP)."""
+    """Fallback path: puts a job onto this process's in-memory queue (used when the Gateway
+    could not reach the Redis queue and dispatched over gRPC)."""
     global _worker_thread
     job_id = str(payload.get("job_id", ""))
     _cancelled_jobs.discard(job_id)
@@ -105,12 +118,12 @@ def enqueue_batch_job(payload: dict[str, Any]) -> dict[str, Any]:
 
 def start_queue_worker() -> threading.Thread | None:
     """Starts the Redis queue consumer for this process (None when the queue is disabled)."""
-    queue = get_task_queue()
-    if queue is None:
+    task_q = get_task_queue()
+    if task_q is None:
         return None
     thread = threading.Thread(
         target=run_worker,
-        args=(queue, _run_queued_job, _on_dead_task),
+        args=(task_q, _run_queued_job),
         kwargs={"lock": _exec_lock},
         name="queue-worker",
         daemon=True,
@@ -155,6 +168,7 @@ def _run_legacy_job(payload: dict[str, Any]) -> None:
         _notify_failure(payload, str(e))
     finally:
         _cancelled_jobs.discard(job_id)
+        _cancel_checked.pop(job_id, None)
 
 
 def _run_queued_job(payload: dict[str, Any]) -> None:
@@ -181,18 +195,13 @@ def _run_queued_job(payload: dict[str, Any]) -> None:
         _cancel_checked.pop(job_id, None)
 
 
-def _on_dead_task(task: dict) -> None:
-    """The queue already dead-lettered the task and marked the job failed; tell the clients."""
-    _notify_failure(task["payload"], task.get("last_error", "job failed"))
-
-
 def _execute_job(payload: dict[str, Any]) -> None:
-    """Runs one job end to end: process, persist, notify. Raises on failure."""
+    """Runs one job end to end: process, deliver webhook, notify Gateway via gRPC."""
     job_id = str(payload.get("job_id", ""))
     task = payload.get("task", "pipeline")
     domain = payload.get("domain", "market")
     skus = payload.get("skus", [])
-    backend_url = payload.get("backend_url", "http://backend:8000")
+    backend_grpc_url = payload.get("backend_grpc_url") or config.BACKEND_GRPC_URL
     callback_url = payload.get("callback_url")
     sheet_name = payload.get("sheet_name")
     spreadsheet_id = payload.get("spreadsheet_id")
@@ -211,7 +220,7 @@ def _execute_job(payload: dict[str, Any]) -> None:
         pct: float,
         eta: int | None = None,
         _cur_job_id=job_id,
-        _cur_backend_url=backend_url,
+        _cur_backend_grpc_url=backend_grpc_url,
     ):
         nonlocal last_progress_time, last_progress_pct, last_stage
         if is_job_cancelled(_cur_job_id):
@@ -230,17 +239,21 @@ def _execute_job(payload: dict[str, Any]) -> None:
         last_progress_pct = pct
         last_stage = stage
 
-        progress_endpoint = (
-            f"{_cur_backend_url.rstrip('/')}/api/internal/jobs/{_cur_job_id}/progress"
-        )
         try:
-            _http_session.post(
-                progress_endpoint,
-                json={"current_stage": stage, "progress_pct": pct, "eta_seconds": eta},
+            stub = _get_backend_stub(_cur_backend_grpc_url)
+            stub.ReportJobProgress(
+                pb2.JobProgressRequest(
+                    job_id=_cur_job_id,
+                    current_stage=stage,
+                    progress_pct=float(pct),
+                    eta_seconds=int(eta or 0),
+                    has_eta=eta is not None,
+                ),
+                metadata=grpc_metadata(),
                 timeout=2.0,
             )
         except Exception as e:
-            logger.debug(f"Failed to post progress to backend: {e}")
+            logger.debug(f"Failed to report progress via gRPC: {e}")
 
     sync_rules_version()
     # Pin one (rules, rule_version) pair for every chunk of this job: a reload mid-job
@@ -349,38 +362,40 @@ def _execute_job(payload: dict[str, Any]) -> None:
                 "path": "/doPost",
             }
 
-    # Notify the Backend Gateway with results so it persists results and finalizes progress
-    complete_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/complete"
+    # Notify the Gateway over gRPC so it persists results and finalizes progress
     try:
-        _http_session.post(
-            complete_endpoint,
-            json={
-                "status": "completed",
-                "domain": domain,
-                "task": task,
-                "results": res_list,
-                "rule_version": rule_version,
-                "duration_minutes": duration,
-                "high_conf": high,
-                "med_conf": med,
-                "low_conf": low,
-                "match_rate": match_rate,
-                "webhook_log": webhook_log,
-            },
-            timeout=30,
+        stub = _get_backend_stub(backend_grpc_url)
+        stub.CompleteJob(
+            pb2.JobCompleteRequest(
+                job_id=job_id,
+                status="completed",
+                domain=domain,
+                task=task,
+                rule_version=rule_version,
+                duration_minutes=float(duration),
+                high_conf=high,
+                med_conf=med,
+                low_conf=low,
+                match_rate=float(match_rate),
+                webhook_log_json=json.dumps(webhook_log, default=str) if webhook_log else "",
+                results=[result_to_pipeline_proto(r) for r in res_list],
+            ),
+            metadata=grpc_metadata(),
+            timeout=30.0,
         )
         logger.info(f"[ENGINE WORKER] Job {job_id} completed in {duration}m.")
     except Exception as be_err:
         logger.error(
-            f"[ENGINE WORKER] Failed to notify backend of completion for job {job_id}: {be_err}"
+            f"[ENGINE WORKER] Failed to notify Gateway of completion for job {job_id}: {be_err}"
         )
+        raise
 
 
 def _notify_failure(payload: dict[str, Any], error: str) -> None:
-    """Tells the Gateway and (if configured) Google Sheets that the job failed."""
+    """Tells the Gateway via gRPC and (if configured) Google Sheets that the job failed."""
     job_id = str(payload.get("job_id", ""))
     task = payload.get("task", "pipeline")
-    backend_url = payload.get("backend_url", "http://backend:8000")
+    backend_grpc_url = payload.get("backend_grpc_url") or config.BACKEND_GRPC_URL
     callback_url = payload.get("callback_url")
     sheet_name = payload.get("sheet_name")
     spreadsheet_id = payload.get("spreadsheet_id")
@@ -398,17 +413,18 @@ def _notify_failure(payload: dict[str, Any], error: str) -> None:
         except Exception as cb_err:
             logger.error(f"[ENGINE WORKER] Google Sheets callback delivery failed: {cb_err}")
 
-    fail_endpoint = f"{backend_url.rstrip('/')}/api/internal/jobs/{job_id}/fail"
     try:
-        _http_session.post(
-            fail_endpoint,
-            json={
-                "status": "failed",
-                "error_message": error,
-                "duration_minutes": 0.0,
-                "is_cancelled": False,
-            },
-            timeout=15,
+        stub = _get_backend_stub(backend_grpc_url)
+        stub.FailJob(
+            pb2.JobFailRequest(
+                job_id=job_id,
+                status="failed",
+                error_message=error,
+                duration_minutes=0.0,
+                is_cancelled=False,
+            ),
+            metadata=grpc_metadata(),
+            timeout=15.0,
         )
     except Exception as be_err:
-        logger.error(f"[ENGINE WORKER] Failed to notify backend of job failure: {be_err}")
+        logger.error(f"[ENGINE WORKER] Failed to notify Gateway of job failure: {be_err}")

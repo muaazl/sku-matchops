@@ -9,6 +9,8 @@ import pandas as pd
 import requests
 from sqlalchemy import text
 
+from backend.app.db.session import get_connection
+from backend.app.services.catalog_sync import query_catalog_from_database
 from engine import config as engine_config
 from engine.data_pipeline.cache_manager import calculate_row_hash, clean_price
 from engine.data_pipeline.ingestion import DataIngestion
@@ -20,8 +22,16 @@ _build_in_progress = False
 
 
 def get_catalog_and_brands(domain: str):
-    """Load catalog and brands/flavors from local Feather cache or PostgreSQL database."""
-    return DataIngestion.load_catalog(engine_config.GOOGLE_SHEET_ID, domain, force_fetch=False)
+    """Load catalog and brands/flavors from local Feather cache, falling back to PostgreSQL."""
+    try:
+        return DataIngestion.load_catalog(engine_config.GOOGLE_SHEET_ID, domain, force_fetch=False)
+    except RuntimeError:
+        cat_df, brands_df = query_catalog_from_database(domain)
+        if cat_df.empty:
+            raise RuntimeError(
+                f"No catalog data found in Feather cache or PostgreSQL for domain '{domain}'."
+            )
+        return cat_df, brands_df
 
 
 def get_classifier_dicts(domain: str) -> dict[str, Any]:
@@ -34,10 +44,28 @@ def get_classifier_dicts(domain: str) -> dict[str, Any]:
         except Exception as e:
             logger.warning(f"Failed to read dict cache for domain {domain}: {e}")
 
-    # Load from PostgreSQL or local cache with force_fetch=False (never downloads from Google Sheets)
-    dicts = DataIngestion.load_classifier_dictionaries(
-        engine_config.GOOGLE_SHEET_ID, domain, force_fetch=False
-    )
+    try:
+        dicts = DataIngestion.load_classifier_dictionaries(
+            engine_config.GOOGLE_SHEET_ID, domain, force_fetch=False
+        )
+    except RuntimeError:
+        third_tag_key = engine_config.get_third_tag_col(domain)
+        dicts = {"gk": [], "bt": [], third_tag_key: []}
+        with get_connection() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT tag_type, tag FROM classifier_dictionaries "
+                    "WHERE domain = :domain ORDER BY id"
+                ),
+                {"domain": domain},
+            ).fetchall()
+        if not rows:
+            raise RuntimeError(
+                f"No classifier dictionaries found in local cache or PostgreSQL for domain '{domain}'."
+            )
+        for tag_type, tag in rows:
+            dicts.setdefault(tag_type, []).append(tag)
+
     try:
         os.makedirs(engine_config.CACHE_DIR, exist_ok=True)
         with open(dicts_cache, "w", encoding="utf-8") as f:
@@ -58,8 +86,6 @@ def get_bt_gk_cache(domain: str) -> dict[str, Any]:
 
     # Reconstruct from the bt_gk_map table if pkl cache is missing
     try:
-        from backend.app.core.db import get_connection
-
         with get_connection() as conn:
             rows = conn.execute(
                 text("SELECT basictype, generic_keywords FROM bt_gk_map WHERE domain = :domain"),
@@ -106,8 +132,6 @@ def _build_occurrence_uids(df: pd.DataFrame, name_col: str = "Name"):
 def check_changes_for_domain(domain: str, limit: int = 50) -> dict:
     """Checks differences between Google Sheets and the cached catalog items in the database."""
     import polars as pl
-
-    from backend.app.core.db import get_connection
 
     conn = get_connection()
     cached_df = pd.DataFrame()

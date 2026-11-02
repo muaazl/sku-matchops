@@ -48,26 +48,19 @@ LOG_FILE = os.path.join(LOG_DIR, "app.log")
 # "json" emits one JSON object per log line (with trace_id); anything else is plain text
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text").lower()
 
-# --- PostgreSQL (shared by the Gateway and the Engine) ---
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+psycopg://matchops:matchops@localhost:5432/matchops"
-)
-DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
-DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
-# Rows per INSERT statement when bulk-writing per-SKU results
-DB_BULK_CHUNK_SIZE = int(os.getenv("DB_BULK_CHUNK_SIZE", "1000"))
-
 # --- External Services & Integrations ---
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-# Rule-cache invalidation (pub/sub + version key); optional, PostgreSQL is the fallback
+# Rule-cache distribution & invalidation (snapshot + version keys + pub/sub)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# --- Engine gRPC Service ---
+# --- Engine & Callback gRPC Services ---
 ENGINE_GRPC_PORT = int(os.getenv("ENGINE_GRPC_PORT", "50051"))
+BACKEND_GRPC_URL = os.getenv("BACKEND_GRPC_URL", "127.0.0.1:50052")
+INTERNAL_GRPC_SECRET = os.getenv("INTERNAL_GRPC_SECRET", "")
 
 # --- Distributed job queue (Redis) ---
-# Off -> legacy HTTP dispatch to a single engine. On but Redis unreachable -> same fallback.
+# Off -> direct gRPC dispatch to a single engine. On but Redis unreachable -> same fallback.
 TASK_QUEUE_ENABLED = os.getenv("TASK_QUEUE_ENABLED", "true").lower() == "true"
 # Batches with at most this many SKUs go to the realtime tier, larger ones to bulk
 TASK_REALTIME_MAX_SKUS = int(os.getenv("TASK_REALTIME_MAX_SKUS", "50"))

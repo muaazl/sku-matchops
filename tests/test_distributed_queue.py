@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
+from backend.app.grpc_server import start_backend_grpc_server
 from engine import config
 from engine.pipeline import task_queue
 from engine.pipeline.task_queue import BULK, DLQ, INFLIGHT, REALTIME, TASKS, TaskQueue, run_worker
@@ -45,8 +46,25 @@ def queue(redis_client):
     return TaskQueue(redis_client, max_attempts=3, lease_seconds=30, backoff_seconds=0)
 
 
-def _payload(job_id: str, n_skus: int = 1, task: str = "pipeline") -> dict:
-    return {"job_id": job_id, "task": task, "domain": "market", "skus": [{"name": "x"}] * n_skus}
+@pytest.fixture
+def backend_grpc():
+    srv = start_backend_grpc_server(port=0, host="127.0.0.1")
+    try:
+        yield f"127.0.0.1:{srv._bound_port}"
+    finally:
+        srv.stop(grace=0)
+
+
+def _payload(
+    job_id: str,
+    n_skus: int = 1,
+    task: str = "pipeline",
+    backend_grpc_url: str | None = None,
+) -> dict:
+    p = {"job_id": job_id, "task": task, "domain": "market", "skus": [{"name": "x"}] * n_skus}
+    if backend_grpc_url:
+        p["backend_grpc_url"] = backend_grpc_url
+    return p
 
 
 def _drain(queue: TaskQueue, handler, workers: int = 1, until=lambda: False, timeout=10.0):
@@ -188,8 +206,10 @@ def _job_row(pg, job_id):
         )
 
 
-def test_exhausted_retries_land_in_dlq_and_fail_the_job(queue, redis_client, pg, pg_job):
-    task_id = queue.enqueue(_payload(pg_job))
+def test_exhausted_retries_land_in_dlq_and_fail_the_job(
+    queue, redis_client, pg, pg_job, backend_grpc
+):
+    task_id = queue.enqueue(_payload(pg_job, backend_grpc_url=backend_grpc))
     attempts, dead = [], []
 
     def handler(payload):
@@ -217,14 +237,15 @@ def test_exhausted_retries_land_in_dlq_and_fail_the_job(queue, redis_client, pg,
     assert entry["error"] == "model crashed" and entry["attempts"] == 3
     assert entry["failed_at"] and entry["payload"]["job_id"] == pg_job
     assert redis_client.hlen(TASKS) == 0  # no longer tracked as live
-    assert dead and dead[0]["job_id"] == pg_job  # on_dead hook ran (client notifications)
+    assert dead and dead[0]["job_id"] == pg_job  # on_dead hook ran
 
     row = _job_row(pg, pg_job)
     assert row["status"] == "failed"
     assert "model crashed" in row["error_message"]
 
 
-def test_upload_jobs_are_never_retried(queue):
+def test_upload_jobs_are_never_retried(queue, monkeypatch):
+    monkeypatch.setattr(TaskQueue, "_mark_job_failed", staticmethod(lambda task, error: None))
     queue.enqueue(_payload("upload-1", task="upload"))
     task = queue.claim()
     assert task["max_attempts"] == 1
@@ -232,7 +253,9 @@ def test_upload_jobs_are_never_retried(queue):
     assert queue.dlq_items()[0]["attempts"] == 1
 
 
-def test_dlq_replay_endpoint_requeues_and_resets_job(queue, redis_client, pg, pg_job, monkeypatch):
+def test_dlq_replay_endpoint_requeues_and_resets_job(
+    queue, redis_client, pg, pg_job, backend_grpc, monkeypatch
+):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -243,7 +266,7 @@ def test_dlq_replay_endpoint_requeues_and_resets_job(queue, redis_client, pg, pg
     app.include_router(queue_api.router)
     client = TestClient(app)
 
-    queue.enqueue(_payload(pg_job), queue=BULK)
+    queue.enqueue(_payload(pg_job, backend_grpc_url=backend_grpc), queue=BULK)
     for _ in range(3):  # backoff is 0, so each retry is claimable immediately
         queue.fail(queue.claim(), "boom")
     assert _job_row(pg, pg_job)["status"] == "failed"
@@ -327,40 +350,42 @@ def unreachable_redis(monkeypatch):
     task_queue._queue = None
 
 
-def _fake_http(monkeypatch, module):
-    posts = []
+def _fake_grpc(monkeypatch, module):
+    dispatched = []
 
-    def post(url, json=None, timeout=None):
-        posts.append((url, json))
-        return SimpleNamespace(status_code=202, json=lambda: {"status": "accepted"}, text="")
+    def dispatch_batch(req, metadata=None, timeout=None):
+        dispatched.append((req, metadata))
+        return SimpleNamespace(status="accepted", job_id=req.job_id)
 
-    monkeypatch.setattr(module._session, "post", post)
-    return posts
+    fake_stub = SimpleNamespace(DispatchBatchJob=dispatch_batch)
+    monkeypatch.setattr(module, "get_stub", lambda: fake_stub)
+    return dispatched
 
 
-def test_gateway_falls_back_to_http_dispatch_when_redis_unreachable(unreachable_redis, monkeypatch):
+def test_gateway_falls_back_to_grpc_dispatch_when_redis_unreachable(unreachable_redis, monkeypatch):
     from backend.app.schemas.models import BaseRequest, SKUItem
     from backend.app.services import engine_client
 
-    posts = _fake_http(monkeypatch, engine_client)
+    dispatched = _fake_grpc(monkeypatch, engine_client)
     req = BaseRequest(skus=[SKUItem(name="Anchor Butter")], domain="market", callback_url="")
 
     result = engine_client.dispatch_batch_job("fallback-1", req, "pipeline")
 
-    assert result == {"status": "accepted"}
-    assert posts and posts[0][0].endswith("/engine/process-batch")
-    assert posts[0][1]["job_id"] == "fallback-1"
+    assert result == {"status": "accepted", "job_id": "fallback-1"}
+    assert len(dispatched) == 1
+    assert dispatched[0][0].job_id == "fallback-1"
+    assert dispatched[0][0].skus[0].name == "Anchor Butter"
 
 
-def test_gateway_uses_http_when_queue_disabled(monkeypatch):
+def test_gateway_uses_grpc_when_queue_disabled(monkeypatch):
     from backend.app.schemas.models import BaseRequest, SKUItem
     from backend.app.services import engine_client
 
     monkeypatch.setattr(config, "TASK_QUEUE_ENABLED", False)
-    posts = _fake_http(monkeypatch, engine_client)
+    dispatched = _fake_grpc(monkeypatch, engine_client)
     req = BaseRequest(skus=[SKUItem(name="x")], domain="market", callback_url="")
     engine_client.dispatch_batch_job("legacy-1", req, "pipeline")
-    assert len(posts) == 1
+    assert len(dispatched) == 1
     assert task_queue.get_task_queue() is None
 
 
@@ -369,12 +394,12 @@ def test_gateway_enqueues_to_redis_when_available(queue, redis_client, monkeypat
     from backend.app.services import engine_client
 
     monkeypatch.setattr(engine_client, "get_task_queue", lambda: queue)
-    posts = _fake_http(monkeypatch, engine_client)
+    dispatched = _fake_grpc(monkeypatch, engine_client)
     req = BaseRequest(skus=[SKUItem(name="x")], domain="market", callback_url="")
 
     result = engine_client.dispatch_batch_job("queued-1", req, "pipeline")
 
-    assert result["status"] == "queued" and posts == []
+    assert result["status"] == "queued" and dispatched == []
     assert json.loads(redis_client.hget(TASKS, result["task_id"]))["job_id"] == "queued-1"
 
 

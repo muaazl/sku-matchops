@@ -5,7 +5,7 @@ Any number of Engine workers consume from two priority tiers (realtime is always
 bulk). A claimed task is tracked in an in-flight ZSET scored by its lease deadline; the worker
 renews the lease while it runs, so a crashed worker's tasks are reclaimed once the lease lapses.
 Failures retry with exponential backoff up to TASK_MAX_RETRIES attempts, then the task moves to
-the dead-letter queue and its job is marked failed in PostgreSQL.
+the dead-letter queue and notifies the Backend Gateway to mark its job failed.
 
 Delivery is at-least-once (a worker that stalls past its lease may finish a task another worker
 also runs); this is safe because result persistence is an idempotent upsert.
@@ -28,8 +28,10 @@ logger = logging.getLogger("matchops.task_queue")
 REALTIME = "matchops:queue:realtime"
 BULK = "matchops:queue:bulk"
 DLQ = "matchops:queue:dlq"
+DLQ_TENANTS = "matchops:queue:dlq_tenants"  # HASH tenant_id -> count
 INFLIGHT = "matchops:queue:inflight"  # ZSET task_id -> lease deadline (epoch seconds)
 TASKS = "matchops:queue:tasks"  # HASH task_id -> task JSON
+TASK_JOBS = "matchops:queue:task_jobs"  # HASH task_id -> job_id (lightweight index)
 DELAYED = {REALTIME: f"{REALTIME}:delayed", BULK: f"{BULK}:delayed"}  # ZSET task_id -> ready_at
 CANCEL_PREFIX = "matchops:job:cancelled:"
 
@@ -90,6 +92,7 @@ class TaskQueue:
         }
         pipe = self.r.pipeline()
         pipe.hset(TASKS, task["task_id"], json.dumps(task))
+        pipe.hset(TASK_JOBS, task["task_id"], task["job_id"])
         pipe.rpush(queue, task["task_id"])
         pipe.execute()
         logger.info(
@@ -129,6 +132,7 @@ class TaskQueue:
         pipe = self.r.pipeline()
         pipe.zrem(INFLIGHT, task_id)
         pipe.hdel(TASKS, task_id)
+        pipe.hdel(TASK_JOBS, task_id)
         pipe.execute()
 
     def fail(self, task: dict, error: str) -> str:
@@ -177,9 +181,12 @@ class TaskQueue:
             "failed_at": datetime.now(UTC).isoformat(),
             "payload": task["payload"],
         }
+        tenant_id = str(task["payload"].get("tenant_id") or "default")
         pipe = self.r.pipeline()
         pipe.rpush(DLQ, json.dumps(entry))
         pipe.hdel(TASKS, task["task_id"])
+        pipe.hdel(TASK_JOBS, task["task_id"])
+        pipe.hincrby(DLQ_TENANTS, tenant_id, 1)
         pipe.execute()
         logger.error(
             f"[QUEUE] Job {task['job_id']} moved to DLQ after {task['attempts']} attempts: {error}"
@@ -189,10 +196,10 @@ class TaskQueue:
 
     @staticmethod
     def _mark_job_failed(task: dict, error: str) -> None:
+        err_msg = f"{error} (gave up after {task.get('attempts', 1)} attempts)"
         try:
             from engine.pipeline.worker_runner import _notify_failure
 
-            err_msg = f"{error} (gave up after {task.get('attempts', 1)} attempts)"
             payload = task.get("payload") or {"job_id": task["job_id"]}
             _notify_failure(payload, err_msg)
         except Exception as e:
@@ -203,12 +210,36 @@ class TaskQueue:
     def dlq_items(self, limit: int = 100) -> list[dict]:
         return [json.loads(raw) for raw in self.r.lrange(DLQ, 0, limit - 1)]
 
+    def dlq_count(self, tenant_id: str = "default") -> int:
+        """O(1) per-tenant dead-letter count (backfills once if pre-existing DLQ entries exist)."""
+        pipe = self.r.pipeline()
+        pipe.llen(DLQ)
+        pipe.hlen(DLQ_TENANTS)
+        pipe.hget(DLQ_TENANTS, tenant_id)
+        total_dlq, tracked_tenants, val = pipe.execute()
+        if total_dlq == 0:
+            if tracked_tenants:
+                self.r.delete(DLQ_TENANTS)
+            return 0
+        if tracked_tenants > 0:
+            return max(0, int(val or 0))
+        counts: dict[str, int] = {}
+        for raw in self.r.lrange(DLQ, 0, -1):
+            t = str(json.loads(raw).get("payload", {}).get("tenant_id") or "default")
+            counts[t] = counts.get(t, 0) + 1
+        if counts:
+            self.r.hset(DLQ_TENANTS, mapping=counts)
+        return counts.get(tenant_id, 0)
+
     def replay(self, task_id: str) -> str | None:
         """Moves a DLQ entry back onto its queue with a fresh attempt budget. Returns the new
         task id, or None if no such entry."""
         for raw in self.r.lrange(DLQ, 0, -1):
             entry = json.loads(raw)
             if entry["task_id"] == task_id and self.r.lrem(DLQ, 1, raw):
+                tenant_id = str(entry["payload"].get("tenant_id") or "default")
+                if self.r.hincrby(DLQ_TENANTS, tenant_id, -1) <= 0:
+                    self.r.hdel(DLQ_TENANTS, tenant_id)
                 return self.enqueue(entry["payload"], queue=entry["queue"])
         return None
 
@@ -216,6 +247,14 @@ class TaskQueue:
 
     def tracked_job_ids(self) -> set[str]:
         """Job ids still owned by the queue (queued, delayed for retry, or in flight)."""
+        pipe = self.r.pipeline()
+        pipe.hlen(TASKS)
+        pipe.hvals(TASK_JOBS)
+        n_tasks, job_ids = pipe.execute()
+        if n_tasks == 0:
+            return set()
+        if len(job_ids) >= n_tasks:
+            return {j.decode() if isinstance(j, bytes) else str(j) for j in job_ids}
         return {json.loads(raw)["job_id"] for raw in self.r.hvals(TASKS)}
 
     def stats(self) -> dict[str, int]:
@@ -246,7 +285,7 @@ _queue: TaskQueue | None = None
 
 
 def get_task_queue() -> TaskQueue | None:
-    """Process-wide queue, or None when TASK_QUEUE_ENABLED is off (callers use legacy dispatch).
+    """Process-wide queue, or None when TASK_QUEUE_ENABLED is off (callers use direct gRPC dispatch).
     Redis connectivity errors surface on first use so callers can fall back."""
     global _queue
     if not config.TASK_QUEUE_ENABLED:
@@ -273,8 +312,8 @@ def run_worker(
     """
     Consumer loop: reclaim stale leases, claim the next task, run `handler(payload)` while a
     heartbeat renews the lease, then ack or record the failure. `on_dead(task)` runs for tasks
-    that exhausted their attempts (after the DLQ move and PostgreSQL update). `lock` serializes
-    execution with other job runners in the same process.
+    that exhausted their attempts (after the DLQ move and Backend failure callback). `lock`
+    serializes execution with other job runners in the same process.
     """
     stop = stop or threading.Event()
     poll = config.TASK_POLL_INTERVAL if poll_interval is None else poll_interval

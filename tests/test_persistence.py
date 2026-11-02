@@ -6,7 +6,7 @@ import uuid
 import pytest
 from sqlalchemy import event, inspect, text
 
-from backend.app.core.db import upsert_processed_skus
+from backend.app.db.session import upsert_processed_skus
 from backend.app.services.persistence import record_job_completion
 
 pytestmark = pytest.mark.usefixtures("pg")

@@ -5,35 +5,32 @@ Persists job records in the database and dispatches async tasks to the dedicated
 
 import json
 import logging
+from collections.abc import Callable
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.api.endpoints.engine_callbacks import _job_eta, _job_progress
 from backend.app.core.config import DEFAULT_TENANT
-from backend.app.core.db import get_engine, get_next_job_id
+from backend.app.db.session import get_engine, get_next_job_id
+from backend.app.grpc_server import _job_eta, _job_progress, clear_job_progress
 from backend.app.schemas.models import BaseRequest
 from backend.app.services.engine_client import dispatch_batch_job
 
 logger = logging.getLogger("matchops.backend.worker")
 
 
-def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT) -> dict:
-    """
-    Registers a new matching/classification job in the DB and dispatches it
-    to the dedicated ML Engine microservice.
-    """
-    if not request.skus:
-        raise ValueError("'skus' list is empty.")
-
-    domain = request.domain or "market"
-    target_sheet = request.sheet_name or "N/A"
-    skus_data = [sku.model_dump() for sku in request.skus]
-    input_skus_json = json.dumps(skus_data)
-
-    # Allocate a job ID and write the initial job row in the same transaction, retrying on
-    # a rare id collision (two near-simultaneous submissions both computing the same
-    # "next id" before either commits) instead of silently falling back to a hardcoded "1".
+def register_and_dispatch_job(
+    *,
+    job_type: str,
+    domain: str,
+    total_items: int,
+    input_skus_json: str,
+    tenant_id: str,
+    sheet_name: str | None,
+    target_sheet: str | None,
+    dispatch_fn: Callable[[str], object],
+) -> dict:
+    """Allocates a sequential job row, tracks initial progress, and dispatches to the Engine."""
     max_attempts = 5
     job_id = None
     for attempt in range(1, max_attempts + 1):
@@ -53,10 +50,10 @@ def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT
                 """),
                 {
                     "id": job_id,
-                    "type": task,
-                    "total_items": len(request.skus),
+                    "type": job_type,
+                    "total_items": total_items,
                     "domain": domain,
-                    "sheet_name": request.sheet_name,
+                    "sheet_name": sheet_name,
                     "target_sheet": target_sheet,
                     "input_skus_json": input_skus_json,
                     "tenant_id": tenant_id,
@@ -84,17 +81,16 @@ def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT
         finally:
             conn.close()
 
+    assert job_id is not None
     _job_progress[job_id] = 0.0
-    _job_eta[job_id] = max(3, int(len(request.skus) * 0.04))
+    _job_eta[job_id] = max(3, int(total_items * 0.04))
+    logger.info(f"[JOB {job_id}] Queued {total_items} SKUs (task={job_type}, domain={domain})")
 
-    logger.info(f"[JOB {job_id}] Queued {len(request.skus)} SKUs (task={task}, domain={domain})")
-
-    # 3. Dispatch to ML Engine microservice
     try:
-        dispatch_batch_job(job_id=job_id, request=request, task=task, tenant_id=tenant_id)
+        dispatch_fn(job_id)
     except Exception as dispatch_err:
+        clear_job_progress(job_id)
         logger.error(f"[JOB {job_id}] Dispatch to ML Engine failed: {dispatch_err}")
-        # Mark as failed in DB
         try:
             with get_engine().begin() as conn:
                 conn.execute(
@@ -107,4 +103,23 @@ def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT
             pass
         raise RuntimeError(f"Failed to dispatch job to ML Engine: {dispatch_err}")
 
-    return {"job_id": job_id, "status": "queued", "total_skus": len(request.skus)}
+    return {"job_id": job_id, "status": "queued", "total_skus": total_items}
+
+
+def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT) -> dict:
+    """Registers a matching/classification/pipeline job and dispatches it to the ML Engine."""
+    if not request.skus:
+        raise ValueError("'skus' list is empty.")
+
+    return register_and_dispatch_job(
+        job_type=task,
+        domain=request.domain or "market",
+        total_items=len(request.skus),
+        input_skus_json=json.dumps([sku.model_dump() for sku in request.skus]),
+        tenant_id=tenant_id,
+        sheet_name=request.sheet_name,
+        target_sheet=request.sheet_name or "N/A",
+        dispatch_fn=lambda job_id: dispatch_batch_job(
+            job_id=job_id, request=request, task=task, tenant_id=tenant_id
+        ),
+    )

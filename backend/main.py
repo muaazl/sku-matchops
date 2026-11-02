@@ -5,19 +5,22 @@ SKU MatchOps – FastAPI Application Entry Point (Lightweight API Gateway)
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from backend.app.api.routes import api_router
-from backend.app.core.db import get_engine, init_db
+from backend.app.db.init import init_db
+from backend.app.db.session import get_engine
+from backend.app.grpc_server import ensure_backend_grpc_server, stop_backend_grpc_server
 from backend.app.middleware.audit_logging import AuditLoggingMiddleware
 from backend.app.middleware.etag import ETagMiddleware
+from backend.app.services.rules_service import sync_rules_everywhere
 from engine import config
 from engine.core.observability import TraceIdMiddleware, configure_logging
 from engine.pipeline.task_queue import get_task_queue
-from engine.rules_engine import refresh_rules_cache
 
 # Configure logging with standard stream and file handlers
 LOG_DIR = config.LOG_DIR
@@ -44,44 +47,12 @@ configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured o
 
 logger = logging.getLogger("matchops.server")
 
-app = FastAPI(
-    title="SKU MatchOps API Gateway",
-    description="Domain-aware SKU matching control plane and API gateway.",
-    version="2.0.0",
-)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:4173",
-        "http://127.0.0.1:5173",
-        "https://sku-matchops.vercel.app",
-    ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Content-Type",
-        "If-None-Match",
-        "X-API-Key",
-        "Authorization",
-        "X-Tenant-ID",
-        "X-Request-ID",
-    ],
-    expose_headers=["X-Total-Count", "X-Request-ID"],
-)
-app.add_middleware(AuditLoggingMiddleware)
-app.add_middleware(ETagMiddleware)
-# Outermost: the trace id is bound before audit logging and every handler run
-app.add_middleware(TraceIdMiddleware)
-
-app.include_router(api_router)
-
-
-@app.on_event("startup")
 def startup_event():
-    """Startup sequence: Run schema migrations and sync search engine."""
+    """Startup sequence: Run schema migrations, start callback gRPC server, and sync rules."""
     logger.info("Executing Startup Sequence for Backend Gateway...")
+
+    ensure_backend_grpc_server()
 
     # Auto-run schema migrations on startup
     try:
@@ -91,16 +62,13 @@ def startup_event():
         logger.error(f"Failed to execute database migrations on startup: {e}")
 
     try:
-        refresh_rules_cache()
+        sync_rules_everywhere()
     except Exception as e:
-        logger.warning(f"Failed to refresh rules cache on startup: {e}")
+        logger.warning(f"Failed to sync rules on startup: {e}")
 
     # Jobs left in 'queued'/'running' state belong to in-memory queue/progress state that
-    # doesn't survive a restart of the backend or the engine. Without this, such a job would
-    # sit stuck in that state forever with no progress updates ever arriving again. Flip them
-    # to 'failed' with a clear message so they show up as actionable — the existing "Retry"
-    # button re-submits them from their stored input SKUs.
-    # Jobs still held by the Redis queue survive restarts and must not be failed here.
+    # doesn't survive a restart of the backend or the engine. Flip them to 'failed' so they
+    # show up as actionable unless still held by the Redis queue.
     try:
         queue = get_task_queue()
         live_job_ids = list(queue.tracked_job_ids()) if queue is not None else []
@@ -135,3 +103,51 @@ def startup_event():
             )
     except Exception as e:
         logger.error(f"Failed to reconcile stuck jobs on startup: {e}")
+
+
+def shutdown_event():
+    stop_backend_grpc_server()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    startup_event()
+    try:
+        yield
+    finally:
+        shutdown_event()
+
+
+app = FastAPI(
+    title="SKU MatchOps API Gateway",
+    description="Domain-aware SKU matching control plane and API gateway.",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:5173",
+        "https://sku-matchops.vercel.app",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Content-Type",
+        "If-None-Match",
+        "X-API-Key",
+        "Authorization",
+        "X-Tenant-ID",
+        "X-Request-ID",
+    ],
+    expose_headers=["X-Total-Count", "X-Request-ID"],
+)
+app.add_middleware(AuditLoggingMiddleware)
+app.add_middleware(ETagMiddleware)
+# Outermost: the trace id is bound before audit logging and every handler run
+app.add_middleware(TraceIdMiddleware)
+
+app.include_router(api_router)

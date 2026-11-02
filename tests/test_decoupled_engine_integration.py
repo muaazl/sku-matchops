@@ -1,5 +1,8 @@
+import ast
 import json
+import re
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -8,10 +11,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.app.api.routes import api_router
-from backend.app.core.db import get_engine
+from backend.app.db.session import get_engine
+from backend.app.grpc_server import start_backend_grpc_server
 from backend.app.schemas.models import BaseRequest, SKUItem
-from backend.app.services.persistence import record_job_completion
 from backend.app.services.worker import enqueue_job
+from engine.pipeline.worker_runner import _get_backend_stub
+from engine.protos import engine_service_pb2 as pb2
 
 app = FastAPI()
 app.include_router(api_router)
@@ -62,40 +67,54 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
 
     @pytest.mark.usefixtures("pg")
     def test_engine_callbacks_lifecycle(self):
-        # 1. Create a dummy queued job in DB
+        srv = start_backend_grpc_server(port=0, host="127.0.0.1")
+        target = f"127.0.0.1:{srv._bound_port}"
+        stub = _get_backend_stub(target)
+
         job_id = "test_cb_job_99"
+        fail_job_id = "test_cb_fail_99"
         _delete_job(job_id)
-        with get_engine().begin() as conn:
-            conn.execute(
-                text("""
-                INSERT INTO jobs (
-                    id, batch_id, type, status, current_stage, total_items, completed_items, created_by, started_at, domain, input_skus_json
-                ) VALUES (:id, :id, 'pipeline', 'queued', 'queued', 1, 0, 'test', now(), 'market', :skus)
-                """),
-                {"id": job_id, "skus": json.dumps([{"name": "Anchor Butter 200g"}])},
+        _delete_job(fail_job_id)
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(
+                    text("""
+                    INSERT INTO jobs (
+                        id, batch_id, type, status, current_stage, total_items, completed_items, created_by, started_at, domain, input_skus_json
+                    ) VALUES
+                        (:id, :id, 'pipeline', 'queued', 'queued', 1, 0, 'test', now(), 'market', :skus),
+                        (:fid, :fid, 'pipeline', 'queued', 'queued', 1, 0, 'test', now(), 'market', :skus)
+                    """),
+                    {
+                        "id": job_id,
+                        "fid": fail_job_id,
+                        "skus": json.dumps([{"name": "Anchor Butter 200g"}]),
+                    },
+                )
+
+            # 1. Engine reports progress over gRPC
+            prog_resp = stub.ReportJobProgress(
+                pb2.JobProgressRequest(
+                    job_id=job_id,
+                    current_stage="matching",
+                    progress_pct=50.0,
+                    eta_seconds=10,
+                    has_eta=True,
+                ),
+                timeout=5.0,
             )
+            self.assertEqual(prog_resp.status, "ok")
 
-        # 2. Engine reports progress
-        prog_resp = client.post(
-            f"/api/internal/jobs/{job_id}/progress",
-            json={"current_stage": "matching", "progress_pct": 50.0, "eta_seconds": 10},
-        )
-        self.assertEqual(prog_resp.status_code, 200)
+            # Verify progress reflected in GET /jobs/{id}
+            job_get = client.get(f"/jobs/{job_id}")
+            self.assertEqual(job_get.status_code, 200)
+            job_data = job_get.json()
+            self.assertEqual(job_data["status"], "running")
+            self.assertEqual(job_data["current_stage"], "matching")
+            self.assertEqual(job_data["progress_pct"], 50.0)
 
-        # Verify progress reflected in GET /jobs/{id}
-        job_get = client.get(f"/jobs/{job_id}")
-        self.assertEqual(job_get.status_code, 200)
-        job_data = job_get.json()
-        self.assertEqual(job_data["status"], "running")
-        self.assertEqual(job_data["current_stage"], "matching")
-        self.assertEqual(job_data["progress_pct"], 50.0)
-
-        # 3. Engine persists results directly, then notifies the gateway
-        record_job_completion(
-            job_id=job_id,
-            domain="market",
-            task="pipeline",
-            results=[
+            # 2. Engine sends results to Gateway over gRPC; Gateway persists to PostgreSQL
+            results_payload = [
                 {
                     "matched_catalog_name": "Anchor Butter Salted 200g",
                     "score": 92.5,
@@ -105,39 +124,368 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
                     "suggested_gk": "Butter, Dairy",
                     "suggested_region": "Dairy",
                 }
-            ],
-            rule_version="test",
-            duration_minutes=0.25,
-            high_conf=1,
-            med_conf=0,
-            low_conf=0,
-            match_rate=100.0,
-        )
-        complete_resp = client.post(
-            f"/api/internal/jobs/{job_id}/complete", json={"status": "completed"}
-        )
-        self.assertEqual(complete_resp.status_code, 200)
+            ]
+            complete_resp = stub.CompleteJob(
+                pb2.JobCompleteRequest(
+                    job_id=job_id,
+                    status="completed",
+                    domain="market",
+                    task="pipeline",
+                    results_json=json.dumps(results_payload),
+                    rule_version="test",
+                    duration_minutes=0.25,
+                    high_conf=1,
+                    med_conf=0,
+                    low_conf=0,
+                    match_rate=100.0,
+                ),
+                timeout=5.0,
+            )
+            self.assertEqual(complete_resp.status, "ok")
 
-        # A late progress POST must not resurrect the finalized job
-        client.post(
-            f"/api/internal/jobs/{job_id}/progress",
-            json={"current_stage": "late_stage", "progress_pct": 99.0},
-        )
+            # A late progress RPC must not resurrect the finalized job
+            stub.ReportJobProgress(
+                pb2.JobProgressRequest(
+                    job_id=job_id,
+                    current_stage="late_stage",
+                    progress_pct=99.0,
+                    eta_seconds=1,
+                    has_eta=True,
+                ),
+                timeout=5.0,
+            )
 
-        # Verify completed state and processed SKU row
-        job_completed = client.get(f"/jobs/{job_id}")
-        self.assertEqual(job_completed.status_code, 200)
-        comp_data = job_completed.json()
-        self.assertEqual(comp_data["status"], "completed")
-        self.assertEqual(comp_data["current_stage"], "done")
-        self.assertEqual(comp_data["progress_pct"], 100.0)
-        self.assertEqual(comp_data["match_rate"], 100.0)
+            # Verify completed state and processed SKU row persisted by Gateway
+            job_completed = client.get(f"/jobs/{job_id}")
+            self.assertEqual(job_completed.status_code, 200)
+            comp_data = job_completed.json()
+            self.assertEqual(comp_data["status"], "completed")
+            self.assertEqual(comp_data["current_stage"], "done")
+            self.assertEqual(comp_data["progress_pct"], 100.0)
+            self.assertEqual(comp_data["match_rate"], 100.0)
 
-        skus = client.get("/processed-skus", params={"batch_id": job_id}).json()
-        self.assertEqual(len(skus), 1)
-        self.assertEqual(skus[0]["sku_name"], "Anchor Butter 200g")
+            skus = client.get("/processed-skus", params={"batch_id": job_id}).json()
+            self.assertEqual(len(skus), 1)
+            self.assertEqual(skus[0]["sku_name"], "Anchor Butter 200g")
 
+            # 3. Engine reports failure over gRPC; Gateway marks job failed in PostgreSQL
+            fail_resp = stub.FailJob(
+                pb2.JobFailRequest(
+                    job_id=fail_job_id,
+                    status="failed",
+                    error_message="ONNX runtime error",
+                    duration_minutes=0.05,
+                    is_cancelled=False,
+                ),
+                timeout=5.0,
+            )
+            self.assertEqual(fail_resp.status, "ok")
+            failed_data = client.get(f"/jobs/{fail_job_id}").json()
+            self.assertEqual(failed_data["status"], "failed")
+            self.assertIn("ONNX runtime error", failed_data["error_message"])
+        finally:
+            srv.stop(grace=0)
+            _delete_job(job_id)
+            _delete_job(fail_job_id)
+
+    def test_engine_has_zero_db_or_backend_imports(self):
+        """Architectural boundary: engine/ must never import backend, sqlalchemy, or psycopg."""
+        engine_root = Path(__file__).resolve().parent.parent / "engine"
+        forbidden_roots = {"backend", "sqlalchemy", "psycopg", "psycopg2"}
+        forbidden_tokens = re.compile(r"\b(DATABASE_URL|DB_POOL_SIZE|DB_MAX_OVERFLOW)\b")
+        violations = []
+
+        for py_file in sorted(engine_root.rglob("*.py")):
+            source = py_file.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(py_file))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        top = alias.name.split(".")[0]
+                        if top in forbidden_roots:
+                            violations.append(f"{py_file}:{node.lineno} import {alias.name}")
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    top = node.module.split(".")[0]
+                    if top in forbidden_roots:
+                        violations.append(f"{py_file}:{node.lineno} from {node.module} import ...")
+            if "protos" not in py_file.parts:
+                for idx, line in enumerate(source.splitlines(), start=1):
+                    if forbidden_tokens.search(line):
+                        violations.append(f"{py_file}:{idx} {line.strip()}")
+
+        self.assertEqual(violations, [], "Engine DB boundary violated:\n" + "\n".join(violations))
+
+    def test_engine_and_backend_have_no_internal_rest_routes(self):
+        """Architectural boundary: Engine <-> Backend RPCs run strictly over gRPC, never REST."""
+        import engine.server as engine_server
+        from backend.main import app as gateway_app
+
+        gateway_paths = {getattr(r, "path", "") for r in gateway_app.routes}
+        internal_gateway_routes = [p for p in gateway_paths if p.startswith("/api/internal/")]
+
+        self.assertEqual(internal_gateway_routes, [])
+        self.assertFalse(hasattr(engine_server, "app"))
+
+    @pytest.mark.usefixtures("pg")
+    def test_complete_job_typed_results_memory_eviction_and_db_error_abort(self):
+        """CompleteJob accepts typed Protobuf results, evicts progress dicts, and aborts on DB error."""
+        import grpc
+
+        from backend.app.grpc_server import _job_eta, _job_progress, _job_stage
+        from engine.core.grpc_utils import result_to_pipeline_proto
+
+        srv = start_backend_grpc_server(port=0, host="127.0.0.1")
+        stub = _get_backend_stub(f"127.0.0.1:{srv._bound_port}")
+        job_id = "test_typed_cb_101"
         _delete_job(job_id)
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(
+                    text("""
+                    INSERT INTO jobs (
+                        id, batch_id, type, status, current_stage, total_items, completed_items, created_by, started_at, domain, input_skus_json
+                    ) VALUES (:id, :id, 'pipeline', 'queued', 'queued', 1, 0, 'test', now(), 'market', :skus)
+                    """),
+                    {"id": job_id, "skus": json.dumps([{"name": "Milo 400g"}])},
+                )
+
+            stub.ReportJobProgress(
+                pb2.JobProgressRequest(
+                    job_id=job_id,
+                    current_stage="matching",
+                    progress_pct=40.0,
+                    has_eta=True,
+                    eta_seconds=5,
+                ),
+                timeout=5.0,
+            )
+            self.assertIn(job_id, _job_progress)
+
+            # Simulate transient DB outage: CompleteJob MUST abort with INTERNAL so queue retries
+            with patch(
+                "backend.app.grpc_server.record_job_completion",
+                side_effect=RuntimeError("transient pg disconnect"),
+            ):
+                with self.assertRaises(grpc.RpcError) as ctx:
+                    stub.CompleteJob(
+                        pb2.JobCompleteRequest(job_id=job_id, status="completed"), timeout=5.0
+                    )
+                self.assertEqual(ctx.exception.code(), grpc.StatusCode.INTERNAL)
+
+            # Real typed completion succeeds and evicts all in-memory progress entries
+            stub.CompleteJob(
+                pb2.JobCompleteRequest(
+                    job_id=job_id,
+                    status="completed",
+                    domain="market",
+                    task="pipeline",
+                    rule_version="v1",
+                    high_conf=1,
+                    match_rate=100.0,
+                    results=[
+                        result_to_pipeline_proto(
+                            {
+                                "matched_catalog_name": "Nestle Milo 400g",
+                                "score": 0.96,
+                                "status": "High Confidence",
+                                "suggested_bt": "Malt Drink",
+                                "pipeline_source": "Matcher",
+                                "input_entities": {"brand": ["Milo"], "flavor": []},
+                            }
+                        )
+                    ],
+                ),
+                timeout=5.0,
+            )
+            self.assertNotIn(job_id, _job_progress)
+            self.assertNotIn(job_id, _job_eta)
+            self.assertNotIn(job_id, _job_stage)
+
+            # Late progress update after completion must also be evicted
+            stub.ReportJobProgress(
+                pb2.JobProgressRequest(job_id=job_id, current_stage="late", progress_pct=99.0),
+                timeout=5.0,
+            )
+            self.assertNotIn(job_id, _job_progress)
+        finally:
+            srv.stop(grace=0)
+            _delete_job(job_id)
+
+    def test_grpc_secret_ssrf_pinning_typed_upload_and_error_mapping(self):
+        """Verifies INTERNAL_GRPC_SECRET, SSRF pinning, typed upload, and 400/404 RPC error mapping."""
+        from types import SimpleNamespace
+
+        import grpc
+        import numpy as np
+
+        from backend.app.services import engine_client
+        from engine import config as eng_cfg
+        from engine.core.grpc_utils import grpc_metadata
+        from engine.grpc_server import start_grpc_server
+        from engine.protos import engine_service_pb2_grpc as pb2_grpc
+
+        dispatched: list[dict] = []
+        srv = start_grpc_server(port=0, host="127.0.0.1")
+        target = f"127.0.0.1:{srv._bound_port}"
+        old_secret = eng_cfg.INTERNAL_GRPC_SECRET
+        old_url = engine_client.ENGINE_GRPC_URL
+        try:
+            eng_cfg.INTERNAL_GRPC_SECRET = "super-secret-token"
+            engine_client.ENGINE_GRPC_URL = target
+            raw_channel = grpc.insecure_channel(target)
+            raw_stub = pb2_grpc.EngineInferenceServiceStub(raw_channel)
+
+            # 1. Unauthenticated call is rejected
+            with self.assertRaises(grpc.RpcError) as unauth:
+                raw_stub.GetHealth(pb2.Empty(), timeout=5.0)
+            self.assertEqual(unauth.exception.code(), grpc.StatusCode.UNAUTHENTICATED)
+
+            # 2. Authenticated call succeeds; SSRF backend_grpc_url is ignored; typed upload works
+            with patch("engine.grpc_server.enqueue_batch_job", side_effect=dispatched.append):
+                raw_stub.DispatchUploadJob(
+                    pb2.UploadJobRequest(
+                        job_id="u1",
+                        backend_grpc_url="evil.attacker:9999",
+                        skus=[pb2.UploadSkuItem(fields={"Name": "Coke 500ml", "Price": "150"})],
+                    ),
+                    metadata=grpc_metadata(),
+                    timeout=5.0,
+                )
+            self.assertEqual(len(dispatched), 1)
+            self.assertEqual(dispatched[0]["backend_grpc_url"], eng_cfg.BACKEND_GRPC_URL)
+            self.assertEqual(dispatched[0]["skus"][0]["Name"], "Coke 500ml")
+
+            # 3. ValueError -> INVALID_ARGUMENT -> HTTP 400 on /interactive/run-single
+            with patch("engine.grpc_server.process_request", side_effect=ValueError("bad domain")):
+                resp_400 = client.post(
+                    "/interactive/run-single",
+                    json={"sku_name": "X", "domain": "invalid", "task": "pipeline"},
+                )
+            self.assertEqual(resp_400.status_code, 400)
+            self.assertIn("bad domain", resp_400.json()["detail"])
+
+            # 4. Missing Qdrant collection -> NOT_FOUND -> HTTP 404, and filters/score_threshold forwarded
+            fake_qdrant = SimpleNamespace(
+                get_collection=lambda collection_name: (_ for _ in ()).throw(
+                    KeyError(f"Collection {collection_name} not found")
+                ),
+                query_points=lambda **kw: SimpleNamespace(
+                    points=[
+                        SimpleNamespace(
+                            id="1",
+                            score=0.91,
+                            payload={
+                                "has_filter": kw["query_filter"] is not None,
+                                "threshold": kw["score_threshold"],
+                            },
+                        )
+                    ]
+                ),
+            )
+            fake_embed = SimpleNamespace(encode=lambda _q: {"dense": [np.zeros(4)]})
+            with (
+                patch("engine.grpc_server.VectorStore.get_client", return_value=fake_qdrant),
+                patch(
+                    "engine.core.resource_loader._get_shared_models",
+                    return_value=(fake_embed, None),
+                ),
+            ):
+                self.assertEqual(client.get("/vector-db/collections/missing").status_code, 404)
+                s_resp = client.post(
+                    "/vector-db/collections/market_catalog/search",
+                    json={
+                        "query": "milk",
+                        "top_k": 5,
+                        "score_threshold": 0.75,
+                        "filters": {"basictype": "Milk"},
+                    },
+                )
+                self.assertEqual(s_resp.status_code, 200)
+                hit_payload = s_resp.json()["results"][0]["payload"]
+                self.assertTrue(hit_payload["has_filter"])
+                self.assertAlmostEqual(hit_payload["threshold"], 0.75)
+            raw_channel.close()
+        finally:
+            eng_cfg.INTERNAL_GRPC_SECRET = old_secret
+            engine_client.ENGINE_GRPC_URL = old_url
+            srv.stop(grace=0)
+
+    def test_sync_script_has_no_top_level_backend_imports(self):
+        """scripts/catalog/sync.py must run --cache/--qdrant inside engine container without backend/."""
+        sync_file = Path(__file__).resolve().parent.parent / "scripts" / "catalog" / "sync.py"
+        tree = ast.parse(sync_file.read_text(encoding="utf-8"), filename=str(sync_file))
+        top_backend_imports = [
+            node.lineno
+            for node in tree.body
+            if (
+                isinstance(node, ast.Import)
+                and any(a.name.split(".")[0] == "backend" for a in node.names)
+            )
+            or (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and node.module.split(".")[0] == "backend"
+            )
+        ]
+        self.assertEqual(top_backend_imports, [])
+
+    def test_model_load_lifecycle_concurrency_and_reload_cache_eviction(self):
+        """trigger_model_load guards concurrent loads, evicts caches on reload, and skips duplicate classifier calls."""
+        import threading
+
+        from engine.core import resource_loader as rl
+
+        saved_statuses = {d: dict(st) for d, st in rl._model_statuses.items()}
+        saved_pipelines = dict(rl._pipelines)
+        saved_classifiers = dict(rl._classifiers)
+        try:
+            for d in rl._model_statuses:
+                rl._model_statuses[d] = {"pipeline": "ready", "classifier": "ready"}
+            rl._pipelines["market"] = object()  # type: ignore[assignment]
+            rl._classifiers["market"] = object()  # type: ignore[assignment]
+
+            self.assertEqual(rl.trigger_model_load(reload=False)[0], "success")
+
+            with rl._model_load_lock:
+                self.assertTrue(rl.is_model_loading())
+                self.assertEqual(rl.trigger_model_load(reload=False)[0], "ignored")
+
+            done = threading.Event()
+            loaded_domains: list[str] = []
+
+            def fake_get_pipeline(domain, **_kw):
+                loaded_domains.append(domain)
+                rl._model_statuses[domain] = {"pipeline": "ready", "classifier": "ready"}
+                if len(loaded_domains) == 2:
+                    done.set()
+
+            with (
+                patch.object(rl, "_get_shared_models", return_value=(None, None)),
+                patch.object(rl, "refresh_rules_cache"),
+                patch.object(rl, "start_invalidation_listener"),
+                patch.object(rl, "clear_flavor_cache"),
+                patch.object(rl, "get_pipeline", side_effect=fake_get_pipeline),
+                patch.object(rl, "get_classifier") as mock_clf,
+                patch("engine.pipeline.worker_runner.start_queue_worker", return_value=None),
+            ):
+                status, _ = rl.trigger_model_load(reload=True)
+                self.assertEqual(status, "started")
+                self.assertTrue(done.wait(timeout=5.0))
+                while rl._model_load_lock.locked():
+                    pass
+
+            self.assertEqual(loaded_domains, ["market", "food"])
+            mock_clf.assert_not_called()
+            self.assertEqual(rl._pipelines, {})
+            self.assertEqual(rl._classifiers, {})
+            self.assertFalse(rl.is_model_loading())
+        finally:
+            rl._pipelines.clear()
+            rl._pipelines.update(saved_pipelines)
+            rl._classifiers.clear()
+            rl._classifiers.update(saved_classifiers)
+            for d, st in saved_statuses.items():
+                rl._model_statuses[d] = st
 
 
 if __name__ == "__main__":
