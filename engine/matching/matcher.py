@@ -538,7 +538,10 @@ class SKUMatcher:
             )
 
             seen_texts = set()
+            rerank_limit = getattr(config, "MATCHER_RERANK_CANDIDATES", 15)
             for q_type, cand_idx, cand_row in all_cands_list:
+                if len(seen_texts) >= rerank_limit:
+                    break
                 txt = cand_row.get("clean_text", "")
                 if txt not in seen_texts:
                     seen_texts.add(txt)
