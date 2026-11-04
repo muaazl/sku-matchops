@@ -113,13 +113,14 @@ export const getBatch = async (id) => (await api.get(`/batches/${id}`)).data;
 // Qdrant
 export const getCollections = async () => (await api.get('/vector-db/collections')).data;
 export const getCollection = async (name) => (await api.get(`/vector-db/collections/${name}`)).data;
-export const searchCollection = async ({ name, query, topK, scoreThreshold, filters }) =>
+export const searchCollection = async ({ name, query, topK = 10, scoreThreshold, filters, mode = 'dense' }) =>
   (
     await api.post(`/vector-db/collections/${name}/search`, {
       query,
-      top_k: topK,
-      score_threshold: scoreThreshold,
+      'top_k': topK,
+      'score_threshold': scoreThreshold,
       filters,
+      mode,
     })
   ).data;
 

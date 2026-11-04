@@ -52,11 +52,19 @@ export default function Collections() {
   const { enqueueSnackbar } = useSnackbar();
   const [collection, setCollection] = useState('');
   const [query, setQuery] = useState('');
+  const [searchMode, setSearchMode] = useState('dense');
   const [results, setResults] = useState(null);
   const [detailsDrawer, setDetailsDrawer] = useState(null);
   const [payloadDrawer, setPayloadDrawer] = useState(null);
 
   const matcherDomain = COLLECTION_DOMAINS[collection] || null;
+
+  // Auto-switch away from pipeline mode if selected collection has no pipeline support
+  React.useEffect(() => {
+    if (!matcherDomain && searchMode === 'pipeline') {
+      setSearchMode('dense');
+    }
+  }, [matcherDomain, searchMode]);
 
   const { data: collections = [], isLoading } = useQuery({
     queryKey: ['collections'],
@@ -98,10 +106,10 @@ export default function Collections() {
     }
   }, [collections, collection]);
 
-  // Reset results when collection changes
+  // Reset results when collection or mode changes
   React.useEffect(() => {
     setResults(null);
-  }, [collection]);
+  }, [collection, searchMode]);
 
   // Converts a matcher audit trace's cross-encoder candidate pool into the same
   // { id, score, payload } shape the dense-search results table already renders.
@@ -112,6 +120,8 @@ export default function Collections() {
       raw_cross_score: c.raw_cross_score,
       payload: {
         Name: c.catalog_name,
+        Description: c.description || '',
+        SellerCategory: c.seller_category || c.region_category || '',
         basictype: c.basic_type,
         gk: c.generic_keywords,
         region: c.region_category,
@@ -142,10 +152,20 @@ export default function Collections() {
       setResults([]);
       return;
     }
-    if (matcherDomain) {
-      auditMutation.mutate({ sku_name: query.trim(), domain: matcherDomain, task: 'matcher' });
+    if (searchMode === 'pipeline') {
+      if (matcherDomain) {
+        auditMutation.mutate({ sku_name: query.trim(), domain: matcherDomain, task: 'matcher' });
+      } else {
+        enqueueSnackbar('Pipeline search is only available for catalog collections.', { variant: 'warning' });
+      }
     } else {
-      searchMutation.mutate({ name: collection, query: query.trim(), top_k: 10, score_threshold: 0.1 });
+      searchMutation.mutate({
+        name: collection,
+        query: query.trim(),
+        topK: 10,
+        mode: searchMode,
+        scoreThreshold: searchMode === 'dense' ? 0.1 : undefined,
+      });
     }
   };
 
@@ -246,7 +266,7 @@ export default function Collections() {
               label="Collection"
               value={collection}
               onChange={(e) => setCollection(e.target.value)}
-              sx={{ width: 220 }}
+              sx={{ width: 200 }}
             >
               {collections.map((c) => (
                 <MenuItem key={c.name} value={c.name}>
@@ -255,12 +275,27 @@ export default function Collections() {
               ))}
             </TextField>
             <TextField
+              select
+              size="small"
+              label="Mode"
+              value={searchMode}
+              onChange={(e) => setSearchMode(e.target.value)}
+              sx={{ width: 140 }}
+            >
+              <MenuItem value="dense">Dense</MenuItem>
+              <MenuItem value="sparse">Sparse</MenuItem>
+              <MenuItem value="hybrid">Hybrid</MenuItem>
+              <MenuItem value="pipeline" disabled={!matcherDomain}>
+                Pipeline {!matcherDomain && '(Catalog only)'}
+              </MenuItem>
+            </TextField>
+            <TextField
               size="small"
               placeholder="e.g. coca cola 330ml can"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && runSearch()}
-              sx={{ flexGrow: 1, minWidth: 240 }}
+              sx={{ flexGrow: 1, minWidth: 220 }}
             />
             <Button variant="contained" disabled={isSearching} startIcon={<Search size={16} />} onClick={runSearch}>
               Search
@@ -279,98 +314,76 @@ export default function Collections() {
                   <Table size="small">
                     <StyledTableHead>
                       <TableRow>
-                        <StyledHeaderCell>Name</StyledHeaderCell>
-                        {matcherDomain ? (
+                        {collection.endsWith('_tags') ? (
                           <>
-                            <StyledHeaderCell>Generic Keywords</StyledHeaderCell>
-                            <StyledHeaderCell>Basic Type</StyledHeaderCell>
-                            <StyledHeaderCell>{matcherDomain === 'food' ? 'Region' : 'Category'}</StyledHeaderCell>
-                          </>
-                        ) : collection.endsWith('_tags') ? (
-                          <>
-                            <StyledHeaderCell>Dict Type</StyledHeaderCell>
-                          </>
-                        ) : collection === 'food_catalog' ? (
-                          <>
-                            <StyledHeaderCell>Generic Keywords</StyledHeaderCell>
-                            <StyledHeaderCell>Basic Type</StyledHeaderCell>
-                            <StyledHeaderCell>Region</StyledHeaderCell>
+                            <StyledHeaderCell width="45%">Tag</StyledHeaderCell>
+                            <StyledHeaderCell width="30%">Dict Type</StyledHeaderCell>
                           </>
                         ) : (
                           <>
-                            <StyledHeaderCell>Category</StyledHeaderCell>
-                            <StyledHeaderCell>Generic Keywords</StyledHeaderCell>
-                            <StyledHeaderCell>Basic Type</StyledHeaderCell>
+                            <StyledHeaderCell width="25%">Name</StyledHeaderCell>
+                            <StyledHeaderCell width="40%">Description</StyledHeaderCell>
+                            <StyledHeaderCell width="20%">Seller Category</StyledHeaderCell>
                           </>
                         )}
-                        {matcherDomain ? (
-                          <StyledHeaderCell>Raw CE Score</StyledHeaderCell>
-                        ) : (
-                          <StyledHeaderCell>Score</StyledHeaderCell>
-                        )}
-                        <StyledHeaderCell align="right">Payload</StyledHeaderCell>
+                        <StyledHeaderCell width="10%">
+                          {searchMode === 'pipeline' ? 'Raw CE Score' : 'Score'}
+                        </StyledHeaderCell>
+                        <StyledHeaderCell width="5%" align="right">Payload</StyledHeaderCell>
                       </TableRow>
                     </StyledTableHead>
                     <StyledTableBody>
                       {results.map((r) => {
                         const name =
                           r.payload?.Name || r.payload?.name || r.payload?.catalog_name || r.payload?.tag || 'N/A';
-                        const bt = r.payload?.basictype || r.payload?.bt || 'N/A';
-                        const region = r.payload?.region || 'N/A';
-                        const category = r.payload?.category || r.payload?.SellerCategory || 'N/A';
-                        const gk = r.payload?.['Generic keywords'] || r.payload?.gk || 'N/A';
+                        const desc = r.payload?.Description || r.payload?.description || '—';
+                        const sellerCategory =
+                          r.payload?.SellerCategory ||
+                          r.payload?.['Seller Category'] ||
+                          r.payload?.Seller_Category ||
+                          r.payload?.category ||
+                          r.payload?.Category ||
+                          r.payload?.region ||
+                          r.payload?.Region ||
+                          '—';
 
                         // Tag specific fields
                         const dictType = r.payload?.dict_type || 'N/A';
                         const dictTypeDisplay = dictTypeLabels[dictType] || dictType;
 
+                        const scoreVal = r.score ?? r.raw_cross_score;
+                        const scoreFormatted =
+                          scoreVal !== undefined && scoreVal !== null ? Number(scoreVal).toFixed(4) : 'N/A';
+
+                        const scoreColor =
+                          searchMode === 'pipeline'
+                            ? (scoreVal >= 5 ? 'success' : scoreVal >= 0 ? 'primary' : 'default')
+                            : searchMode === 'hybrid'
+                            ? (scoreVal >= 0.015 ? 'success' : 'primary')
+                            : (scoreVal >= 0.8 ? 'success' : scoreVal >= 0.5 ? 'primary' : 'default');
+
                         return (
                           <StyledTableRow key={r.id}>
-                            <TableCell sx={{ fontWeight: 500 }}>{name}</TableCell>
-                            {matcherDomain ? (
+                            {collection.endsWith('_tags') ? (
                               <>
-                                <TableCell sx={{ color: 'text.secondary', fontSize: '0.825rem' }}>{gk}</TableCell>
-                                <TableCell>{bt}</TableCell>
-                                <TableCell>{matcherDomain === 'food' ? region : category}</TableCell>
-                              </>
-                            ) : collection.endsWith('_tags') ? (
-                              <>
+                                <TableCell sx={{ fontWeight: 500 }}>{name}</TableCell>
                                 <TableCell>{dictTypeDisplay}</TableCell>
                               </>
-                            ) : collection === 'food_catalog' ? (
-                              <>
-                                <TableCell sx={{ color: 'text.secondary', fontSize: '0.825rem' }}>{gk}</TableCell>
-                                <TableCell>{bt}</TableCell>
-                                <TableCell>{region}</TableCell>
-                              </>
                             ) : (
                               <>
-                                <TableCell>{category}</TableCell>
-                                <TableCell sx={{ color: 'text.secondary', fontSize: '0.825rem' }}>{gk}</TableCell>
-                                <TableCell>{bt}</TableCell>
+                                <TableCell sx={{ fontWeight: 500 }}>{name}</TableCell>
+                                <TableCell sx={{ color: 'text.secondary', fontSize: '0.825rem' }}>{desc}</TableCell>
+                                <TableCell>{sellerCategory}</TableCell>
                               </>
                             )}
-                            {matcherDomain ? (
-                              <TableCell>
-                                <Chip
-                                  size="small"
-                                  label={r.raw_cross_score.toFixed(4)}
-                                  color={
-                                    r.raw_cross_score >= 5 ? 'success' : r.raw_cross_score >= 0 ? 'primary' : 'default'
-                                  }
-                                  variant="outlined"
-                                />
-                              </TableCell>
-                            ) : (
-                              <TableCell>
-                                <Chip
-                                  size="small"
-                                  label={r.score.toFixed(4)}
-                                  color={r.score >= 0.8 ? 'success' : r.score >= 0.5 ? 'primary' : 'default'}
-                                  variant="outlined"
-                                />
-                              </TableCell>
-                            )}
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                label={scoreFormatted}
+                                color={scoreColor}
+                                variant="outlined"
+                              />
+                            </TableCell>
                             <TableCell align="right">
                               <IconButton
                                 size="small"

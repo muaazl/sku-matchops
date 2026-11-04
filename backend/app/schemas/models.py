@@ -156,6 +156,7 @@ class VectorSearchRequest(BaseModel):
     top_k: int = 10
     score_threshold: float | None = None
     filters: dict | None = None
+    mode: Literal["dense", "sparse", "hybrid"] = "dense"
 
 
 # -- Rules API Models --

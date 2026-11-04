@@ -244,6 +244,7 @@ message VectorSearchRequest {
   double score_threshold = 4;
   bool has_score_threshold = 5;
   string filters_json = 6;
+  string mode = 7;
 }
 
 message JsonPayloadResponse {

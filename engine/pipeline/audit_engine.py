@@ -410,6 +410,16 @@ def run_sku_audit(
             {
                 "cand_idx": 0,
                 "catalog_name": str(exact_bypass_row["Name"]),
+                "description": str(
+                    exact_bypass_row.get("Description", exact_bypass_row.get("description", ""))
+                ),
+                "seller_category": str(
+                    exact_bypass_row.get("SellerCategory")
+                    or exact_bypass_row.get("Seller_Category")
+                    or exact_bypass_row.get("category")
+                    or exact_bypass_row.get("region")
+                    or ""
+                ),
                 "brand": str(exact_bypass_row.get("Brand", exact_bypass_row.get("brand", ""))),
                 "basic_type": str(
                     exact_bypass_row.get("basictype", exact_bypass_row.get("BasicType", ""))
@@ -440,6 +450,14 @@ def run_sku_audit(
             {
                 "cand_idx": int(idx),
                 "catalog_name": str(row["Name"]),
+                "description": str(row.get("Description", row.get("description", ""))),
+                "seller_category": str(
+                    row.get("SellerCategory")
+                    or row.get("Seller_Category")
+                    or row.get("category")
+                    or row.get("region")
+                    or ""
+                ),
                 "brand": str(row.get("Brand", row.get("brand", ""))),
                 "basic_type": str(row.get("basictype", row.get("BasicType", ""))),
                 "generic_keywords": str(

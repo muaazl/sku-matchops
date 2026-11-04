@@ -247,7 +247,7 @@ def export_all_models_if_needed(force: bool = False, quantize: bool = True):
 
             logger.info("Triggering INT8 dynamic quantization in a dedicated isolated process...")
             subprocess.run(
-                [sys.executable, os.path.join(SCRIPT_DIR, "quantize_models.py")], check=True
+                [sys.executable, os.path.join(SCRIPT_DIR, "quantize.py")], check=True
             )
         except Exception as e:
             logger.warning(f"INT8 dynamic quantization step encountered an issue: {e}")

@@ -189,11 +189,13 @@ class EmbeddingEngine:
             # tags, common SKU names) all at once and lets memory grow to the cap every time.
             self._str_cache = OrderedDict()
 
+        resolved = {}
         missing_texts = []
         missing_set = set()
         for text in texts:
             if text in self._str_cache:
                 self._str_cache.move_to_end(text)
+                resolved[text] = self._str_cache[text]
             elif text not in missing_set:
                 missing_texts.append(text)
                 missing_set.add(text)
@@ -221,37 +223,53 @@ class EmbeddingEngine:
                     norms = np.where(norms == 0, 1e-12, norms)
                     all_dense.append(dense_vecs / norms)
 
-                    # Sparse post-processing
+                    # Sparse post-processing (filter out special tokens like <s>, </s>, <pad>, <unk>)
+                    unused_tokens = (
+                        set(self.tokenizer.all_special_ids) if self.tokenizer else {0, 1, 2, 3}
+                    )
                     for b in range(len(batch)):
                         d = {}
                         for tok_id, w in zip(inputs["input_ids"][b], sparse_weights[b]):
-                            if w > 0:
-                                tok_id = int(tok_id)
+                            tok_id = int(tok_id)
+                            if tok_id not in unused_tokens and w > 0:
                                 d[tok_id] = max(d.get(tok_id, 0.0), float(w))
                         all_sparse.append(d)
             elif self.flag_model:
                 # PyTorch FlagEmbedding fallback
+                unused_tokens = (
+                    set(self.flag_model.tokenizer.all_special_ids)
+                    if hasattr(self.flag_model, "tokenizer")
+                    else {0, 1, 2, 3}
+                )
                 for i in range(0, len(missing_texts), batch_size):
                     batch = missing_texts[i : i + batch_size]
                     out = self.flag_model.encode(batch, return_dense=True, return_sparse=True)
                     all_dense.append(out["dense_vecs"])
                     for lex_dict in out["lexical_weights"]:
-                        all_sparse.append({int(k): float(v) for k, v in lex_dict.items()})
+                        all_sparse.append(
+                            {
+                                int(k): float(v)
+                                for k, v in lex_dict.items()
+                                if int(k) not in unused_tokens
+                            }
+                        )
 
             flat_dense = np.vstack(all_dense) if all_dense else np.array([])
             for i, text in enumerate(missing_texts):
-                self._str_cache[text] = (flat_dense[i], all_sparse[i])
+                entry = (flat_dense[i], all_sparse[i])
+                resolved[text] = entry
+                self._str_cache[text] = entry
 
             max_cache_size = int(os.getenv("STR_CACHE_MAX_SIZE", "10000"))
             while len(self._str_cache) > max_cache_size:
                 self._str_cache.popitem(last=False)
 
-        dim = self._str_cache[texts[0]][0].shape[0]
+        dim = resolved[texts[0]][0].shape[0]
         out_dense = np.empty((len(texts), dim), dtype=np.float32)
         out_sparse = []
 
         for i, text in enumerate(texts):
-            d, s = self._str_cache[text]
+            d, s = resolved[text]
             out_dense[i] = d
             out_sparse.append(s)
 
