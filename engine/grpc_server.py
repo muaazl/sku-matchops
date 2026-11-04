@@ -305,23 +305,103 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
 
     def SearchVectorCollection(self, request, context):
         try:
-            query_filter = _build_qdrant_filter(request.filters_json)
-            score_threshold = request.score_threshold if request.has_score_threshold else None
+            # Strongly typed mode field on proto, with fallback to JSON metadata
+            mode = getattr(request, "mode", None) or "dense"
+            filters_dict = json.loads(request.filters_json) if request.filters_json else {}
+            if isinstance(filters_dict, dict) and "_search_mode" in filters_dict:
+                mode = filters_dict.pop("_search_mode")
+                cleaned_filters_json = json.dumps(filters_dict) if filters_dict else ""
+            else:
+                cleaned_filters_json = request.filters_json
+
+            query_filter = _build_qdrant_filter(cleaned_filters_json)
+            # RRF fusion scores are ~0.016-0.033; only apply score_threshold for dense cosine and sparse dot-product search
+            score_threshold = (
+                request.score_threshold
+                if (request.has_score_threshold and mode in ("dense", "sparse"))
+                else None
+            )
             client = VectorStore.get_client()
             from engine.core.resource_loader import _get_shared_models
+            from engine.nlp.text_cleaner import TextPipeline
 
             embed_engine, _ = _get_shared_models()
-            encoded = embed_engine.encode([request.query])
-            query_vector = encoded["dense"][0]
+            raw_query = (request.query or "").strip()
+            normalized_query = TextPipeline.normalize_final(
+                TextPipeline.standardize_units(raw_query)
+            )
 
-            points = client.query_points(
-                collection_name=request.name,
-                query=query_vector.tolist() if hasattr(query_vector, "tolist") else query_vector,
-                using="dense",
-                limit=request.limit or 10,
-                query_filter=query_filter,
-                score_threshold=score_threshold,
-            ).points
+            # Collections ending in _catalog (or generic collections) store clean_text which is normalized lowercase.
+            # Use normalized query for catalog dense matching; for sparse/hybrid, encode both raw and normalized
+            # so BGE-M3's case-sensitive subword vocabulary matches regardless of user input casing.
+            is_catalog = request.name.endswith("_catalog") or not request.name.endswith("_tags")
+            dense_target = normalized_query if (is_catalog and normalized_query) else raw_query
+
+            queries_to_encode = [dense_target]
+            if mode in ("sparse", "hybrid"):
+                other_query = raw_query if dense_target == normalized_query else normalized_query
+                if other_query and other_query != dense_target:
+                    queries_to_encode.append(other_query)
+
+            encoded = embed_engine.encode(queries_to_encode)
+            dense_vec = encoded["dense"][0]
+            dense_list = dense_vec.tolist() if hasattr(dense_vec, "tolist") else dense_vec
+
+            if mode in ("sparse", "hybrid"):
+                # Union sparse weights across casing variants (taking max weight per token ID)
+                sparse_dict = {}
+                for s_dict in encoded.get("sparse", []):
+                    for k, v in s_dict.items():
+                        sparse_dict[k] = max(sparse_dict.get(k, 0.0), float(v))
+
+                from qdrant_client.http.models import SparseVector
+
+                indices, values = [], []
+                for k, v in sparse_dict.items():
+                    try:
+                        indices.append(int(k))
+                        values.append(float(v))
+                    except (ValueError, TypeError):
+                        pass
+                sparse_vector = SparseVector(indices=indices, values=values)
+
+                if mode == "sparse":
+                    points = client.query_points(
+                        collection_name=request.name,
+                        query=sparse_vector,
+                        using="sparse",
+                        limit=request.limit or 10,
+                        query_filter=query_filter,
+                        score_threshold=score_threshold,
+                        with_payload=True,
+                    ).points
+                else:  # hybrid
+                    from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
+
+                    points = client.query_points(
+                        collection_name=request.name,
+                        prefetch=[
+                            Prefetch(query=dense_list, using="dense", limit=request.limit or 10),
+                            Prefetch(
+                                query=sparse_vector, using="sparse", limit=request.limit or 10
+                            ),
+                        ],
+                        query=FusionQuery(fusion=Fusion.RRF),
+                        limit=request.limit or 10,
+                        query_filter=query_filter,
+                        with_payload=True,
+                    ).points
+            else:  # dense
+                points = client.query_points(
+                    collection_name=request.name,
+                    query=dense_list,
+                    using="dense",
+                    limit=request.limit or 10,
+                    query_filter=query_filter,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                ).points
+
             res = [{"id": hit.id, "score": hit.score, "payload": hit.payload} for hit in points]
             return pb2.JsonPayloadResponse(payload_json=json.dumps({"results": res}))
         except Exception as e:

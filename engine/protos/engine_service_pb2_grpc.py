@@ -3,9 +3,9 @@
 import grpc
 import warnings
 
-from . import engine_service_pb2 as protos_dot_engine__service__pb2
+from engine.protos import engine_service_pb2 as engine_dot_protos_dot_engine__service__pb2
 
-GRPC_GENERATED_VERSION = '1.62.0'
+GRPC_GENERATED_VERSION = '1.85.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in protos/engine_service_pb2_grpc.py depends on'
+        + ' but the generated code in engine/protos/engine_service_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -36,78 +36,78 @@ class EngineInferenceServiceStub:
         """
         self.Match = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/Match',
-                request_serializer=protos_dot_engine__service__pb2.MatchRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.MatchResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.MatchRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.MatchResponse.FromString,
                 _registered_method=True)
         self.Classify = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/Classify',
-                request_serializer=protos_dot_engine__service__pb2.ClassifyRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.ClassifyResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.ClassifyRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.ClassifyResponse.FromString,
                 _registered_method=True)
         self.RunSingle = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/RunSingle',
-                request_serializer=protos_dot_engine__service__pb2.SingleRunRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.SingleRunResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.SingleRunRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.SingleRunResponse.FromString,
                 _registered_method=True)
         self.SuggestTags = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/SuggestTags',
-                request_serializer=protos_dot_engine__service__pb2.SuggestRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.SuggestResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.SuggestRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.SuggestResponse.FromString,
                 _registered_method=True)
         self.RunAudit = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/RunAudit',
-                request_serializer=protos_dot_engine__service__pb2.AuditRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.AuditResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.AuditRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.AuditResponse.FromString,
                 _registered_method=True)
         self.DispatchBatchJob = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/DispatchBatchJob',
-                request_serializer=protos_dot_engine__service__pb2.BatchJobRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.JobDispatchResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.BatchJobRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.JobDispatchResponse.FromString,
                 _registered_method=True)
         self.DispatchUploadJob = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/DispatchUploadJob',
-                request_serializer=protos_dot_engine__service__pb2.UploadJobRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.JobDispatchResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.UploadJobRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.JobDispatchResponse.FromString,
                 _registered_method=True)
         self.CancelJob = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/CancelJob',
-                request_serializer=protos_dot_engine__service__pb2.CancelJobRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.CancelJobResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.CancelJobRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.CancelJobResponse.FromString,
                 _registered_method=True)
         self.GetHealth = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/GetHealth',
-                request_serializer=protos_dot_engine__service__pb2.Empty.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.HealthResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.Empty.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.HealthResponse.FromString,
                 _registered_method=True)
         self.GetModelsStatus = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/GetModelsStatus',
-                request_serializer=protos_dot_engine__service__pb2.Empty.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.ModelsStatusResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.Empty.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.ModelsStatusResponse.FromString,
                 _registered_method=True)
         self.ManageModels = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/ManageModels',
-                request_serializer=protos_dot_engine__service__pb2.ManageModelsRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.ManageModelsResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.ManageModelsRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.ManageModelsResponse.FromString,
                 _registered_method=True)
         self.RefreshRules = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/RefreshRules',
-                request_serializer=protos_dot_engine__service__pb2.RefreshRulesRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.RefreshRulesResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.RefreshRulesRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.RefreshRulesResponse.FromString,
                 _registered_method=True)
         self.ListVectorCollections = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/ListVectorCollections',
-                request_serializer=protos_dot_engine__service__pb2.Empty.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.Empty.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
                 _registered_method=True)
         self.GetVectorCollection = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/GetVectorCollection',
-                request_serializer=protos_dot_engine__service__pb2.VectorCollectionRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.VectorCollectionRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
                 _registered_method=True)
         self.SearchVectorCollection = channel.unary_unary(
                 '/matchops.engine.v1.EngineInferenceService/SearchVectorCollection',
-                request_serializer=protos_dot_engine__service__pb2.VectorSearchRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.VectorSearchRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
                 _registered_method=True)
 
 
@@ -209,78 +209,78 @@ def add_EngineInferenceServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Match': grpc.unary_unary_rpc_method_handler(
                     servicer.Match,
-                    request_deserializer=protos_dot_engine__service__pb2.MatchRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.MatchResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.MatchRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.MatchResponse.SerializeToString,
             ),
             'Classify': grpc.unary_unary_rpc_method_handler(
                     servicer.Classify,
-                    request_deserializer=protos_dot_engine__service__pb2.ClassifyRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.ClassifyResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.ClassifyRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.ClassifyResponse.SerializeToString,
             ),
             'RunSingle': grpc.unary_unary_rpc_method_handler(
                     servicer.RunSingle,
-                    request_deserializer=protos_dot_engine__service__pb2.SingleRunRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.SingleRunResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.SingleRunRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.SingleRunResponse.SerializeToString,
             ),
             'SuggestTags': grpc.unary_unary_rpc_method_handler(
                     servicer.SuggestTags,
-                    request_deserializer=protos_dot_engine__service__pb2.SuggestRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.SuggestResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.SuggestRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.SuggestResponse.SerializeToString,
             ),
             'RunAudit': grpc.unary_unary_rpc_method_handler(
                     servicer.RunAudit,
-                    request_deserializer=protos_dot_engine__service__pb2.AuditRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.AuditResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.AuditRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.AuditResponse.SerializeToString,
             ),
             'DispatchBatchJob': grpc.unary_unary_rpc_method_handler(
                     servicer.DispatchBatchJob,
-                    request_deserializer=protos_dot_engine__service__pb2.BatchJobRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.JobDispatchResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.BatchJobRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.JobDispatchResponse.SerializeToString,
             ),
             'DispatchUploadJob': grpc.unary_unary_rpc_method_handler(
                     servicer.DispatchUploadJob,
-                    request_deserializer=protos_dot_engine__service__pb2.UploadJobRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.JobDispatchResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.UploadJobRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.JobDispatchResponse.SerializeToString,
             ),
             'CancelJob': grpc.unary_unary_rpc_method_handler(
                     servicer.CancelJob,
-                    request_deserializer=protos_dot_engine__service__pb2.CancelJobRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.CancelJobResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.CancelJobRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.CancelJobResponse.SerializeToString,
             ),
             'GetHealth': grpc.unary_unary_rpc_method_handler(
                     servicer.GetHealth,
-                    request_deserializer=protos_dot_engine__service__pb2.Empty.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.HealthResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.Empty.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.HealthResponse.SerializeToString,
             ),
             'GetModelsStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetModelsStatus,
-                    request_deserializer=protos_dot_engine__service__pb2.Empty.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.ModelsStatusResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.Empty.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.ModelsStatusResponse.SerializeToString,
             ),
             'ManageModels': grpc.unary_unary_rpc_method_handler(
                     servicer.ManageModels,
-                    request_deserializer=protos_dot_engine__service__pb2.ManageModelsRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.ManageModelsResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.ManageModelsRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.ManageModelsResponse.SerializeToString,
             ),
             'RefreshRules': grpc.unary_unary_rpc_method_handler(
                     servicer.RefreshRules,
-                    request_deserializer=protos_dot_engine__service__pb2.RefreshRulesRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.RefreshRulesResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.RefreshRulesRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.RefreshRulesResponse.SerializeToString,
             ),
             'ListVectorCollections': grpc.unary_unary_rpc_method_handler(
                     servicer.ListVectorCollections,
-                    request_deserializer=protos_dot_engine__service__pb2.Empty.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.JsonPayloadResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.Empty.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.SerializeToString,
             ),
             'GetVectorCollection': grpc.unary_unary_rpc_method_handler(
                     servicer.GetVectorCollection,
-                    request_deserializer=protos_dot_engine__service__pb2.VectorCollectionRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.JsonPayloadResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.VectorCollectionRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.SerializeToString,
             ),
             'SearchVectorCollection': grpc.unary_unary_rpc_method_handler(
                     servicer.SearchVectorCollection,
-                    request_deserializer=protos_dot_engine__service__pb2.VectorSearchRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.JsonPayloadResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.VectorSearchRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -308,8 +308,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/Match',
-            protos_dot_engine__service__pb2.MatchRequest.SerializeToString,
-            protos_dot_engine__service__pb2.MatchResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.MatchRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.MatchResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -335,8 +335,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/Classify',
-            protos_dot_engine__service__pb2.ClassifyRequest.SerializeToString,
-            protos_dot_engine__service__pb2.ClassifyResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.ClassifyRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.ClassifyResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -362,8 +362,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/RunSingle',
-            protos_dot_engine__service__pb2.SingleRunRequest.SerializeToString,
-            protos_dot_engine__service__pb2.SingleRunResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.SingleRunRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.SingleRunResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -389,8 +389,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/SuggestTags',
-            protos_dot_engine__service__pb2.SuggestRequest.SerializeToString,
-            protos_dot_engine__service__pb2.SuggestResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.SuggestRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.SuggestResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -416,8 +416,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/RunAudit',
-            protos_dot_engine__service__pb2.AuditRequest.SerializeToString,
-            protos_dot_engine__service__pb2.AuditResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.AuditRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.AuditResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -443,8 +443,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/DispatchBatchJob',
-            protos_dot_engine__service__pb2.BatchJobRequest.SerializeToString,
-            protos_dot_engine__service__pb2.JobDispatchResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.BatchJobRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.JobDispatchResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -470,8 +470,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/DispatchUploadJob',
-            protos_dot_engine__service__pb2.UploadJobRequest.SerializeToString,
-            protos_dot_engine__service__pb2.JobDispatchResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.UploadJobRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.JobDispatchResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -497,8 +497,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/CancelJob',
-            protos_dot_engine__service__pb2.CancelJobRequest.SerializeToString,
-            protos_dot_engine__service__pb2.CancelJobResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.CancelJobRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.CancelJobResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -524,8 +524,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/GetHealth',
-            protos_dot_engine__service__pb2.Empty.SerializeToString,
-            protos_dot_engine__service__pb2.HealthResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.Empty.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.HealthResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -551,8 +551,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/GetModelsStatus',
-            protos_dot_engine__service__pb2.Empty.SerializeToString,
-            protos_dot_engine__service__pb2.ModelsStatusResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.Empty.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.ModelsStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -578,8 +578,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/ManageModels',
-            protos_dot_engine__service__pb2.ManageModelsRequest.SerializeToString,
-            protos_dot_engine__service__pb2.ManageModelsResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.ManageModelsRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.ManageModelsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -605,8 +605,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/RefreshRules',
-            protos_dot_engine__service__pb2.RefreshRulesRequest.SerializeToString,
-            protos_dot_engine__service__pb2.RefreshRulesResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.RefreshRulesRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.RefreshRulesResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -632,8 +632,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/ListVectorCollections',
-            protos_dot_engine__service__pb2.Empty.SerializeToString,
-            protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.Empty.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -659,8 +659,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/GetVectorCollection',
-            protos_dot_engine__service__pb2.VectorCollectionRequest.SerializeToString,
-            protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.VectorCollectionRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -686,8 +686,8 @@ class EngineInferenceService:
             request,
             target,
             '/matchops.engine.v1.EngineInferenceService/SearchVectorCollection',
-            protos_dot_engine__service__pb2.VectorSearchRequest.SerializeToString,
-            protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.VectorSearchRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.JsonPayloadResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -710,18 +710,18 @@ class BackendCallbackServiceStub:
         """
         self.ReportJobProgress = channel.unary_unary(
                 '/matchops.engine.v1.BackendCallbackService/ReportJobProgress',
-                request_serializer=protos_dot_engine__service__pb2.JobProgressRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.JobProgressRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
                 _registered_method=True)
         self.CompleteJob = channel.unary_unary(
                 '/matchops.engine.v1.BackendCallbackService/CompleteJob',
-                request_serializer=protos_dot_engine__service__pb2.JobCompleteRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.JobCompleteRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
                 _registered_method=True)
         self.FailJob = channel.unary_unary(
                 '/matchops.engine.v1.BackendCallbackService/FailJob',
-                request_serializer=protos_dot_engine__service__pb2.JobFailRequest.SerializeToString,
-                response_deserializer=protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
+                request_serializer=engine_dot_protos_dot_engine__service__pb2.JobFailRequest.SerializeToString,
+                response_deserializer=engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
                 _registered_method=True)
 
 
@@ -751,18 +751,18 @@ def add_BackendCallbackServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'ReportJobProgress': grpc.unary_unary_rpc_method_handler(
                     servicer.ReportJobProgress,
-                    request_deserializer=protos_dot_engine__service__pb2.JobProgressRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.JobCallbackResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.JobProgressRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.SerializeToString,
             ),
             'CompleteJob': grpc.unary_unary_rpc_method_handler(
                     servicer.CompleteJob,
-                    request_deserializer=protos_dot_engine__service__pb2.JobCompleteRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.JobCallbackResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.JobCompleteRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.SerializeToString,
             ),
             'FailJob': grpc.unary_unary_rpc_method_handler(
                     servicer.FailJob,
-                    request_deserializer=protos_dot_engine__service__pb2.JobFailRequest.FromString,
-                    response_serializer=protos_dot_engine__service__pb2.JobCallbackResponse.SerializeToString,
+                    request_deserializer=engine_dot_protos_dot_engine__service__pb2.JobFailRequest.FromString,
+                    response_serializer=engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -790,8 +790,8 @@ class BackendCallbackService:
             request,
             target,
             '/matchops.engine.v1.BackendCallbackService/ReportJobProgress',
-            protos_dot_engine__service__pb2.JobProgressRequest.SerializeToString,
-            protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.JobProgressRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -817,8 +817,8 @@ class BackendCallbackService:
             request,
             target,
             '/matchops.engine.v1.BackendCallbackService/CompleteJob',
-            protos_dot_engine__service__pb2.JobCompleteRequest.SerializeToString,
-            protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.JobCompleteRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -844,8 +844,8 @@ class BackendCallbackService:
             request,
             target,
             '/matchops.engine.v1.BackendCallbackService/FailJob',
-            protos_dot_engine__service__pb2.JobFailRequest.SerializeToString,
-            protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
+            engine_dot_protos_dot_engine__service__pb2.JobFailRequest.SerializeToString,
+            engine_dot_protos_dot_engine__service__pb2.JobCallbackResponse.FromString,
             options,
             channel_credentials,
             insecure,

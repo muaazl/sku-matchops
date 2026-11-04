@@ -522,6 +522,7 @@ def search_vector_collection(name: str, payload: dict[str, Any]) -> dict[str, An
         stub = get_stub()
         st = payload.get("score_threshold")
         filters = payload.get("filters")
+        mode = payload.get("mode", "dense")
         req = pb2.VectorSearchRequest(
             name=name,
             query=payload.get("query", ""),
@@ -529,6 +530,7 @@ def search_vector_collection(name: str, payload: dict[str, Any]) -> dict[str, An
             score_threshold=float(st) if st is not None else 0.0,
             has_score_threshold=st is not None,
             filters_json=json.dumps(filters) if filters else "",
+            mode=mode,
         )
         resp = stub.SearchVectorCollection(req, metadata=grpc_metadata(), timeout=15.0)
         return json.loads(resp.payload_json)
