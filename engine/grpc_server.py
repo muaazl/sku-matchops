@@ -337,22 +337,15 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             is_catalog = request.name.endswith("_catalog") or not request.name.endswith("_tags")
             dense_target = normalized_query if (is_catalog and normalized_query) else raw_query
 
-            queries_to_encode = [dense_target]
-            if mode in ("sparse", "hybrid"):
-                other_query = raw_query if dense_target == normalized_query else normalized_query
-                if other_query and other_query != dense_target:
-                    queries_to_encode.append(other_query)
-
-            encoded = embed_engine.encode(queries_to_encode)
+            # Strictly encode the normalized query so BGE-M3 produces consistent subword token IDs
+            # regardless of query casing or script (case-insensitive for Latin, Sinhala, etc.)
+            encoded = embed_engine.encode([dense_target])
             dense_vec = encoded["dense"][0]
             dense_list = dense_vec.tolist() if hasattr(dense_vec, "tolist") else dense_vec
 
             if mode in ("sparse", "hybrid"):
-                # Union sparse weights across casing variants (taking max weight per token ID)
-                sparse_dict = {}
-                for s_dict in encoded.get("sparse", []):
-                    for k, v in s_dict.items():
-                        sparse_dict[k] = max(sparse_dict.get(k, 0.0), float(v))
+                sparse_list = encoded.get("sparse", [{}])
+                sparse_dict = sparse_list[0] if sparse_list else {}
 
                 from qdrant_client.http.models import SparseVector
 
@@ -366,15 +359,37 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 sparse_vector = SparseVector(indices=indices, values=values)
 
                 if mode == "sparse":
-                    points = client.query_points(
+                    q_words = normalized_query.split()
+                    q_len = len(q_words)
+                    fetch_limit = max((request.limit or 10) * 3, 30)
+
+                    raw_points = client.query_points(
                         collection_name=request.name,
                         query=sparse_vector,
                         using="sparse",
-                        limit=request.limit or 10,
+                        limit=fetch_limit,
                         query_filter=query_filter,
                         score_threshold=score_threshold,
                         with_payload=True,
                     ).points
+
+                    # Apply length normalization penalty: min(1.0, |Q| / |D|) with exact-match priority
+                    scored_points = []
+                    for hit in raw_points:
+                        p_load = hit.payload or {}
+                        clean_name = str(p_load.get("clean_text") or "").strip().lower()
+                        doc_len = p_load.get("token_count") or (len(clean_name.split()) if clean_name else q_len)
+                        len_ratio = min(1.0, q_len / max(1, doc_len)) if q_len > 0 else 1.0
+
+                        is_exact = bool(clean_name and clean_name == normalized_query)
+                        boost = 1.25 if is_exact else 1.0
+                        adjusted_score = hit.score * len_ratio * boost
+                        hit.score = float(adjusted_score)
+                        scored_points.append((adjusted_score, is_exact, hit))
+
+                    scored_points.sort(key=lambda x: (x[0], 1 if x[1] else 0), reverse=True)
+                    final_limit = request.limit or 10
+                    points = [sp[2] for sp in scored_points[:final_limit]]
                 else:  # hybrid
                     from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
 

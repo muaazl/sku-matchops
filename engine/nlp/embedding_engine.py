@@ -61,11 +61,10 @@ class EmbeddingEngine:
                     self.tokenizer = AutoTokenizer.from_pretrained(
                         os.path.dirname(config.BI_ENCODER_ONNX),
                         local_files_only=True,
-                        fix_mistral_regex=True,
                     )
                 except Exception:
                     self.tokenizer = AutoTokenizer.from_pretrained(
-                        config.BI_ENCODER_MODEL, fix_mistral_regex=True
+                        config.BI_ENCODER_MODEL
                     )
 
                 self.bi_session = ort.InferenceSession(
@@ -109,16 +108,10 @@ class EmbeddingEngine:
 
             # 1. Load Tokenizer
             try:
-                try:
-                    self.rerank_tokenizer = AutoTokenizer.from_pretrained(
-                        os.path.dirname(config.CROSS_ENCODER_ONNX),
-                        local_files_only=True,
-                        fix_mistral_regex=True,
-                    )
-                except Exception:
-                    self.rerank_tokenizer = AutoTokenizer.from_pretrained(
-                        os.path.dirname(config.CROSS_ENCODER_ONNX), local_files_only=True
-                    )
+                self.rerank_tokenizer = AutoTokenizer.from_pretrained(
+                    os.path.dirname(config.CROSS_ENCODER_ONNX),
+                    local_files_only=True,
+                )
             except Exception as tok_err:
                 logger.warning(
                     f"[EMBED] Cross-Encoder tokenizer loading encountered issue: {tok_err}"
@@ -401,7 +394,12 @@ class EmbeddingEngine:
 
         # Sanitize inputs — replace NaN/None with empty strings
         def _clean(lst):
-            return [str(v).strip() if v and str(v).strip().lower() != "nan" else "" for v in lst]
+            return [
+                str(v).strip()
+                if v and str(v).strip().lower() not in ("nan", "none", "<na>")
+                else ""
+                for v in lst
+            ]
 
         names_clean = _clean(names)
         descs_clean = _clean(descriptions) if descriptions else [""] * n

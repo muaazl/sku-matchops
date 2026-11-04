@@ -250,6 +250,54 @@ class VectorStore:
                     pass
         return SparseVector(indices=indices, values=values)
 
+    @staticmethod
+    def _sanitize_catalog_payload(raw_payload: dict, domain: str) -> dict:
+        """Strips junk columns, standardizes price, and removes redundant structures from Qdrant payloads."""
+        cleaned = {}
+        junk_prefixes = ("_duplicated_", "Unnamed")
+        for k, v in raw_payload.items():
+            k_str = str(k).strip()
+            if not k_str or any(k_str.startswith(p) for p in junk_prefixes):
+                continue
+            cleaned[k_str] = v
+
+        # Clean price: retain numerical 'price' (float), remove redundant raw 'Price' string
+        if "Price" in cleaned and "price" in cleaned:
+            try:
+                cleaned["price"] = float(cleaned.get("price") or 0.0)
+            except Exception:
+                pass
+            del cleaned["Price"]
+        elif "Price" in cleaned:
+            from engine.data_pipeline.cache_manager import clean_price
+
+            cleaned["price"] = clean_price(cleaned["Price"])
+            del cleaned["Price"]
+
+        # Remove internal bookkeeping hash from search payload
+        cleaned.pop("row_hash", None)
+
+        # Food domain weight cleanup: if weight_val has no extracted values, drop it
+        w_val = cleaned.get("weight_val")
+        if domain == config.DOMAIN_FOOD or w_val in ([None, None, None], "[null, null, null]", None):
+            cleaned.pop("weight_val", None)
+            if domain == config.DOMAIN_FOOD and cleaned.get("clean_no_weights") == cleaned.get("clean_text"):
+                cleaned.pop("clean_no_weights", None)
+
+        # Clean entities: remove empty keys, convert sets to lists
+        if "entities" in cleaned and isinstance(cleaned["entities"], dict):
+            ents = {
+                k: list(v) if isinstance(v, (set, list)) else v
+                for k, v in cleaned["entities"].items()
+                if v
+            }
+            if ents:
+                cleaned["entities"] = ents
+            else:
+                cleaned.pop("entities", None)
+
+        return cleaned
+
     def sync(
         self,
         df: pd.DataFrame,
@@ -273,11 +321,8 @@ class VectorStore:
             unique_str = db_uid if db_uid else f"{orig_idx}_{payload.get('Name', '')}"
             point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, unique_str))
 
-            # Clean up sets in payload for JSON serialization
-            if "entities" in payload and isinstance(payload["entities"], dict):
-                payload["entities"] = {
-                    k: list(v) if isinstance(v, set) else v for k, v in payload["entities"].items()
-                }
+            # Sanitize payload: strip junk columns, duplicate fields, empty weights
+            sanitized_payload = self._sanitize_catalog_payload(payload, domain=domain)
 
             points.append(
                 PointStruct(
@@ -286,7 +331,7 @@ class VectorStore:
                         "dense": dense_embeddings[list_idx].tolist(),
                         "sparse": self._parse_sparse_dict(sparse_weights[list_idx]),
                     },
-                    payload=payload,
+                    payload=sanitized_payload,
                 )
             )
 

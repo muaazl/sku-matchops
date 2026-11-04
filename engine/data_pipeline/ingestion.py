@@ -438,7 +438,10 @@ class DataIngestion:
 
         catalog_pl = pl.read_csv(catalog_text.encode("utf-8"), ignore_errors=True)
         catalog_pl = catalog_pl.select(
-            [c for c in catalog_pl.columns if not c.startswith("Unnamed")]
+            [
+                c for c in catalog_pl.columns
+                if c.strip() and not c.startswith("Unnamed") and not c.startswith("_duplicated_")
+            ]
         )
         col_map = (
             config.CATALOG_COL_MAP_FOOD

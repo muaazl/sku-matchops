@@ -353,13 +353,23 @@ class CacheManager:
         )
         catalog_names = changed_df["clean_text"].tolist()
         catalog_descs = (
-            changed_df["Description"].tolist()
+            [
+                TextPipeline.normalize_final(str(d))
+                if str(d).strip().lower() not in ("nan", "none", "<na>")
+                else ""
+                for d in changed_df["Description"].tolist()
+            ]
             if "Description" in changed_df.columns
             else [""] * len(changed_df)
         )
         cat_col = config.get_third_tag_col(domain)
         catalog_cats = (
-            changed_df[cat_col].tolist()
+            [
+                TextPipeline.normalize_final(str(c))
+                if str(c).strip().lower() not in ("nan", "none", "<na>")
+                else ""
+                for c in changed_df[cat_col].tolist()
+            ]
             if cat_col in changed_df.columns
             else [""] * len(changed_df)
         )
