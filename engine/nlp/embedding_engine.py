@@ -225,7 +225,9 @@ class EmbeddingEngine:
 
                     # Sparse post-processing (filter out special tokens like <s>, </s>, <pad>, <unk>)
                     unused_tokens = (
-                        set(self.tokenizer.all_special_ids) if self.tokenizer else {0, 1, 2, 3}
+                        set(getattr(self.tokenizer, "all_special_ids", ()))
+                        if self.tokenizer
+                        else {0, 1, 2, 3}
                     )
                     for b in range(len(batch)):
                         d = {}
@@ -237,7 +239,7 @@ class EmbeddingEngine:
             elif self.flag_model:
                 # PyTorch FlagEmbedding fallback
                 unused_tokens = (
-                    set(self.flag_model.tokenizer.all_special_ids)
+                    set(getattr(self.flag_model.tokenizer, "all_special_ids", ()))
                     if hasattr(self.flag_model, "tokenizer")
                     else {0, 1, 2, 3}
                 )

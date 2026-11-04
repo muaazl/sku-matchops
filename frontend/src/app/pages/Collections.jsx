@@ -329,7 +329,9 @@ export default function Collections() {
                         <StyledHeaderCell width="10%">
                           {searchMode === 'pipeline' ? 'Raw CE Score' : 'Score'}
                         </StyledHeaderCell>
-                        <StyledHeaderCell width="5%" align="right">Payload</StyledHeaderCell>
+                        <StyledHeaderCell width="5%" align="right">
+                          Payload
+                        </StyledHeaderCell>
                       </TableRow>
                     </StyledTableHead>
                     <StyledTableBody>
@@ -357,10 +359,20 @@ export default function Collections() {
 
                         const scoreColor =
                           searchMode === 'pipeline'
-                            ? (scoreVal >= 5 ? 'success' : scoreVal >= 0 ? 'primary' : 'default')
+                            ? scoreVal >= 5
+                              ? 'success'
+                              : scoreVal >= 0
+                              ? 'primary'
+                              : 'default'
                             : searchMode === 'hybrid'
-                            ? (scoreVal >= 0.015 ? 'success' : 'primary')
-                            : (scoreVal >= 0.8 ? 'success' : scoreVal >= 0.5 ? 'primary' : 'default');
+                            ? scoreVal >= 0.015
+                              ? 'success'
+                              : 'primary'
+                            : scoreVal >= 0.8
+                            ? 'success'
+                            : scoreVal >= 0.5
+                            ? 'primary'
+                            : 'default';
 
                         return (
                           <StyledTableRow key={r.id}>
@@ -377,12 +389,7 @@ export default function Collections() {
                               </>
                             )}
                             <TableCell>
-                              <Chip
-                                size="small"
-                                label={scoreFormatted}
-                                color={scoreColor}
-                                variant="outlined"
-                              />
+                              <Chip size="small" label={scoreFormatted} color={scoreColor} variant="outlined" />
                             </TableCell>
                             <TableCell align="right">
                               <IconButton

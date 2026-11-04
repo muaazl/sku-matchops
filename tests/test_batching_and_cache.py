@@ -78,6 +78,8 @@ def test_arcface_bt_inference_is_micro_batched_and_ordered(onnx_batch_32, n):
 class FakeTokenizer:
     """Encodes each text as one token id = its integer value, so outputs can be traced."""
 
+    all_special_ids = []
+
     def __call__(self, texts, texts2=None, **_kw):
         ids = np.array([[int(t)] for t in texts], dtype=np.int64)
         return {"input_ids": ids, "attention_mask": np.ones_like(ids)}

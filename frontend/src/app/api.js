@@ -117,8 +117,8 @@ export const searchCollection = async ({ name, query, topK = 10, scoreThreshold,
   (
     await api.post(`/vector-db/collections/${name}/search`, {
       query,
-      'top_k': topK,
-      'score_threshold': scoreThreshold,
+      top_k: topK,
+      score_threshold: scoreThreshold,
       filters,
       mode,
     })
