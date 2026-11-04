@@ -483,6 +483,9 @@ def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
     filt = observability.TraceIdFilter()
     with caplog.at_level(logging.INFO, logger="matchops.engine.worker"):
         caplog.handler.addFilter(filt)
+        handler_logger.addFilter(filt)
+        if caplog.handler not in logging.getLogger().handlers:
+            logging.getLogger().addHandler(caplog.handler)
         task_queue._run_claimed(
             fake,
             {"task_id": "task-1", "job_id": resp.json()["job_id"], "payload": captured[0]},
@@ -490,6 +493,7 @@ def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
             None,
         )
         caplog.handler.removeFilter(filt)
+        handler_logger.removeFilter(filt)
     assert seen["trace"] == trace
     assert any(
         getattr(r, "trace_id", None) == trace

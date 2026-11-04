@@ -29,20 +29,30 @@ LOG_FILE = config.LOG_FILE
 
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
-for handler in root_logger.handlers[:]:
-    root_logger.removeHandler(handler)
+
+# Preserve existing test/framework handlers (e.g. pytest LogCaptureHandler)
+has_stream = any(
+    isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+    for h in root_logger.handlers
+)
+has_file = any(isinstance(h, logging.FileHandler) for h in root_logger.handlers)
 
 formatter = logging.Formatter(
     "%(asctime)s - [%(levelname)s] - %(name)s - [%(filename)s:%(lineno)d] - %(message)s"
 )
 
-sh = logging.StreamHandler(sys.stdout)
-sh.setFormatter(formatter)
-root_logger.addHandler(sh)
+if not has_stream:
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(formatter)
+    root_logger.addHandler(sh)
 
-fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
-fh.setFormatter(formatter)
-root_logger.addHandler(fh)
+if not has_file:
+    try:
+        fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        fh.setFormatter(formatter)
+        root_logger.addHandler(fh)
+    except Exception:
+        pass
 configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured output
 
 logger = logging.getLogger("matchops.server")

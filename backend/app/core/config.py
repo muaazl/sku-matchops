@@ -5,13 +5,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Override in .env for production
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
 APPSCRIPT_WEBHOOK_URL = os.getenv("APPSCRIPT_WEBHOOK_URL", "")
 
-# --- PostgreSQL (owned exclusively by the Backend Gateway) ---
+# --- PostgreSQL & PgBouncer (owned exclusively by the Backend Gateway) ---
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql+psycopg://matchops:matchops@localhost:5432/matchops"
 )
+USE_PGBOUNCER = os.getenv("USE_PGBOUNCER", "false").lower() == "true"
+PGBOUNCER_PORT = int(os.getenv("PGBOUNCER_PORT", "6432"))
+PGBOUNCER_URL = os.getenv("PGBOUNCER_URL", "")
 DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
 DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
 # Rows per INSERT statement when bulk-writing per-SKU results
@@ -32,3 +36,9 @@ JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
 DEFAULT_TENANT = "default"
+
+if ENVIRONMENT in ("production", "prod"):
+    if not AUTH_ENABLED:
+        raise RuntimeError("AUTH_ENABLED must be true in production environments.")
+    if not JWT_SECRET or JWT_SECRET == "change_me_in_production":
+        raise RuntimeError("A secure JWT_SECRET must be configured in production environments.")

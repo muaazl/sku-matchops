@@ -20,13 +20,23 @@ def get_engine() -> Engine:
     """Process-wide pooled PostgreSQL engine for the Backend API Gateway."""
     global _engine
     if _engine is None:
+        db_url = config.DATABASE_URL
+        connect_args = {"options": "-c timezone=utc", "connect_timeout": 5}
+        if config.USE_PGBOUNCER:
+            if config.PGBOUNCER_URL:
+                db_url = config.PGBOUNCER_URL
+            elif ":5432" in db_url:
+                db_url = db_url.replace(":5432", f":{config.PGBOUNCER_PORT}")
+            # In transaction pooling mode, prepared statements are disabled on the client
+            connect_args["prepare_threshold"] = None
+
         _engine = create_engine(
-            config.DATABASE_URL,
+            db_url,
             pool_size=config.DB_POOL_SIZE,
             max_overflow=config.DB_MAX_OVERFLOW,
             pool_pre_ping=True,
             # Keep now()/CURRENT_TIMESTAMP and naive timestamp params in UTC.
-            connect_args={"options": "-c timezone=utc", "connect_timeout": 5},
+            connect_args=connect_args,
         )
     return _engine
 

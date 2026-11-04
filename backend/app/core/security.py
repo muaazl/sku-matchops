@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Security
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer
 from fastapi.security.api_key import APIKeyHeader
 
 from backend.app.core import config
@@ -32,6 +32,7 @@ ROLES = (ADMIN, RULE_ENGINEER, REVIEWER)
 _TENANT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _bearer = HTTPBearer(auto_error=False)
+_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
 _api_key = APIKeyHeader(name="X-API-Key", auto_error=False)
 _ephemeral_secret = secrets.token_urlsafe(48)
 
@@ -113,13 +114,15 @@ def _tenant_header(x_tenant_id: str | None) -> str | None:
 
 def get_principal(
     bearer: HTTPAuthorizationCredentials | None = Security(_bearer),
+    oauth2_token: str | None = Security(_oauth2_scheme),
     api_key: str | None = Security(_api_key),
     x_tenant_id: str | None = Header(default=None),
 ) -> Principal:
     tenant_header = _tenant_header(x_tenant_id)
 
-    if bearer is not None:
-        principal = _decode(bearer.credentials)
+    token_str = bearer.credentials if bearer is not None else oauth2_token
+    if token_str is not None:
+        principal = _decode(token_str)
     elif api_key is not None:
         if not hmac.compare_digest(api_key, config.API_KEY):
             raise HTTPException(status_code=401, detail="Invalid API key.")

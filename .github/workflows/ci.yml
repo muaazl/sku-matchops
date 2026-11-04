@@ -51,7 +51,7 @@ jobs:
             --extra-index-url https://download.pytorch.org/whl/cpu \
             --index-strategy unsafe-best-match \
             -r requirements.txt \
-            pytest ruff
+            pytest pytest-cov ruff
 
       - name: Run Ruff linter
         run: .venv/bin/ruff check backend/ engine/ tests/
@@ -59,15 +59,23 @@ jobs:
       - name: Run Ruff format check
         run: .venv/bin/ruff format --check backend/ engine/ tests/
 
-      - name: Run Pytest
+      - name: Run Alembic migrations check
+        env:
+          PYTHONPATH: .
+          DATABASE_URL: postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test
+        run: |
+          .venv/bin/alembic upgrade head
+          .venv/bin/alembic check
+
+      - name: Run Pytest with Coverage
         env:
           PYTHONPATH: .
           TEST_DATABASE_URL: postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test
           TEST_REDIS_URL: redis://localhost:6379/15
-        run: .venv/bin/pytest -v
+        run: .venv/bin/pytest -v --cov=backend --cov=engine --cov-report=xml
 
-  frontend-lint:
-    name: Frontend (ESLint + Prettier)
+  frontend-lint-and-test:
+    name: Frontend (ESLint + Prettier + Vitest)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -96,3 +104,16 @@ jobs:
 
       - name: Run Prettier check
         run: pnpm run format:check
+
+      - name: Run Vitest Unit Tests
+        run: pnpm run test:run
+
+  docker-compose-check:
+    name: Docker Compose Config Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose Configuration
+        run: docker compose config -q

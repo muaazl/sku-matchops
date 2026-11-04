@@ -179,6 +179,65 @@ class VectorStore:
         except Exception as e:
             logger.debug(f"[QDRANT] Could not create payload index on 'basictype': {e}")
 
+    def create_versioned_collection(self, alias_name: str, version: int = 1) -> str:
+        """Creates a versioned physical collection (e.g. {alias_name}_v{version}) with complete on-disk optimizations."""
+        physical_name = f"{alias_name}_v{version}"
+        self._ensure_collection(physical_name)
+        return physical_name
+
+    def swap_collection_alias(self, alias_name: str, new_physical_collection: str) -> None:
+        """Atomically switches an alias to point to the new physical collection for zero-downtime schema evolution."""
+        from qdrant_client.http.models import (
+            CreateAlias,
+            CreateAliasOperation,
+            DeleteAlias,
+            DeleteAliasOperation,
+        )
+
+        operations = []
+        try:
+            aliases_res = self._call_with_retry("get_aliases", self.client.get_aliases)
+            for item in getattr(aliases_res, "aliases", []):
+                if getattr(item, "alias_name", None) == alias_name:
+                    operations.append(
+                        DeleteAliasOperation(delete_alias=DeleteAlias(alias_name=alias_name))
+                    )
+        except Exception as e:
+            logger.debug(f"[QDRANT] Could not inspect existing aliases for {alias_name}: {e}")
+
+        operations.append(
+            CreateAliasOperation(
+                create_alias=CreateAlias(
+                    collection_name=new_physical_collection,
+                    alias_name=alias_name,
+                )
+            )
+        )
+        self._call_with_retry(
+            "update_collection_aliases",
+            self.client.update_collection_aliases,
+            change_aliases_operations=operations,
+        )
+        logger.info(
+            f"[QDRANT] Successfully pointed alias '{alias_name}' -> '{new_physical_collection}'."
+        )
+
+    def get_collection_schema_info(self, collection_name: str) -> dict[str, Any]:
+        """Returns collection configuration and vector parameters for verification and schema introspection."""
+        try:
+            info = self._call_with_retry(
+                "get_collection", self.client.get_collection, collection_name=collection_name
+            )
+            return {
+                "status": getattr(info, "status", None),
+                "vectors_count": getattr(info, "vectors_count", None),
+                "points_count": getattr(info, "points_count", None),
+                "config": getattr(info, "config", None),
+            }
+        except Exception as e:
+            logger.warning(f"[QDRANT] Could not get schema info for '{collection_name}': {e}")
+            return {}
+
     def _parse_sparse_dict(self, sparse_dict: dict[str, float]) -> SparseVector:
         """Converts a dictionary of lexical weights to a Qdrant SparseVector."""
         indices, values = [], []

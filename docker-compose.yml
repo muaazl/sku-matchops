@@ -40,6 +40,30 @@ services:
       - postgres
     restart: unless-stopped
 
+  # PgBouncer High-Performance Transaction Connection Pooler
+  pgbouncer:
+    image: edoburu/pgbouncer:1.22.1
+    container_name: sku_matchops_pgbouncer
+    expose:
+      - "6432"
+    environment:
+      - DB_USER=${POSTGRES_USER:-matchops}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-matchops}
+      - DB_NAME=${POSTGRES_DB:-matchops}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=500
+      - DEFAULT_POOL_SIZE=25
+      - MIN_POOL_SIZE=5
+      - RESERVE_POOL_SIZE=5
+      - AUTH_TYPE=scram-sha-256
+      - IGNORE_STARTUP_PARAMETERS=extra_float_digits,options
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     container_name: sku_matchops_redis
@@ -116,7 +140,8 @@ services:
       - .env
     volumes:
       - ./backend:/app/backend
-      - ./engine:/app/engine
+      - ./alembic.ini:/app/alembic.ini
+      - ./migrations:/app/migrations
       - ./data:/app/data
       - cache_data:/app/data/cache
       - ./scripts:/app/scripts
