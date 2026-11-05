@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import text
 
 from backend.app.db.session import get_engine, upsert_processed_skus
+from engine.classification.tagger import compute_weighted_confidence
 from engine.core.observability import MATCH_CONFIDENCE
 
 logger = logging.getLogger("matchops.backend.persistence")
@@ -60,10 +61,16 @@ def build_processed_sku_rows(
             conf = res.get("score", 0.0)
             source = "Matcher"
         elif task_lower == "classifier":
-            conf = res.get("bt_confidence", 0.0)
             source = "Classifier"
+            conf = compute_weighted_confidence(
+                res.get("bt_confidence"),
+                res.get("gk_confidence"),
+                res.get("region_confidence", res.get("category_confidence")),
+                has_bt=bool(res.get("suggested_bt")),
+                has_gk=bool(res.get("suggested_gk")),
+                has_region=bool(res.get("suggested_region") or res.get("suggested_category")),
+            )
         else:  # pipeline / upload
-            conf = res.get("bt_confidence", res.get("score", 0.0))
             p_src = str(res.get("pipeline_source") or "").strip().lower()
             if p_src == "classifier":
                 source = "Classifier"
@@ -79,6 +86,18 @@ def build_processed_sku_rows(
                 source = "Classifier"
             else:
                 source = "Matcher"
+
+            if source == "Classifier":
+                conf = compute_weighted_confidence(
+                    res.get("bt_confidence"),
+                    res.get("gk_confidence"),
+                    res.get("region_confidence", res.get("category_confidence")),
+                    has_bt=bool(res.get("suggested_bt")),
+                    has_gk=bool(res.get("suggested_gk")),
+                    has_region=bool(res.get("suggested_region") or res.get("suggested_category")),
+                )
+            else:
+                conf = res.get("score", 0.0)
 
         input_entities = res.get("input_entities") or {}
         flavor_list = list(input_entities.get("flavor") or [])
@@ -104,11 +123,11 @@ def build_processed_sku_rows(
                 "logic_notes": res.get("logic_notes", ""),
                 "matched_catalog_name": res.get("matched_catalog_name", ""),
                 "match_score": _to_float(res.get("score", 0.0)),
-                "bt_confidence": _to_float(res.get("bt_confidence", 0.0)),
-                "gk_confidence": _to_float(res.get("gk_confidence", 0.0)),
+                "bt_confidence": _to_float(res.get("bt_confidence")) if source == "Classifier" else None,
+                "gk_confidence": _to_float(res.get("gk_confidence")) if source == "Classifier" else None,
                 "region_confidence": _to_float(
-                    res.get("region_confidence", res.get("category_confidence", 0.0))
-                ),
+                    res.get("region_confidence", res.get("category_confidence"))
+                ) if source == "Classifier" else None,
                 "input_price": _to_float(input_price),
                 "input_description": input_description,
                 "input_category": input_category,

@@ -624,71 +624,47 @@ export default function SkuResults() {
             <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
               Audit Details
             </Typography>
-            {[
-              ['Source', selectedSku.match_source || '—'],
+            {(() => {
+              const srcLower = String(selectedSku.match_source || '').trim().toLowerCase();
+              const isSkuMatcher = srcLower === 'matcher' || (!srcLower && isMatcher);
+              const isPureClassifierJob = isClassifier && !selectedSku.matched_catalog_name && selectedSku.match_score == null;
 
-              // Only for Matcher & Pipeline
-              ...(!isClassifier
-                ? [
-                    ['Matched Catalog Name', selectedSku.matched_catalog_name || '—'],
-                    ['Logic Notes', selectedSku.logic_notes || '—'],
-                    [
-                      'Match Score',
-                      selectedSku.match_score != null
-                        ? `${Math.round(
-                            Number(selectedSku.match_score) > 1
-                              ? selectedSku.match_score
-                              : selectedSku.match_score * 100
-                          )}%`
-                        : '—',
-                    ],
-                  ]
-                : []),
+              const fmtPct = (val) =>
+                val != null && val !== ''
+                  ? `${Math.round(Number(val) > 1 ? Number(val) : Number(val) * 100)}%`
+                  : null;
 
-              // Only for Classifier & Pipeline
-              ...(!isMatcher
-                ? [
-                    [
-                      'BT Confidence',
-                      selectedSku.bt_confidence != null
-                        ? `${Math.round(
-                            Number(selectedSku.bt_confidence) > 1
-                              ? selectedSku.bt_confidence
-                              : selectedSku.bt_confidence * 100
-                          )}%`
-                        : '—',
-                    ],
-                    [
-                      'GK Confidence',
-                      selectedSku.gk_confidence != null
-                        ? `${Math.round(
-                            Number(selectedSku.gk_confidence) > 1
-                              ? selectedSku.gk_confidence
-                              : selectedSku.gk_confidence * 100
-                          )}%`
-                        : '—',
-                    ],
-                    [
-                      'Region/Cat Confidence',
-                      selectedSku.region_confidence != null
-                        ? `${Math.round(
-                            Number(selectedSku.region_confidence) > 1
-                              ? selectedSku.region_confidence
-                              : selectedSku.region_confidence * 100
-                          )}%`
-                        : '—',
-                    ],
-                    [
-                      'Final Confidence',
-                      selectedSku.confidence != null
-                        ? `${Math.round(
-                            Number(selectedSku.confidence) > 1 ? selectedSku.confidence : selectedSku.confidence * 100
-                          )}%`
-                        : '—',
-                    ],
-                  ]
-                : []),
-            ]
+              return [
+                ['Source', selectedSku.match_source || '—'],
+
+                // Matcher / candidate details (shown unless a pure classifier job with no matcher candidates)
+                ...(!isPureClassifierJob
+                  ? [
+                      ['Matched Catalog Name', selectedSku.matched_catalog_name || '—'],
+                      ['Logic Notes', selectedSku.logic_notes || '—'],
+                      ['Match Score', fmtPct(selectedSku.match_score) || '—'],
+                    ]
+                  : []),
+
+                // Classifier tag confidences: for Matcher SKUs, display 'N/A'
+                [
+                  'BT Confidence',
+                  isSkuMatcher ? 'N/A' : (fmtPct(selectedSku.bt_confidence) || '—'),
+                ],
+                [
+                  'GK Confidence',
+                  isSkuMatcher ? 'N/A' : (fmtPct(selectedSku.gk_confidence) || '—'),
+                ],
+                [
+                  'Region/Cat Confidence',
+                  isSkuMatcher ? 'N/A' : (fmtPct(selectedSku.region_confidence) || '—'),
+                ],
+                [
+                  'Final Confidence',
+                  fmtPct(selectedSku.confidence) || '—',
+                ],
+              ];
+            })()}
               .filter(([, v]) => v !== null && v !== undefined)
               .map(([k, v]) => (
                 <Box key={k} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.7 }}>

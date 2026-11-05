@@ -12,7 +12,7 @@ from typing import Any
 import pandas as pd
 
 from engine import config
-from engine.classification.tagger import tag_all_skus
+from engine.classification.tagger import compute_weighted_confidence, tag_all_skus
 from engine.core.resource_loader import (
     _get_shared_models,
     _get_vector_store,
@@ -401,7 +401,14 @@ def process_request(
                 "region": row.get("suggested_region") if domain == config.DOMAIN_FOOD else None,
                 "category": row.get("suggested_region") if domain == config.DOMAIN_MARKET else None,
                 "price": sku.get("price", 0.0),
-                "confidence": row.get("bt_confidence", 0.0) or 0.0,
+                "confidence": compute_weighted_confidence(
+                    row.get("bt_confidence"),
+                    row.get("gk_confidence"),
+                    row.get("region_confidence", row.get("category_confidence")),
+                    has_bt=bool(row.get("suggested_bt")),
+                    has_gk=bool(row.get("suggested_gk")),
+                    has_region=bool(row.get("suggested_region") or row.get("suggested_category")),
+                ),
                 "match_source": "Classifier",
                 "matched_sku": "",
                 "reasoning": row.get("logic_notes", ""),
@@ -471,13 +478,13 @@ def process_request(
                     "status": m_status,
                     "logic_notes": _clean_field(row, "Logic Notes") or "",
                     "suggested_bt": _clean_field(row, "BasicType") or "",
-                    "bt_confidence": m_score,
+                    "bt_confidence": None,
                     "bt_status": m_status,
                     "suggested_gk": _clean_field(row, "GenericKeywords") or "",
-                    "gk_confidence": m_score,
+                    "gk_confidence": None,
                     "gk_status": m_status,
                     "suggested_region": region_val,
-                    "region_confidence": m_score,
+                    "region_confidence": None,
                     "region_status": m_status,
                     "pipeline_source": "Matcher",
                     "escalated": False,
@@ -491,13 +498,13 @@ def process_request(
                     "status": "Low / Rejected",
                     "logic_notes": "No candidate found",
                     "suggested_bt": "",
-                    "bt_confidence": 0.0,
+                    "bt_confidence": None,
                     "bt_status": "Low / Rejected",
                     "suggested_gk": "",
-                    "gk_confidence": 0.0,
+                    "gk_confidence": None,
                     "gk_status": "Low / Rejected",
                     "suggested_region": "",
-                    "region_confidence": 0.0,
+                    "region_confidence": None,
                     "region_status": "Low / Rejected",
                     "pipeline_source": "Matcher",
                     "escalated": False,
@@ -632,6 +639,19 @@ def process_request(
             overall_pct = 92.0 + (((j + 1) / len(pipeline_out)) * 7.0)
             emit_progress("applying_rules", overall_pct)
             sku = skus[j]
+            is_clf = row.get("pipeline_source") == "Classifier"
+            if is_clf:
+                conf_val = compute_weighted_confidence(
+                    row.get("bt_confidence"),
+                    row.get("gk_confidence"),
+                    row.get("region_confidence", row.get("category_confidence")),
+                    has_bt=bool(row.get("suggested_bt")),
+                    has_gk=bool(row.get("suggested_gk")),
+                    has_region=bool(row.get("suggested_region") or row.get("category")),
+                )
+            else:
+                conf_val = float(row.get("score") or 0.0)
+
             record = {
                 "sku_name": sku.get("name", ""),
                 "domain": domain,
@@ -640,9 +660,9 @@ def process_request(
                 "region": row.get("suggested_region") if domain == config.DOMAIN_FOOD else None,
                 "category": row.get("suggested_region") if domain == config.DOMAIN_MARKET else None,
                 "price": sku.get("price", 0.0),
-                "confidence": max(row.get("score", 0), row.get("bt_confidence", 0) or 0),
+                "confidence": conf_val,
                 "match_source": "Classifier"
-                if row.get("pipeline_source") == "Classifier"
+                if is_clf
                 else "Matcher",
                 "matched_sku": row.get("matched_catalog_name", ""),
                 "reasoning": row.get("logic_notes", ""),

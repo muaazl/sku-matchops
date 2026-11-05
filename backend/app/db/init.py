@@ -34,6 +34,17 @@ def _run_alembic_upgrade() -> bool:
         logger.info("Alembic schema migrations upgraded to head successfully.")
         return True
     except Exception as e:
+        err_msg = str(e)
+        if "Can't locate revision identified by" in err_msg:
+            try:
+                logger.info(
+                    f"Legacy or orphaned revision detected in database ({err_msg}). Stamping current head revision..."
+                )
+                command.stamp(alembic_cfg, "head", purge=True)
+                logger.info("Alembic schema version stamped to head successfully.")
+                return True
+            except Exception as stamp_err:
+                logger.warning(f"Could not auto-stamp Alembic head: {stamp_err}")
         logger.warning(f"Alembic upgrade encountered an issue ({e}). Checking table status...")
         return False
 

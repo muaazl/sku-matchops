@@ -3,6 +3,11 @@ import os
 import shutil
 import sys
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import torch
 import torch.nn as nn
 
@@ -12,11 +17,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("export_onnx")
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 
 TMP_DIR = os.path.join(PROJECT_ROOT, "data", "cache", "onnx_tmp")
 
@@ -246,8 +246,16 @@ def export_all_models_if_needed(force: bool = False, quantize: bool = True):
             import subprocess
 
             logger.info("Triggering INT8 dynamic quantization in a dedicated isolated process...")
+            env = os.environ.copy()
+            env["PYTHONPATH"] = (
+                f"{PROJECT_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
+                if "PYTHONPATH" in env
+                else PROJECT_ROOT
+            )
             subprocess.run(
-                [sys.executable, os.path.join(SCRIPT_DIR, "quantize.py")], check=True
+                [sys.executable, os.path.join(SCRIPT_DIR, "quantize.py")],
+                env=env,
+                check=True,
             )
         except Exception as e:
             logger.warning(f"INT8 dynamic quantization step encountered an issue: {e}")
