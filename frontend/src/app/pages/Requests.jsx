@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   Box,
+  Button,
   IconButton,
   TextField,
   MenuItem,
@@ -17,8 +18,8 @@ import {
   Tooltip,
   TablePagination,
 } from '@mui/material';
-import { RefreshCw, Info } from 'lucide-react';
-import { PageContainer, PageHeader, HttpStatusChip, SideDrawer } from '../components/ui';
+import { Refresh, InfoOutlined } from '@mui/icons-material';
+import { PageContainer, PageHeader, HttpStatusChip, SideDrawer, EmptyState } from '../components/ui';
 import { JsonBlock } from '../components/JsonBlock';
 import { fmtTime } from '../utils';
 import { useQuery } from '@tanstack/react-query';
@@ -222,7 +223,7 @@ export default function Requests() {
             </TextField>
             <Tooltip title="Refresh Logs">
               <IconButton onClick={() => refetch()} disabled={isLoading || isFetching} aria-label="Refresh requests">
-                <RefreshCw size={18} className={isFetching ? 'animate-spin' : ''} />
+                <Refresh sx={{ fontSize: 18 }} className={isFetching ? 'animate-spin' : ''} />
               </IconButton>
             </Tooltip>
           </Box>
@@ -246,10 +247,33 @@ export default function Requests() {
               <TableSkeleton columns={7} rows={5} />
             ) : paginatedRows.length === 0 ? (
               <StyledTableRow>
-                <TableCell colSpan={7} align="center">
-                  <Typography variant="body2" color="text.secondary">
-                    No requests found.
-                  </Typography>
+                <TableCell colSpan={7} sx={{ p: 0, border: 'none' }}>
+                  <EmptyState
+                    icon={InfoOutlined}
+                    title="No API requests found"
+                    description={
+                      pathQuery || status !== 'all'
+                        ? 'No API requests matched your path query or status filter.'
+                        : 'No incoming API requests have been recorded yet.'
+                    }
+                    action={
+                      pathQuery || status !== 'all' ? (
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          onClick={() => {
+                            setPathQuery('');
+                            setStatus('all');
+                            setPage(0);
+                          }}
+                          sx={{ textTransform: 'none', fontWeight: 600 }}
+                        >
+                          Clear request filters
+                        </Button>
+                      ) : null
+                    }
+                    minHeight={240}
+                  />
                 </TableCell>
               </StyledTableRow>
             ) : (
@@ -280,7 +304,7 @@ export default function Requests() {
                       }}
                       aria-label="View request details"
                     >
-                      <Info size={18} />
+                      <InfoOutlined sx={{ fontSize: 18 }} />
                     </IconButton>
                   </TableCell>
                 </StyledTableRow>

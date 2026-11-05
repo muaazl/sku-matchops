@@ -18,9 +18,9 @@ import {
   TableRow,
   TableCell,
 } from '@mui/material';
-import { Search, Circle, Info } from 'lucide-react';
+import { Search, FiberManualRecord, InfoOutlined, Storage } from '@mui/icons-material';
 import prettyBytes from 'pretty-bytes';
-import { PageContainer, PageHeader, SideDrawer } from '../components/ui';
+import { PageContainer, PageHeader, SideDrawer, EmptyState } from '../components/ui';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { getCollections, getCollection, searchCollection, runInteractiveAudit } from '../api';
 import { useSnackbar } from 'notistack';
@@ -196,10 +196,13 @@ export default function Collections() {
               <TableSkeleton columns={7} rows={5} />
             ) : collections.length === 0 ? (
               <StyledTableRow>
-                <TableCell colSpan={7} align="center">
-                  <Typography variant="body2" color="text.secondary">
-                    No collections found.
-                  </Typography>
+                <TableCell colSpan={7} sx={{ p: 0, border: 'none' }}>
+                  <EmptyState
+                    icon={Storage}
+                    title="No vector collections found"
+                    description="No collections were found in the connected vector store."
+                    minHeight={200}
+                  />
                 </TableCell>
               </StyledTableRow>
             ) : (
@@ -207,12 +210,10 @@ export default function Collections() {
                 <StyledTableRow key={row.name}>
                   <TableCell>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Circle
-                        size={10}
-                        fill="currentColor"
-                        color={statusColor[row.status] ? 'inherit' : undefined}
-                        style={{
-                          color: row.status === 'green' ? '#2e7d32' : row.status === 'yellow' ? '#ed6c02' : '#d32f2f',
+                      <FiberManualRecord
+                        sx={{
+                          fontSize: 10,
+                          color: statusColor[row.status] || 'text.disabled',
                         }}
                       />
                       <Typography variant="body1" sx={{ fontWeight: 500 }}>
@@ -246,7 +247,7 @@ export default function Collections() {
                         setDetailsDrawer(row);
                       }}
                     >
-                      <Info size={18} />
+                      <InfoOutlined sx={{ fontSize: 18 }} />
                     </IconButton>
                   </TableCell>
                 </StyledTableRow>
@@ -297,7 +298,12 @@ export default function Collections() {
               onKeyDown={(e) => e.key === 'Enter' && runSearch()}
               sx={{ flexGrow: 1, minWidth: 220 }}
             />
-            <Button variant="contained" disabled={isSearching} startIcon={<Search size={16} />} onClick={runSearch}>
+            <Button
+              variant="contained"
+              disabled={isSearching}
+              startIcon={<Search sx={{ fontSize: 16 }} />}
+              onClick={runSearch}
+            >
               Search
             </Button>
           </Box>
@@ -306,9 +312,12 @@ export default function Collections() {
             <>
               <Divider sx={{ my: 2 }} />
               {results.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">
-                  No results. Enter a query above.
-                </Typography>
+                <EmptyState
+                  icon={Search}
+                  title="No search results"
+                  description="No vector items matched your test query. Try adjusting query terms or score threshold."
+                  minHeight={180}
+                />
               ) : (
                 <StyledTableContainer sx={{ mt: 2 }}>
                   <Table size="small">
@@ -397,7 +406,7 @@ export default function Collections() {
                                 onClick={() => setPayloadDrawer(r)}
                                 aria-label="View raw payload"
                               >
-                                <Info size={16} />
+                                <InfoOutlined sx={{ fontSize: 16 }} />
                               </IconButton>
                             </TableCell>
                           </StyledTableRow>

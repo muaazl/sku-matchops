@@ -20,9 +20,9 @@ import {
   FormControlLabel,
   Switch,
 } from '@mui/material';
-import { Play, Sparkles, ArrowRight, Cpu } from 'lucide-react';
+import { ArrowForward, Memory, PlayArrow, AutoAwesome } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
-import { PageContainer, PageHeader, StatusChip } from '../components/ui';
+import { EmptyState, PageContainer, PageHeader, SectionCard, StatusChip } from '../components/ui';
 import RulesAppliedList from '../components/RulesAppliedList';
 import { DOMAINS } from '../constants';
 import { runInteractiveSingle, getTemplateSuggestions, runInteractiveAudit } from '../api';
@@ -49,7 +49,12 @@ function Confidence({ label, value, status, source }) {
           {status && <StatusChip status={status} />}
         </Box>
       </Box>
-      <LinearProgress variant="determinate" value={pct} sx={{ height: 6, borderRadius: 3 }} />
+      <LinearProgress
+        variant="determinate"
+        value={pct}
+        color={pct >= 85 ? 'success' : pct >= 60 ? 'warning' : 'error'}
+        sx={{ height: 6, borderRadius: 3 }}
+      />
     </Box>
   );
 }
@@ -174,113 +179,103 @@ export default function Interactive() {
 
       <Grid container spacing={3} alignItems="flex-start">
         <Grid size={{ xs: 12, md: 5 }}>
-          <Card>
-            <CardHeader
-              title="Input Details"
-              titleTypographyProps={{ variant: 'subtitle1', sx: { fontWeight: 600 } }}
-            />
-            <CardContent>
-              <Stack spacing={2.5}>
+          <SectionCard title="Input Details" subheader="Configure test SKU parameters">
+            <Stack spacing={2.5}>
+              <TextField
+                label="SKU name"
+                value={sku}
+                onChange={(e) => setSku(e.target.value)}
+                fullWidth
+                onKeyDown={(e) => e.key === 'Enter' && !loading && run()}
+              />
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+                <TextField label="Price" value={price} onChange={(e) => setPrice(e.target.value)} fullWidth />
                 <TextField
-                  label="SKU name"
-                  value={sku}
-                  onChange={(e) => setSku(e.target.value)}
+                  label="Seller Category"
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
                   fullWidth
-                  onKeyDown={(e) => e.key === 'Enter' && !loading && run()}
                 />
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-                  <TextField label="Price" value={price} onChange={(e) => setPrice(e.target.value)} fullWidth />
-                  <TextField
-                    label="Seller Category"
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    fullWidth
-                  />
-                </Stack>
-                <TextField
-                  label="Description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  fullWidth
-                  multiline
-                  rows={2}
-                />
-
-                <Stack spacing={2}>
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                      Domain
-                    </Typography>
-                    <ToggleButtonGroup
-                      size="small"
-                      exclusive
-                      value={domain}
-                      onChange={(e, v) => v && setDomain(v)}
-                      fullWidth
-                    >
-                      {DOMAINS.map((d) => (
-                        <ToggleButton key={d} value={d} sx={{ textTransform: 'capitalize' }}>
-                          {d}
-                        </ToggleButton>
-                      ))}
-                    </ToggleButtonGroup>
-                  </Box>
-
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                      Task
-                    </Typography>
-                    <ToggleButtonGroup
-                      size="small"
-                      exclusive
-                      value={task}
-                      onChange={(e, v) => v && setTask(v)}
-                      fullWidth
-                    >
-                      <ToggleButton value="matcher" sx={{ textTransform: 'none' }}>
-                        Matcher
-                      </ToggleButton>
-                      <ToggleButton value="classifier" sx={{ textTransform: 'none' }}>
-                        Classifier
-                      </ToggleButton>
-                      <ToggleButton value="pipeline" sx={{ textTransform: 'none' }}>
-                        Pipeline
-                      </ToggleButton>
-                    </ToggleButtonGroup>
-                  </Box>
-
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={enableSuggestions}
-                        onChange={(e) => setEnableSuggestions(e.target.checked)}
-                        color="primary"
-                        size="small"
-                      />
-                    }
-                    label={
-                      <Typography variant="body2" color="text.secondary" fontWeight={500}>
-                        Enable Tag Suggestions (Experimental)
-                      </Typography>
-                    }
-                    sx={{ mt: 0.5 }}
-                  />
-                </Stack>
-
-                <Button
-                  variant="contained"
-                  startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <Play size={16} />}
-                  onClick={run}
-                  disabled={loading}
-                  fullWidth
-                  size="large"
-                  sx={{ mt: 1, height: 42, fontWeight: 600 }}
-                >
-                  {loading ? 'Running...' : 'Run'}
-                </Button>
               </Stack>
-            </CardContent>
-          </Card>
+              <TextField
+                label="Description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                fullWidth
+                multiline
+                rows={2}
+              />
+
+              <Stack spacing={2}>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                    Domain
+                  </Typography>
+                  <ToggleButtonGroup
+                    size="small"
+                    exclusive
+                    value={domain}
+                    onChange={(e, v) => v && setDomain(v)}
+                    fullWidth
+                  >
+                    {DOMAINS.map((d) => (
+                      <ToggleButton key={d} value={d} sx={{ textTransform: 'capitalize' }}>
+                        {d}
+                      </ToggleButton>
+                    ))}
+                  </ToggleButtonGroup>
+                </Box>
+
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                    Task
+                  </Typography>
+                  <ToggleButtonGroup size="small" exclusive value={task} onChange={(e, v) => v && setTask(v)} fullWidth>
+                    <ToggleButton value="matcher" sx={{ textTransform: 'none' }}>
+                      Matcher
+                    </ToggleButton>
+                    <ToggleButton value="classifier" sx={{ textTransform: 'none' }}>
+                      Classifier
+                    </ToggleButton>
+                    <ToggleButton value="pipeline" sx={{ textTransform: 'none' }}>
+                      Pipeline
+                    </ToggleButton>
+                  </ToggleButtonGroup>
+                </Box>
+
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={enableSuggestions}
+                      onChange={(e) => setEnableSuggestions(e.target.checked)}
+                      color="primary"
+                      size="small"
+                    />
+                  }
+                  label={
+                    <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                      Enable Tag Suggestions (Experimental)
+                    </Typography>
+                  }
+                  sx={{ mt: 0.5 }}
+                />
+              </Stack>
+
+              <Button
+                variant="contained"
+                startIcon={
+                  loading ? <CircularProgress size={16} color="inherit" /> : <PlayArrow sx={{ fontSize: 16 }} />
+                }
+                onClick={run}
+                disabled={loading}
+                fullWidth
+                size="large"
+                sx={{ mt: 1, height: 42, fontWeight: 600 }}
+              >
+                {loading ? 'Running...' : 'Run'}
+              </Button>
+            </Stack>
+          </SectionCard>
         </Grid>
 
         <Grid size={{ xs: 12, md: 7 }}>
@@ -305,28 +300,23 @@ export default function Interactive() {
           {!loading && !r && (
             <Card
               sx={{
-                p: 6,
-                textAlign: 'center',
+                p: 4,
                 border: '2px dashed',
                 borderColor: 'divider',
+                borderRadius: 2,
                 backgroundColor: 'action.hover',
                 display: 'flex',
-                flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
                 minHeight: 400,
               }}
             >
-              <Box sx={{ color: 'text.secondary', mb: 2 }}>
-                <Sparkles size={48} strokeWidth={1.5} />
-              </Box>
-              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-                Ready to Process
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 360, mb: 3 }}>
-                Enter the SKU details on the left and choose a task. The results, confidence metrics, and matching logic
-                will appear here.
-              </Typography>
+              <EmptyState
+                icon={AutoAwesome}
+                title="Ready to Process"
+                description="Enter the SKU details on the left and choose a task. The results, confidence metrics, and matching logic will appear here."
+                minHeight={320}
+              />
             </Card>
           )}
 
@@ -341,7 +331,9 @@ export default function Interactive() {
                       variant="contained"
                       color="secondary"
                       size="small"
-                      startIcon={auditLoading ? <CircularProgress size={14} color="inherit" /> : <Cpu size={14} />}
+                      startIcon={
+                        auditLoading ? <CircularProgress size={14} color="inherit" /> : <Memory sx={{ fontSize: 14 }} />
+                      }
                       onClick={handleRunAudit}
                       disabled={auditLoading}
                       sx={{ fontWeight: 600, textTransform: 'none', borderRadius: 2 }}
@@ -418,7 +410,7 @@ export default function Interactive() {
                   <CardHeader
                     title={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Sparkles size={18} style={{ color: '#0288d1' }} />
+                        <AutoAwesome sx={{ fontSize: 18, color: '#0288d1' }} />
                         <Typography variant="subtitle1" fontWeight={600}>
                           Template-Based Suggestions
                         </Typography>
@@ -445,7 +437,7 @@ export default function Interactive() {
                         >
                           {suggestions.base_entity}
                         </Typography>
-                        <ArrowRight size={12} style={{ color: 'text.secondary' }} />
+                        <ArrowForward sx={{ fontSize: 12, color: 'text.secondary' }} />
                         <Typography
                           variant="caption"
                           sx={{

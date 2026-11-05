@@ -31,9 +31,17 @@ import {
   TablePagination,
   Paper,
 } from '@mui/material';
-import { UploadCloud, FileText, X, Eye, EyeOff, ShieldCheck, Play } from 'lucide-react';
+import {
+  CloudUpload,
+  Description,
+  Close,
+  Visibility,
+  VisibilityOff,
+  VerifiedUser,
+  PlayArrow,
+} from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
-import { PageContainer, PageHeader, IconModal } from '../components/ui';
+import { PageContainer, PageHeader, IconModal, SectionCard } from '../components/ui';
 import { DOMAINS } from '../constants';
 import { useMutation } from '@tanstack/react-query';
 import { createBatch, merchantFetch } from '../api';
@@ -645,7 +653,11 @@ export default function ProcessSKUs() {
                     variant="contained"
                     color="primary"
                     startIcon={
-                      createMutation.isPending ? <CircularProgress size={16} color="inherit" /> : <Play size={16} />
+                      createMutation.isPending ? (
+                        <CircularProgress size={16} color="inherit" />
+                      ) : (
+                        <PlayArrow sx={{ fontSize: 16 }} />
+                      )
                     }
                     onClick={handleStartJob}
                     disabled={!jobName.trim() || createMutation.isPending}
@@ -672,71 +684,75 @@ export default function ProcessSKUs() {
       <Grid container spacing={3} alignItems="flex-start" sx={{ mt: 1 }}>
         {/* Food Portal Integration Card */}
         <Grid size={{ xs: 12, md: 5 }}>
-          <Card>
-            <CardHeader
-              title="Portal Details"
-              titleTypographyProps={{ variant: 'subtitle1', sx: { fontWeight: 600 } }}
-            />
-            <CardContent>
-              <Stack spacing={2.5}>
-                <TextField
-                  label="Merchant ID"
-                  value={localMerchantId}
-                  onChange={(e) => setLocalMerchantId(e.target.value)}
-                  placeholder="e.g. 8842"
+          <SectionCard title="Portal Details" subheader="Fetch live merchant catalog via portal integration">
+            <Stack spacing={2.5}>
+              <TextField
+                label="Merchant ID"
+                value={localMerchantId}
+                onChange={(e) => setLocalMerchantId(e.target.value)}
+                placeholder="e.g. 8842"
+                fullWidth
+              />
+
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                  Domain
+                </Typography>
+                <ToggleButtonGroup
+                  size="small"
+                  exclusive
+                  value={domain}
+                  onChange={(e, v) => v && setDomain(v)}
+                  aria-label="Select domain"
                   fullWidth
-                />
-
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                    Domain
-                  </Typography>
-                  <ToggleButtonGroup
-                    size="small"
-                    exclusive
-                    value={domain}
-                    onChange={(e, v) => v && setDomain(v)}
-                    fullWidth
-                  >
-                    {DOMAINS.map((d) => (
-                      <ToggleButton key={d} value={d} sx={{ textTransform: 'capitalize' }}>
-                        {d}
-                      </ToggleButton>
-                    ))}
-                  </ToggleButtonGroup>
-                </Box>
-
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-                    Task
-                  </Typography>
-                  <ToggleButtonGroup size="small" exclusive value={task} onChange={(e, v) => v && setTask(v)} fullWidth>
-                    <ToggleButton value="matcher" sx={{ textTransform: 'none' }}>
-                      Matcher
-                    </ToggleButton>
-                    <ToggleButton value="classifier" sx={{ textTransform: 'none' }}>
-                      Classifier
-                    </ToggleButton>
-                    <ToggleButton value="pipeline" sx={{ textTransform: 'none' }}>
-                      Pipeline
-                    </ToggleButton>
-                  </ToggleButtonGroup>
-                </Box>
-
-                <Button
-                  variant="contained"
-                  startIcon={fetchingPortal ? <CircularProgress size={16} color="inherit" /> : <Play size={16} />}
-                  onClick={handlePortalFetchTrigger}
-                  disabled={!canSubmitMerchant || fetchingPortal}
-                  fullWidth
-                  size="large"
-                  sx={{ mt: 1, height: 42, fontWeight: 600 }}
                 >
-                  {fetchingPortal ? 'Fetching...' : 'Fetch & Process SKUs'}
-                </Button>
-              </Stack>
-            </CardContent>
-          </Card>
+                  {DOMAINS.map((d) => (
+                    <ToggleButton key={d} value={d} sx={{ textTransform: 'capitalize' }}>
+                      {d}
+                    </ToggleButton>
+                  ))}
+                </ToggleButtonGroup>
+              </Box>
+
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                  Task
+                </Typography>
+                <ToggleButtonGroup
+                  size="small"
+                  exclusive
+                  value={task}
+                  onChange={(e, v) => v && setTask(v)}
+                  aria-label="Select matching task"
+                  fullWidth
+                >
+                  <ToggleButton value="matcher" sx={{ textTransform: 'none' }}>
+                    Matcher
+                  </ToggleButton>
+                  <ToggleButton value="classifier" sx={{ textTransform: 'none' }}>
+                    Classifier
+                  </ToggleButton>
+                  <ToggleButton value="pipeline" sx={{ textTransform: 'none' }}>
+                    Pipeline
+                  </ToggleButton>
+                </ToggleButtonGroup>
+              </Box>
+
+              <Button
+                variant="contained"
+                startIcon={
+                  fetchingPortal ? <CircularProgress size={16} color="inherit" /> : <PlayArrow sx={{ fontSize: 16 }} />
+                }
+                onClick={handlePortalFetchTrigger}
+                disabled={!canSubmitMerchant || fetchingPortal}
+                fullWidth
+                size="large"
+                sx={{ mt: 1, height: 42, fontWeight: 600 }}
+              >
+                {fetchingPortal ? 'Fetching...' : 'Fetch & Process SKUs'}
+              </Button>
+            </Stack>
+          </SectionCard>
         </Grid>
 
         {/* CSV Callout Column */}
@@ -747,50 +763,67 @@ export default function ProcessSKUs() {
               textAlign: 'center',
               border: '2px dashed',
               borderColor: 'divider',
+              borderRadius: 2,
               backgroundColor: 'action.hover',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
               minHeight: 400,
+              transition: 'border-color 150ms ease, box-shadow 150ms ease',
+              '&:hover': {
+                borderColor: 'primary.main',
+              },
             }}
           >
-            <Box sx={{ color: 'text.secondary', mb: 2 }}>
-              <UploadCloud size={48} strokeWidth={1.5} />
+            <Box
+              sx={{
+                width: 64,
+                height: 64,
+                borderRadius: '50%',
+                bgcolor: (t) => (t.palette.mode === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'),
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'primary.main',
+                mb: 2,
+              }}
+            >
+              <CloudUpload sx={{ fontSize: 36 }} />
             </Box>
-            <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+            <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
               Have a CSV to process?
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: 360 }}>
-              Upload a CSV, paste raw rows, or queue multiple CSVs / an Excel workbook at once via Bulk Upload — to
-              match, classify, or execute pipelines.
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: 380, lineHeight: 1.6 }}>
+              Upload a CSV, paste raw rows, or queue multiple CSVs / an Excel workbook at once via Bulk Upload to match,
+              classify, or execute pipelines.
             </Typography>
 
             {file ? (
               <Chip
-                icon={<FileText size={15} />}
+                icon={<Description sx={{ fontSize: 15 }} />}
                 label={`${file.name} · ${(file.size / 1024).toFixed(1)} KB`}
                 onDelete={() => setFile(null)}
-                deleteIcon={<X size={15} />}
+                deleteIcon={<Close sx={{ fontSize: 15 }} />}
                 color="primary"
                 variant="outlined"
-                sx={{ mb: 3 }}
+                sx={{ mb: 3, fontWeight: 500 }}
               />
             ) : pastedText.trim() ? (
               <Chip
-                icon={<FileText size={15} />}
+                icon={<Description sx={{ fontSize: 15 }} />}
                 label="Pasted SKU data ready"
                 onDelete={() => setPastedText('')}
-                deleteIcon={<X size={15} />}
+                deleteIcon={<Close sx={{ fontSize: 15 }} />}
                 color="primary"
                 variant="outlined"
-                sx={{ mb: 3 }}
+                sx={{ mb: 3, fontWeight: 500 }}
               />
             ) : null}
 
             <Button
               variant="contained"
-              startIcon={<UploadCloud size={16} />}
+              startIcon={<CloudUpload sx={{ fontSize: 16 }} />}
               onClick={() => setCsvModalOpen(true)}
               size="large"
               sx={{ height: 42, px: 4, fontWeight: 600 }}
@@ -808,7 +841,7 @@ export default function ProcessSKUs() {
             Process CSV SKUs
           </Typography>
           <IconButton onClick={() => setCsvModalOpen(false)} size="small" aria-label="Close dialog">
-            <X size={20} />
+            <Close sx={{ fontSize: 20 }} />
           </IconButton>
         </DialogTitle>
 
@@ -850,7 +883,7 @@ export default function ProcessSKUs() {
                   hidden
                   onChange={(e) => pick(e.target.files?.[0])}
                 />
-                <UploadCloud size={40} style={{ opacity: 0.6 }} />
+                <CloudUpload sx={{ fontSize: 40, opacity: 0.6 }} />
                 <Typography variant="subtitle1" sx={{ mt: 1 }}>
                   Drag & drop your CSV or TSV here
                 </Typography>
@@ -861,10 +894,10 @@ export default function ProcessSKUs() {
 
               {file && (
                 <Chip
-                  icon={<FileText size={15} />}
+                  icon={<Description sx={{ fontSize: 15 }} />}
                   label={`${file.name} · ${(file.size / 1024).toFixed(1)} KB`}
                   onDelete={() => setFile(null)}
-                  deleteIcon={<X size={15} />}
+                  deleteIcon={<Close sx={{ fontSize: 15 }} />}
                   sx={{ mt: 2 }}
                 />
               )}
@@ -922,7 +955,7 @@ export default function ProcessSKUs() {
                     e.target.value = '';
                   }}
                 />
-                <UploadCloud size={40} style={{ opacity: 0.6 }} />
+                <CloudUpload sx={{ fontSize: 40, opacity: 0.6 }} />
                 <Typography variant="subtitle1" sx={{ mt: 1 }}>
                   Drag & drop multiple CSVs, or one Excel workbook
                 </Typography>
@@ -936,10 +969,10 @@ export default function ProcessSKUs() {
                   {bulkFiles.map((f, idx) => (
                     <Chip
                       key={`${f.name}-${idx}`}
-                      icon={<FileText size={15} />}
+                      icon={<Description sx={{ fontSize: 15 }} />}
                       label={`${f.name} · ${(f.size / 1024).toFixed(1)} KB`}
                       onDelete={() => setBulkFiles((prev) => prev.filter((_, i) => i !== idx))}
-                      deleteIcon={<X size={15} />}
+                      deleteIcon={<Close sx={{ fontSize: 15 }} />}
                     />
                   ))}
                 </Stack>
@@ -1003,7 +1036,7 @@ export default function ProcessSKUs() {
       <IconModal
         open={tokenModalOpen}
         onClose={() => setTokenModalOpen(false)}
-        icon={ShieldCheck}
+        icon={VerifiedUser}
         title="Enter Bearer Token"
         description="The bearer token is kept only for this browser tab's session (never written to disk) and is cleared automatically when you close the tab, or immediately if the portal reports it as invalid, blacklisted, or expired."
         actions={
@@ -1034,7 +1067,7 @@ export default function ProcessSKUs() {
                   size="small"
                   aria-label="Toggle token visibility"
                 >
-                  {showToken ? <EyeOff size={17} /> : <Eye size={17} />}
+                  {showToken ? <VisibilityOff sx={{ fontSize: 17 }} /> : <Visibility sx={{ fontSize: 17 }} />}
                 </IconButton>
               </InputAdornment>
             ),

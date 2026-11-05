@@ -1,6 +1,6 @@
 import React from 'react';
 import { ToggleButtonGroup, ToggleButton, Tooltip, styled, alpha } from '@mui/material';
-import { Sun, Moon } from 'lucide-react';
+import { LightMode, DarkMode } from '@mui/icons-material';
 import { useColorModeContext } from '../../context/color-context';
 
 const StyledToggleButtonGroup = styled(ToggleButtonGroup)(({ theme }) => ({
@@ -52,14 +52,14 @@ export default function ColorModeToggle() {
       <StyledToggleButton value="dark">
         <Tooltip title="Dark Mode">
           <StyledIcon>
-            <Moon size={20} />
+            <DarkMode sx={{ fontSize: 20 }} />
           </StyledIcon>
         </Tooltip>
       </StyledToggleButton>
       <StyledToggleButton value="light">
         <Tooltip title="Light Mode">
           <StyledIcon>
-            <Sun size={20} />
+            <LightMode sx={{ fontSize: 20 }} />
           </StyledIcon>
         </Tooltip>
       </StyledToggleButton>

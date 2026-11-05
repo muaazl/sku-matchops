@@ -3,7 +3,7 @@ import { Box, Button, Chip, Divider, IconButton, Stack, TextField, Tooltip, Typo
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 import { useSnackbar } from 'notistack';
-import { KeyRound, LogIn, LogOut, ShieldCheck } from 'lucide-react';
+import { VpnKey, Login, Logout, VerifiedUser } from '@mui/icons-material';
 import { login } from '../api';
 import { useStore } from '../store';
 import { useAuth } from '../hooks/useAuth';
@@ -83,12 +83,12 @@ export default function SessionControl() {
           )}
           <Tooltip title="Log out">
             <IconButton size="small" aria-label="Log out" onClick={signOut}>
-              <LogOut size={18} />
+              <Logout sx={{ fontSize: 18 }} />
             </IconButton>
           </Tooltip>
         </Stack>
       ) : (
-        <Button size="small" variant="outlined" startIcon={<LogIn size={16} />} onClick={openDialog}>
+        <Button size="small" variant="outlined" startIcon={<Login sx={{ fontSize: 16 }} />} onClick={openDialog}>
           Sign in
         </Button>
       )}
@@ -96,7 +96,7 @@ export default function SessionControl() {
       <IconModal
         open={loginModalOpen}
         onClose={closeLoginModal}
-        icon={ShieldCheck}
+        icon={VerifiedUser}
         title="Sign in"
         description="Your role (admin, rule engineer, reviewer) comes from the account you sign in with."
         actions={
@@ -149,7 +149,7 @@ export default function SessionControl() {
               type="password"
               value={form.apiKey}
               onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-              InputProps={{ startAdornment: <KeyRound size={14} style={{ marginRight: 8 }} /> }}
+              InputProps={{ startAdornment: <VpnKey sx={{ fontSize: 14, mr: 1 }} /> }}
             />
             {/* Hidden submit so Enter signs in */}
             <button type="submit" hidden aria-hidden="true" />

@@ -1,69 +1,28 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Box, Button, Chip, Grid, MenuItem, Stack, TextField, ToggleButton, ToggleButtonGroup } from '@mui/material';
 import {
-  Box,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  Grid,
-  Stack,
-  Typography,
-  LinearProgress,
-  TextField,
-  MenuItem,
-  ToggleButton,
-  ToggleButtonGroup,
-  Chip,
-} from '@mui/material';
-import { CheckCircle2, XCircle, Activity, Zap, BookOpen } from 'lucide-react';
-import { PageContainer, PageHeader } from '../components/ui';
+  Bolt,
+  CheckCircle,
+  Cancel,
+  Timeline,
+  PieChart,
+  Psychology,
+  TrendingUp,
+  MenuBook,
+  Label,
+  Public,
+} from '@mui/icons-material';
+import { EmptyState, PageContainer, PageHeader, SectionCard, StatCard } from '../components/ui';
 import {
+  BasicTypeBarChart,
   ConfidenceDoughnutChart,
   MatchSourcePieChart,
-  VolumeTrendChart,
-  BasicTypeBarChart,
   RegionDistributionChart,
+  VolumeTrendChart,
 } from '../components/Charts';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboardStats, getTagStats } from '../api';
-
-export function StatCard({ icon: Icon, label, value, subtext, color }) {
-  return (
-    <Card sx={{ height: '100%' }}>
-      <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-        <Box
-          sx={{
-            width: 44,
-            height: 44,
-            borderRadius: 2,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            bgcolor: (t) => t.palette[color].main + '1f',
-            color: (t) => t.palette[color].main,
-            flexShrink: 0,
-          }}
-        >
-          <Icon size={22} />
-        </Box>
-        <Box>
-          <Typography variant="h5" sx={{ fontWeight: 600, lineHeight: 1.1 }}>
-            {value}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {label}
-          </Typography>
-          {subtext && (
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
-              {subtext}
-            </Typography>
-          )}
-        </Box>
-      </CardContent>
-    </Card>
-  );
-}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -121,8 +80,6 @@ export default function Dashboard() {
   const basicTypeDistribution = tagData?.basicTypeDistribution || [];
   const regionDistribution = tagData?.regionDistribution || [];
 
-  const isLoading = statsLoading || tagLoading;
-
   return (
     <PageContainer>
       <PageHeader
@@ -130,7 +87,13 @@ export default function Dashboard() {
         subtitle="Job health, matching accuracy, confidence distribution, and vector store stats."
         actions={
           <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
-            <ToggleButtonGroup size="small" value={domain} exclusive onChange={(_, val) => val && setDomain(val)}>
+            <ToggleButtonGroup
+              size="small"
+              value={domain}
+              exclusive
+              onChange={(_, val) => val && setDomain(val)}
+              aria-label="Filter dashboard by domain"
+            >
               <ToggleButton value="all" sx={{ px: 1.5, textTransform: 'capitalize' }}>
                 All Domain
               </ToggleButton>
@@ -149,6 +112,7 @@ export default function Dashboard() {
               value={timeframe}
               onChange={(e) => setTimeframe(e.target.value)}
               sx={{ width: 150 }}
+              inputProps={{ 'aria-label': 'Filter dashboard by timeframe' }}
             >
               <MenuItem value="24h">Last 24 hours</MenuItem>
               <MenuItem value="7d">Last 7 days</MenuItem>
@@ -159,41 +123,42 @@ export default function Dashboard() {
         }
       />
 
-      {isLoading && <LinearProgress sx={{ mb: 3, borderRadius: 2 }} />}
-
       <Stack spacing={3}>
         {/* Row 1: KPI Stat Cards */}
         <Grid container spacing={3}>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <StatCard
-              icon={Zap}
+              icon={Bolt}
               label="Avg match confidence"
               value={`${stats.avgConfidencePct}%`}
               subtext="Target ≥ 85.0%"
               color="primary"
+              isLoading={statsLoading}
             />
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <StatCard
-              icon={CheckCircle2}
+              icon={CheckCircle}
               label="Auto-approved (≥85%)"
               value={stats.highConfidenceCount.toLocaleString()}
               subtext={`${stats.highConfidencePct}% of total`}
               color="success"
+              isLoading={statsLoading}
             />
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <StatCard
-              icon={XCircle}
+              icon={Cancel}
               label="Escalated (<60%)"
               value={stats.lowConfidenceCount.toLocaleString()}
               subtext={`${stats.lowConfidencePct}% flagged for audit`}
               color="error"
+              isLoading={statsLoading}
             />
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             <StatCard
-              icon={Activity}
+              icon={Timeline}
               label="Total SKUs processed"
               value={stats.totalProcessedSkus.toLocaleString()}
               subtext={
@@ -202,6 +167,7 @@ export default function Dashboard() {
                   : 'Across active catalog'
               }
               color="info"
+              isLoading={statsLoading}
             />
           </Grid>
         </Grid>
@@ -209,124 +175,137 @@ export default function Dashboard() {
         {/* Row 2: Match Quality & Confidence Distribution / Matching Algorithm Attribution */}
         <Grid container spacing={3}>
           <Grid size={{ xs: 12, md: 6 }}>
-            <Card sx={{ height: '100%' }}>
-              <CardHeader
-                title="Match quality & confidence distribution"
-                titleTypographyProps={{ variant: 'subtitle1' }}
-              />
-              <CardContent>
-                <Box sx={{ height: 280 }}>
-                  {confidenceDistribution.some((c) => c.count > 0) ? (
-                    <ConfidenceDoughnutChart data={confidenceDistribution} />
-                  ) : (
-                    <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Typography variant="body2" color="text.secondary">
-                        No SKU match data available
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-              </CardContent>
-            </Card>
+            <SectionCard
+              title="Match quality & confidence distribution"
+              subheader="Confidence distribution across processed batches"
+              isLoading={statsLoading}
+              minHeight={280}
+            >
+              <Box sx={{ height: 280 }}>
+                {confidenceDistribution.some((c) => c.count > 0) ? (
+                  <ConfidenceDoughnutChart data={confidenceDistribution} />
+                ) : (
+                  <EmptyState
+                    icon={PieChart}
+                    title="No SKU match data"
+                    description="No confidence score distribution recorded for this domain and timeframe."
+                    minHeight={240}
+                  />
+                )}
+              </Box>
+            </SectionCard>
           </Grid>
 
           <Grid size={{ xs: 12, md: 6 }}>
-            <Card sx={{ height: '100%' }}>
-              <CardHeader title="Matching algorithm attribution" titleTypographyProps={{ variant: 'subtitle1' }} />
-              <CardContent>
-                <Box sx={{ height: 280 }}>
-                  {matchSourceDistribution.length > 0 ? (
-                    <MatchSourcePieChart data={matchSourceDistribution} />
-                  ) : (
-                    <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Typography variant="body2" color="text.secondary">
-                        No pipeline source data available
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-              </CardContent>
-            </Card>
+            <SectionCard
+              title="Matching algorithm attribution"
+              subheader="Distribution between Rule Classifier & Vector Matcher"
+              isLoading={statsLoading}
+              minHeight={280}
+            >
+              <Box sx={{ height: 280 }}>
+                {matchSourceDistribution.length > 0 ? (
+                  <MatchSourcePieChart data={matchSourceDistribution} />
+                ) : (
+                  <EmptyState
+                    icon={Psychology}
+                    title="No pipeline source data"
+                    description="No algorithm attribution data available for the selected filters."
+                    minHeight={240}
+                  />
+                )}
+              </Box>
+            </SectionCard>
           </Grid>
         </Grid>
 
         {/* Row 3: SKU Volume & Confidence Trend (Max Width) */}
         <Grid container spacing={3}>
           <Grid size={12}>
-            <Card>
-              <CardHeader
-                title="SKU volume & confidence trend"
-                titleTypographyProps={{ variant: 'subtitle1' }}
-                action={<Chip size="small" label={timeframe === '24h' ? 'hourly' : 'daily'} variant="outlined" />}
-              />
-              <CardContent>
-                <Box sx={{ height: 300 }}>
-                  {volumeTrend.length > 0 ? (
-                    <VolumeTrendChart data={volumeTrend} />
-                  ) : (
-                    <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Typography variant="body2" color="text.secondary">
-                        No volume history available
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-              </CardContent>
-            </Card>
+            <SectionCard
+              title="SKU volume & confidence trend"
+              subheader="Historical throughput and average confidence over time"
+              isLoading={statsLoading}
+              minHeight={300}
+              action={
+                <Chip
+                  size="small"
+                  label={timeframe === '24h' ? 'hourly' : 'daily'}
+                  variant="outlined"
+                  sx={{ fontWeight: 600, textTransform: 'capitalize' }}
+                />
+              }
+            >
+              <Box sx={{ height: 300 }}>
+                {volumeTrend.length > 0 ? (
+                  <VolumeTrendChart data={volumeTrend} />
+                ) : (
+                  <EmptyState
+                    icon={TrendingUp}
+                    title="No volume history"
+                    description="No SKU volume trend records found for the selected period."
+                    minHeight={260}
+                  />
+                )}
+              </Box>
+            </SectionCard>
           </Grid>
         </Grid>
 
         {/* Row 4: Top Basic Types / Region-Category Distribution */}
         <Grid container spacing={3}>
           <Grid size={{ xs: 12, md: 6 }}>
-            <Card sx={{ height: '100%' }}>
-              <CardHeader
-                title="Top Basic Types"
-                subheader="What SKUs are most commonly tagged as"
-                titleTypographyProps={{ variant: 'subtitle1' }}
-                action={
-                  <Button size="small" startIcon={<BookOpen size={16} />} onClick={() => navigate('/guide')}>
-                    How tagging works
-                  </Button>
-                }
-              />
-              <CardContent>
-                <Box sx={{ height: 280 }}>
-                  {basicTypeDistribution.length > 0 ? (
-                    <BasicTypeBarChart data={basicTypeDistribution} />
-                  ) : (
-                    <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Typography variant="body2" color="text.secondary">
-                        No Basic Type data available
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-              </CardContent>
-            </Card>
+            <SectionCard
+              title="Top Basic Types"
+              subheader="What SKUs are most commonly tagged as"
+              isLoading={tagLoading}
+              minHeight={280}
+              action={
+                <Button
+                  size="small"
+                  startIcon={<MenuBook sx={{ fontSize: 16 }} />}
+                  onClick={() => navigate('/guide')}
+                  sx={{ textTransform: 'none', fontWeight: 600 }}
+                >
+                  How tagging works
+                </Button>
+              }
+            >
+              <Box sx={{ height: 280 }}>
+                {basicTypeDistribution.length > 0 ? (
+                  <BasicTypeBarChart data={basicTypeDistribution} />
+                ) : (
+                  <EmptyState
+                    icon={Label}
+                    title="No Basic Type data"
+                    description="No basic type tags identified in the selected dataset."
+                    minHeight={240}
+                  />
+                )}
+              </Box>
+            </SectionCard>
           </Grid>
 
           <Grid size={{ xs: 12, md: 6 }}>
-            <Card sx={{ height: '100%' }}>
-              <CardHeader
-                title="Region / Category distribution"
-                subheader="Where the catalog's cuisine & category tags land"
-                titleTypographyProps={{ variant: 'subtitle1' }}
-              />
-              <CardContent>
-                <Box sx={{ height: 280 }}>
-                  {regionDistribution.length > 0 ? (
-                    <RegionDistributionChart data={regionDistribution} />
-                  ) : (
-                    <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <Typography variant="body2" color="text.secondary">
-                        No Region / Category data available
-                      </Typography>
-                    </Box>
-                  )}
-                </Box>
-              </CardContent>
-            </Card>
+            <SectionCard
+              title="Region / Category distribution"
+              subheader="Where the catalog's cuisine & category tags land"
+              isLoading={tagLoading}
+              minHeight={280}
+            >
+              <Box sx={{ height: 280 }}>
+                {regionDistribution.length > 0 ? (
+                  <RegionDistributionChart data={regionDistribution} />
+                ) : (
+                  <EmptyState
+                    icon={Public}
+                    title="No Region / Category data"
+                    description="No region or category distribution available for the selected filters."
+                    minHeight={240}
+                  />
+                )}
+              </Box>
+            </SectionCard>
           </Grid>
         </Grid>
       </Stack>

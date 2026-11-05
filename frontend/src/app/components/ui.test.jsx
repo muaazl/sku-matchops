@@ -14,6 +14,7 @@ import Layout from '../Layout';
 import RequireLogin from './RequireLogin';
 import { NAV_ITEMS } from '../SkuSidebar';
 import { ColorModeProvider } from '../../context/color-context';
+import { StatCard, SectionCard, EmptyState, TableSkeleton, CardSkeleton } from './ui';
 
 vi.mock('../hooks/useAuth', () => ({ useAuth: vi.fn() }));
 vi.mock('./Charts', () => {
@@ -195,5 +196,63 @@ describe('RBAC gating', () => {
   it.each(['rule_engineer', 'admin'])('allows rule creation for %s', (role) => {
     renderAs(role, <RulesEngine />);
     expect(screen.getByRole('button', { name: 'New rule' }).disabled).toBe(false);
+  });
+});
+
+describe('Design System Primitives (ui.jsx)', () => {
+  it('renders StatCard with value, label, subtext, and trend', () => {
+    render(
+      <StatCard
+        label="Test Metric"
+        value="95.5%"
+        subtext="Higher is better"
+        trend={{ label: '+5%', direction: 'up' }}
+      />
+    );
+    expect(screen.getByText('Test Metric')).toBeTruthy();
+    expect(screen.getByText('95.5%')).toBeTruthy();
+    expect(screen.getByText('Higher is better')).toBeTruthy();
+    expect(screen.getByText('+5%')).toBeTruthy();
+  });
+
+  it('renders StatCard with skeletons when isLoading is true', () => {
+    const { container } = render(<StatCard label="Test Metric" value="95.5%" subtext="Higher is better" isLoading />);
+    expect(screen.queryByText('95.5%')).toBeNull();
+    expect(container.querySelectorAll('.MuiSkeleton-root').length).toBeGreaterThan(0);
+  });
+
+  it('renders SectionCard with header, action, and content', () => {
+    render(
+      <SectionCard title="Test Section" subheader="Section description" action={<button>Action</button>}>
+        <div>Section Content</div>
+      </SectionCard>
+    );
+    expect(screen.getByText('Test Section')).toBeTruthy();
+    expect(screen.getByText('Section description')).toBeTruthy();
+    expect(screen.getByText('Section Content')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Action' })).toBeTruthy();
+  });
+
+  it('renders EmptyState with title, description, and action button', () => {
+    render(
+      <EmptyState
+        title="No items found"
+        description="Try adjusting your filters or search terms."
+        action={<button>Reset filters</button>}
+      />
+    );
+    expect(screen.getByText('No items found')).toBeTruthy();
+    expect(screen.getByText('Try adjusting your filters or search terms.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reset filters' })).toBeTruthy();
+  });
+
+  it('renders TableSkeleton and CardSkeleton', () => {
+    const { container } = render(
+      <div>
+        <TableSkeleton rows={3} />
+        <CardSkeleton height={100} />
+      </div>
+    );
+    expect(container.querySelectorAll('.MuiSkeleton-root').length).toBeGreaterThanOrEqual(4);
   });
 });

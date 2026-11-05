@@ -3,18 +3,18 @@ import PropTypes from 'prop-types';
 import { Divider, ListItem, ListItemIcon, ListItemText } from '@mui/material';
 import { Link, useLocation } from 'react-router-dom';
 import {
-  LayoutDashboard,
-  ListChecks,
-  Radio,
-  Boxes,
-  Upload,
-  Wand2,
+  Dashboard,
+  Checklist,
+  Sensors,
+  Inventory2,
+  CloudUpload,
+  AutoFixHigh,
   History,
-  SlidersHorizontal,
+  Tune,
   Search,
   Terminal,
-  Heart,
-} from 'lucide-react';
+  Favorite,
+} from '@mui/icons-material';
 import {
   DrawerHeader,
   Drawer,
@@ -28,14 +28,14 @@ import { Logo } from '../components/Logo';
 import { useAuth } from './hooks/useAuth';
 
 export const NAV_ITEMS = [
-  { title: 'Dashboard', icon: LayoutDashboard, to: '/dashboard' },
-  { title: 'Jobs', icon: ListChecks, to: '/jobs' },
-  { title: 'Requests', icon: Radio, to: '/requests' },
-  { title: 'Collections', icon: Boxes, to: '/collections', loginOnly: true },
-  { title: 'Process SKUs', icon: Upload, to: '/process-skus', loginOnly: true },
-  { title: 'Interactive', icon: Wand2, to: '/interactive' },
+  { title: 'Dashboard', icon: Dashboard, to: '/dashboard' },
+  { title: 'Jobs', icon: Checklist, to: '/jobs' },
+  { title: 'Requests', icon: Sensors, to: '/requests' },
+  { title: 'Collections', icon: Inventory2, to: '/collections', loginOnly: true },
+  { title: 'Process SKUs', icon: CloudUpload, to: '/process-skus', loginOnly: true },
+  { title: 'Interactive', icon: AutoFixHigh, to: '/interactive' },
   { title: 'SKU Results', icon: History, to: '/sku-results' },
-  { title: 'Rules Engine', icon: SlidersHorizontal, to: '/rules', loginOnly: true },
+  { title: 'Rules Engine', icon: Tune, to: '/rules', loginOnly: true },
   { title: 'Catalog Search', icon: Search, to: '/catalog' },
   { title: 'Logs', icon: Terminal, to: '/logs' },
 ];
@@ -54,7 +54,13 @@ export default function SkuSidebar() {
       <StyledList>
         {NAV_ITEMS.filter((item) => (signedIn || !item.loginOnly) && (isAdmin || !item.adminOnly)).map(
           ({ title, icon: Icon, to }) => (
-            <SidebarItem key={to} title={title} icon={<Icon size="16px" />} linkTo={to} active={isActive(to)} />
+            <SidebarItem
+              key={to}
+              title={title}
+              icon={<Icon sx={{ fontSize: 18 }} />}
+              linkTo={to}
+              active={isActive(to)}
+            />
           )
         )}
       </StyledList>
@@ -73,7 +79,7 @@ export default function SkuSidebar() {
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
               Made with
-              <Heart size={20} strokeWidth={2} color="#ef4444" fill="#ef4444" />
+              <Favorite sx={{ fontSize: 18, color: '#ef4444' }} />
               for
             </span>
             <img

@@ -10,7 +10,7 @@ import { Logo } from '../components/Logo';
 import { IconModal } from './components/ui';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getModelsStatus, loadModels } from './api';
-import { Play, CheckCircle, BrainCircuit } from 'lucide-react';
+import { PlayArrow, CheckCircle, Psychology } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 
 function getPageName(pathname) {
@@ -166,7 +166,7 @@ export default function Layout() {
                 size="small"
                 color="success"
                 disabled
-                startIcon={<CheckCircle size={14} />}
+                startIcon={<CheckCircle sx={{ fontSize: 14 }} />}
                 sx={{
                   textTransform: 'none',
                   fontWeight: 600,
@@ -187,7 +187,7 @@ export default function Layout() {
                 size="small"
                 color="primary"
                 onClick={() => loadMutation.mutate()}
-                startIcon={<Play size={14} />}
+                startIcon={<PlayArrow sx={{ fontSize: 14 }} />}
                 sx={{
                   textTransform: 'none',
                   fontWeight: 600,
@@ -213,7 +213,7 @@ export default function Layout() {
       <IconModal
         open={showLoadPrompt}
         onClose={() => setShowLoadPrompt(false)}
-        icon={BrainCircuit}
+        icon={Psychology}
         title="Load ML models?"
         description={
           <>
@@ -229,7 +229,7 @@ export default function Layout() {
             <Button
               variant="contained"
               fullWidth
-              startIcon={<Play size={16} />}
+              startIcon={<PlayArrow sx={{ fontSize: 16 }} />}
               onClick={() => {
                 setShowLoadPrompt(false);
                 loadMutation.mutate();

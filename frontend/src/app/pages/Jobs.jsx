@@ -1,21 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  Box,
-  IconButton,
-  Tooltip,
-  ToggleButtonGroup,
-  ToggleButton,
   Alert,
+  Box,
+  Button,
+  Chip,
+  IconButton,
   Table,
   TableCell,
-  TableRow,
   TablePagination,
-  Typography,
+  TableRow,
+  ToggleButton,
+  ToggleButtonGroup,
+  Tooltip,
 } from '@mui/material';
-import { XCircle, RotateCw, RefreshCw } from 'lucide-react';
+import { PendingActions, PlayArrow, Refresh, Replay, Cancel } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
-import { PageContainer, PageHeader, StatusChip, ConfirmDialog } from '../components/ui';
+import { ConfirmDialog, EmptyState, PageContainer, PageHeader, StatusChip } from '../components/ui';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getJobs, cancelJob, retryJob } from '../api';
 import JobDetailModal from './JobDetailModal';
@@ -117,12 +118,13 @@ export default function Jobs() {
         title="Jobs"
         subtitle="Batch runs, CSV uploads, and retries. Click a row for live detail."
         actions={
-          <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
+          <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
             <ToggleButtonGroup
               size="small"
               value={filter}
               exclusive
               onChange={(e, v) => v && setFilter(v)}
+              aria-label="Filter jobs by status"
               sx={{ flexWrap: 'wrap' }}
             >
               {STATUS_FILTERS.map((s) => (
@@ -132,9 +134,17 @@ export default function Jobs() {
               ))}
             </ToggleButtonGroup>
             <Tooltip title="Refresh Jobs">
-              <IconButton aria-label="Refresh Jobs" onClick={() => refetch()} disabled={isLoading || isFetching}>
-                <RefreshCw size={18} className={isFetching ? 'animate-spin' : ''} />
-              </IconButton>
+              <span>
+                <IconButton
+                  aria-label="Refresh Jobs"
+                  onClick={() => refetch()}
+                  disabled={isLoading || isFetching}
+                  size="small"
+                  sx={{ border: (t) => `1px solid ${t.palette.divider}`, p: 0.8 }}
+                >
+                  <Refresh sx={{ fontSize: 17 }} className={isFetching ? 'animate-spin' : ''} />
+                </IconButton>
+              </span>
             </Tooltip>
           </Box>
         }
@@ -167,10 +177,39 @@ export default function Jobs() {
                 <TableSkeleton columns={9} rows={5} />
               ) : serverJobs.length === 0 ? (
                 <StyledTableRow>
-                  <TableCell colSpan={9} align="center">
-                    <Typography variant="body2" color="text.secondary">
-                      No jobs found.
-                    </Typography>
+                  <TableCell colSpan={9} sx={{ p: 0, border: 'none' }}>
+                    <EmptyState
+                      icon={PendingActions}
+                      title={filter === 'all' ? 'No jobs found' : `No ${filter} jobs`}
+                      description={
+                        filter === 'all'
+                          ? 'There are no batch SKU processing jobs recorded yet. Upload a batch to get started.'
+                          : `There are currently no jobs with status "${filter}". Try selecting a different filter.`
+                      }
+                      action={
+                        filter === 'all' ? (
+                          <Button
+                            variant="contained"
+                            size="small"
+                            startIcon={<PlayArrow sx={{ fontSize: 16 }} />}
+                            onClick={() => navigate('/process-skus')}
+                            sx={{ textTransform: 'none', fontWeight: 600 }}
+                          >
+                            Process new SKUs
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            onClick={() => setFilter('all')}
+                            sx={{ textTransform: 'none', fontWeight: 600 }}
+                          >
+                            Show all jobs
+                          </Button>
+                        )
+                      }
+                      minHeight={260}
+                    />
                   </TableCell>
                 </StyledTableRow>
               ) : (
@@ -200,18 +239,37 @@ export default function Jobs() {
                           });
                         }
                       }}
-                      sx={{ cursor: 'pointer' }}
+                      sx={{ cursor: 'pointer', transition: 'background-color 150ms ease' }}
                     >
-                      <TableCell>{row.id}</TableCell>
-                      <TableCell>{row.target_sheet || row.sheet_name || 'N/A'}</TableCell>
-                      <TableCell sx={{ textTransform: 'capitalize' }}>{row.domain}</TableCell>
+                      <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600, fontSize: '0.85rem' }}>
+                        {row.id}
+                      </TableCell>
+                      <TableCell sx={{ fontWeight: 500, maxWidth: 220 }} noWrap>
+                        <Tooltip title={row.target_sheet || row.sheet_name || 'N/A'}>
+                          <span>{row.target_sheet || row.sheet_name || 'N/A'}</span>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell sx={{ textTransform: 'capitalize' }}>
+                        <Chip
+                          size="small"
+                          label={row.domain || 'All'}
+                          variant="outlined"
+                          sx={{ fontWeight: 500, height: 22, fontSize: '0.75rem' }}
+                        />
+                      </TableCell>
                       <TableCell sx={{ textTransform: 'capitalize' }}>{row.task || row.type}</TableCell>
                       <TableCell>
                         <StatusChip status={row.status} />
                       </TableCell>
-                      <TableCell align="right">{row.total_items ?? '-'}</TableCell>
-                      <TableCell align="right">{row.high_conf ?? '-'}</TableCell>
-                      <TableCell align="right">{fmtDuration(row.duration_minutes)}</TableCell>
+                      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
+                        {row.total_items?.toLocaleString() ?? '-'}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
+                        {row.high_conf?.toLocaleString() ?? '-'}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {fmtDuration(row.duration_minutes)}
+                      </TableCell>
                       <TableCell align="right" onClick={(e) => e.stopPropagation()}>
                         <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
                           <Tooltip title={canCancel ? 'Cancel job' : 'Nothing to cancel'}>
@@ -229,7 +287,7 @@ export default function Jobs() {
                                   });
                                 }}
                               >
-                                <XCircle size={17} />
+                                <Cancel sx={{ fontSize: 17 }} />
                               </IconButton>
                             </span>
                           </Tooltip>
@@ -248,7 +306,7 @@ export default function Jobs() {
                                   });
                                 }}
                               >
-                                <RotateCw size={16} />
+                                <Replay sx={{ fontSize: 16 }} />
                               </IconButton>
                             </Tooltip>
                           )}

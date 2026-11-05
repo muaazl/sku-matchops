@@ -12,7 +12,7 @@ import {
   Switch,
   CircularProgress,
 } from '@mui/material';
-import { Download, RefreshCw, Search, Terminal as TerminalIcon } from 'lucide-react';
+import { Download, Refresh, Search, Terminal as TerminalIcon } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import { PageContainer, PageHeader } from '../components/ui';
 import { getLogs } from '../api';
@@ -114,7 +114,7 @@ export default function Logs() {
             <Button
               variant="outlined"
               color="inherit"
-              startIcon={<Download size={15} />}
+              startIcon={<Download sx={{ fontSize: 15 }} />}
               onClick={handleDownload}
               disabled={!logsText}
             >
@@ -122,7 +122,7 @@ export default function Logs() {
             </Button>
             <Button
               variant="contained"
-              startIcon={isLoading ? <CircularProgress size={16} color="inherit" /> : <RefreshCw size={15} />}
+              startIcon={isLoading ? <CircularProgress size={16} color="inherit" /> : <Refresh sx={{ fontSize: 15 }} />}
               onClick={() => fetchLogs()}
               disabled={isLoading}
             >
@@ -159,7 +159,7 @@ export default function Logs() {
               input: {
                 startAdornment: (
                   <Box sx={{ color: 'text.secondary', mr: 1, display: 'flex', alignItems: 'center' }}>
-                    <Search size={16} />
+                    <Search sx={{ fontSize: 16 }} />
                   </Box>
                 ),
               },
@@ -201,7 +201,7 @@ export default function Logs() {
             }}
           >
             <Stack direction="row" spacing={1} alignItems="center">
-              <TerminalIcon size={16} color="#94a3b8" />
+              <TerminalIcon sx={{ fontSize: 16, color: '#94a3b8' }} />
               <Typography variant="caption" sx={{ fontFamily: 'monospace', color: '#94a3b8', fontWeight: 600 }}>
                 console.log
               </Typography>
@@ -240,15 +240,29 @@ export default function Logs() {
               <Box
                 sx={{
                   display: 'flex',
+                  flexDirection: 'column',
                   justifyContent: 'center',
                   alignItems: 'center',
                   height: '350px',
                   color: 'text.secondary',
+                  gap: 1.5,
                 }}
               >
-                <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                  {isLoading ? 'Loading logs...' : 'No logs found.'}
-                </Typography>
+                {isLoading ? (
+                  <>
+                    <CircularProgress size={28} />
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                      Streaming logs...
+                    </Typography>
+                  </>
+                ) : (
+                  <>
+                    <TerminalIcon sx={{ fontSize: 32, opacity: 0.6 }} />
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                      {filterQuery ? 'No log lines matched your filter query.' : 'No log lines available.'}
+                    </Typography>
+                  </>
+                )}
               </Box>
             ) : (
               parsedLines.map((line) => (
