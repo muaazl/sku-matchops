@@ -664,7 +664,7 @@ export default function SkuResults() {
                   fmtPct(selectedSku.confidence) || '—',
                 ],
               ];
-            })()}
+            })()
               .filter(([, v]) => v !== null && v !== undefined)
               .map(([k, v]) => (
                 <Box key={k} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.7 }}>

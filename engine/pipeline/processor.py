@@ -106,7 +106,7 @@ def _apply_template_tag_enrichment(
                     if mode == "classifier":
                         results[i]["bt_status"] = "AUTO"
                         results[i]["bt_confidence"] = max(
-                            results[i].get("bt_confidence", 0.0), 0.95
+                            results[i].get("bt_confidence") or 0.0, 0.95
                         )
                     elif mode == "pipeline":
                         results[i]["bt_status"] = "High Confidence"
@@ -126,7 +126,7 @@ def _apply_template_tag_enrichment(
                     if mode == "classifier":
                         results[i]["gk_status"] = "AUTO"
                         results[i]["gk_confidence"] = max(
-                            results[i].get("gk_confidence", 0.0), 0.95
+                            results[i].get("gk_confidence") or 0.0, 0.95
                         )
                     elif mode == "pipeline":
                         results[i]["gk_status"] = "High Confidence"
@@ -586,22 +586,22 @@ def process_request(
                     row["escalated"] = True
 
                     matcher_norm = min(float(row.get("score", 0.0)), 1.0)
-                    clf_confidence = float(clf.get("bt_confidence", 0.0))
+                    clf_confidence = float(clf.get("bt_confidence") or 0.0)
                     classifier_won = clf_confidence > matcher_norm
                     row["pipeline_source"] = "Classifier" if classifier_won else "Matcher"
 
                     if classifier_won:
                         row["suggested_bt"] = str(clf.get("suggested_bt", ""))
-                        row["bt_confidence"] = float(clf.get("bt_confidence", 0.0))
+                        row["bt_confidence"] = float(clf.get("bt_confidence") or 0.0)
                         row["bt_status"] = str(clf.get("bt_status", ""))
                         row["suggested_gk"] = str(clf.get("suggested_gk", ""))
-                        row["gk_confidence"] = float(clf.get("gk_confidence", 0.0))
+                        row["gk_confidence"] = float(clf.get("gk_confidence") or 0.0)
                         row["gk_status"] = str(clf.get("gk_status", ""))
                         row["suggested_region"] = str(
                             clf.get("suggested_region", clf.get("suggested_category", ""))
                         )
                         row["region_confidence"] = float(
-                            clf.get("region_confidence", clf.get("category_confidence", 0.0))
+                            clf.get("region_confidence") or clf.get("category_confidence") or 0.0
                         )
                         row["region_status"] = str(
                             clf.get("region_status", clf.get("category_status", ""))

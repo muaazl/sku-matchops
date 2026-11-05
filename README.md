@@ -172,11 +172,12 @@ If you prefer running the Python and Node services directly on your host machine
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# Install CPU PyTorch first (fast & lightweight)
+# Install CPU PyTorch first (fast & lightweight, required for ML engine)
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# Install service dependencies
-uv pip install -r requirements.txt
+# Install dependencies across all services:
+uv pip install -r backend/requirements.txt   # FastAPI Gateway, DB, Rules Engine
+uv pip install -r engine/requirements.txt    # ML Engine, Qdrant, ONNX Runtime
 
 # Ingest sample catalog data & prepare ONNX models
 python scripts/catalog/sync.py --sample

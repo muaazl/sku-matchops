@@ -175,11 +175,13 @@ class TestDefectFixes:
         pip_res = process_request(task="pipeline", domain="food", skus=[sku])["results"][0]
         # Verify confidence is clamped in [0.0, 1.0]
         assert 0.0 <= pip_res.get("score", 0.0) <= 1.0
-        assert 0.0 <= pip_res.get("bt_confidence", 0.0) <= 1.0
-
         if pip_res.get("pipeline_source") == "Classifier":
+            assert pip_res.get("bt_confidence") is not None
+            assert 0.0 <= pip_res["bt_confidence"] <= 1.0
             notes = pip_res.get("logic_notes", "")
             assert "Classifier:" in notes or "Escalated from matcher" in notes
+        else:
+            assert pip_res.get("bt_confidence") is None
 
         # Test SKU where matcher score is 0 / Low so classifier wins escalation
         sku_unknown = {
@@ -192,6 +194,8 @@ class TestDefectFixes:
         if pip_res2.get("pipeline_source") == "Classifier":
             notes2 = pip_res2.get("logic_notes", "")
             assert "Escalated from matcher" in notes2 or "Classifier:" in notes2
+            assert pip_res2.get("bt_confidence") is not None
+            assert 0.0 <= pip_res2["bt_confidence"] <= 1.0
 
     def test_cross_encoder_empty_pairs_and_sentinel_handling(self):
         """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if models fail."""
