@@ -1,6 +1,7 @@
 import pytest
-from engine.classification.tagger import compute_weighted_confidence
+
 from backend.app.services.persistence import build_processed_sku_rows
+from engine.classification.tagger import compute_weighted_confidence
 
 
 def test_compute_weighted_confidence_all_tags():
@@ -29,15 +30,17 @@ def test_build_processed_sku_rows_matcher():
         domain="food",
         task="pipeline",
         input_skus=[{"name": "Cojo Cojo Mango Juice Drink 320ml"}],
-        results=[{
-            "pipeline_source": "Matcher",
-            "matched_catalog_name": "Mango Drink",
-            "score": 0.94,
-            "bt_confidence": 0.94,  # Even if upstream sent 0.94, persistence enforces None
-            "gk_confidence": 0.94,
-            "region_confidence": 0.94,
-            "suggested_bt": "Fruit Juice",
-        }],
+        results=[
+            {
+                "pipeline_source": "Matcher",
+                "matched_catalog_name": "Mango Drink",
+                "score": 0.94,
+                "bt_confidence": 0.94,  # Even if upstream sent 0.94, persistence enforces None
+                "gk_confidence": 0.94,
+                "region_confidence": 0.94,
+                "suggested_bt": "Fruit Juice",
+            }
+        ],
         rule_version="v1",
     )
     assert len(rows) == 1
@@ -57,17 +60,19 @@ def test_build_processed_sku_rows_classifier_escalated():
         domain="food",
         task="pipeline",
         input_skus=[{"name": "Kinder Bueno Milk 43g"}],
-        results=[{
-            "pipeline_source": "Classifier",
-            "matched_catalog_name": "Kinder Bueno",
-            "score": 0.45,
-            "bt_confidence": 0.83,
-            "gk_confidence": 0.92,
-            "region_confidence": 1.00,
-            "suggested_bt": "Chocolate",
-            "suggested_gk": "Wafer",
-            "suggested_region": "Confectionery",
-        }],
+        results=[
+            {
+                "pipeline_source": "Classifier",
+                "matched_catalog_name": "Kinder Bueno",
+                "score": 0.45,
+                "bt_confidence": 0.83,
+                "gk_confidence": 0.92,
+                "region_confidence": 1.00,
+                "suggested_bt": "Chocolate",
+                "suggested_gk": "Wafer",
+                "suggested_region": "Confectionery",
+            }
+        ],
         rule_version="v1",
     )
     assert len(rows) == 1

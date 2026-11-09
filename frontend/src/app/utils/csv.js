@@ -1,5 +1,3 @@
-import * as XLSX from 'xlsx';
-
 /**
  * Parses raw CSV / TSV text handling quotes, escaped quotes, and newlines.
  * @param {string} text - The raw CSV/TSV input text.
@@ -94,10 +92,12 @@ export function mapRows(headers, rows) {
  * Parses an uploaded Excel workbook (.xlsx/.xls) into one { headers, rows } entry per
  * non-empty sheet/tab, in the same shape parseCSV produces — so each tab can be fed
  * straight into mapRows() and treated exactly like an independent uploaded CSV.
+ * Dynamically imports SheetJS (`xlsx`) so non-Excel users never download ~330 KB upfront.
  * @param {ArrayBuffer} arrayBuffer - The raw workbook file contents.
- * @return {Record<string, { headers: string[], rows: Array<Object.<string, string>> }>}
+ * @return {Promise<Record<string, { headers: string[], rows: Array<Object.<string, string>> }>>}
  */
-export function parseExcelWorkbook(arrayBuffer) {
+export async function parseExcelWorkbook(arrayBuffer) {
+  const XLSX = await import('xlsx');
   const workbook = XLSX.read(arrayBuffer, { type: 'array' });
   const result = {};
 

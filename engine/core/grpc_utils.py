@@ -72,8 +72,10 @@ class GrpcContextInterceptor(grpc.ServerInterceptor):
 def is_not_found_error(err: Exception) -> bool:
     if isinstance(err, KeyError) or getattr(err, "status_code", None) == 404:
         return True
+    if isinstance(err, grpc.RpcError) and err.code() == grpc.StatusCode.NOT_FOUND:
+        return True
     msg = str(err).lower()
-    return isinstance(err, ValueError) and "collection" in msg and "not found" in msg
+    return "collection" in msg and ("not found" in msg or "doesn't exist" in msg)
 
 
 def abort_rpc_error(context, logger: logging.Logger, op: str, err: Exception) -> None:

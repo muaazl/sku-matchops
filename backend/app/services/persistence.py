@@ -123,11 +123,17 @@ def build_processed_sku_rows(
                 "logic_notes": res.get("logic_notes", ""),
                 "matched_catalog_name": res.get("matched_catalog_name", ""),
                 "match_score": _to_float(res.get("score", 0.0)),
-                "bt_confidence": _to_float(res.get("bt_confidence")) if source == "Classifier" else None,
-                "gk_confidence": _to_float(res.get("gk_confidence")) if source == "Classifier" else None,
+                "bt_confidence": _to_float(res.get("bt_confidence"))
+                if source == "Classifier"
+                else None,
+                "gk_confidence": _to_float(res.get("gk_confidence"))
+                if source == "Classifier"
+                else None,
                 "region_confidence": _to_float(
                     res.get("region_confidence", res.get("category_confidence"))
-                ) if source == "Classifier" else None,
+                )
+                if source == "Classifier"
+                else None,
                 "input_price": _to_float(input_price),
                 "input_description": input_description,
                 "input_category": input_category,

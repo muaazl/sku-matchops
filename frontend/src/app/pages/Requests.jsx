@@ -15,7 +15,6 @@ import {
   TableCell,
   TableRow,
   CircularProgress,
-  Tooltip,
   TablePagination,
 } from '@mui/material';
 import { Refresh, InfoOutlined } from '@mui/icons-material';
@@ -200,7 +199,7 @@ export default function Requests() {
         title="Requests"
         subtitle="Audit log of inbound API requests. Click a row to inspect payload & response."
         actions={
-          <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center' }}>
+          <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', flexWrap: 'wrap' }}>
             <TextField
               size="small"
               placeholder="Filter by path…"
@@ -221,11 +220,31 @@ export default function Requests() {
                 </MenuItem>
               ))}
             </TextField>
-            <Tooltip title="Refresh Logs">
-              <IconButton onClick={() => refetch()} disabled={isLoading || isFetching} aria-label="Refresh requests">
-                <Refresh sx={{ fontSize: 18 }} className={isFetching ? 'animate-spin' : ''} />
-              </IconButton>
-            </Tooltip>
+            <Button
+              variant="outlined"
+              color="inherit"
+              size="small"
+              aria-label="Refresh Requests"
+              onClick={() => refetch()}
+              disabled={isLoading || isFetching}
+              startIcon={
+                <Refresh
+                  sx={{
+                    fontSize: 16,
+                    ...(isFetching && {
+                      '@keyframes spin': {
+                        from: { transform: 'rotate(0deg)' },
+                        to: { transform: 'rotate(360deg)' },
+                      },
+                      animation: 'spin 0.9s linear infinite',
+                    }),
+                  }}
+                />
+              }
+              sx={{ height: 40, px: 1.75, flexShrink: 0 }}
+            >
+              Refresh
+            </Button>
           </Box>
         }
       />

@@ -53,7 +53,10 @@ def sync_host_directory(host_dir: str, target_dir: str, label: str):
 
     if synced > 0:
         elapsed = time.time() - start
-        print(f"[SYNC] Synced {synced} {label} files from host to fast volume in {elapsed:.2f}s", flush=True)
+        print(
+            f"[SYNC] Synced {synced} {label} files from host to fast volume in {elapsed:.2f}s",
+            flush=True,
+        )
 
 
 def main():

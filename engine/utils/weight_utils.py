@@ -1,8 +1,12 @@
 import pandas as pd
 
 
+def _get_catalog_row(raw_catalog: pd.DataFrame | list[dict], idx: int):
+    return raw_catalog[idx] if isinstance(raw_catalog, list) else raw_catalog.iloc[idx]
+
+
 def resolve_weight_bypass_candidate(
-    raw_catalog: pd.DataFrame,
+    raw_catalog: pd.DataFrame | list[dict],
     cand_indices: list[int],
     input_w_data: tuple[float | None, str | None, str | None],
 ) -> tuple[int, str]:
@@ -24,7 +28,7 @@ def resolve_weight_bypass_candidate(
     min_diff_pct = float("inf")
 
     for c_idx in cand_indices:
-        cat_row = raw_catalog.iloc[c_idx]
+        cat_row = _get_catalog_row(raw_catalog, c_idx)
         catalog_w_data = cat_row.get("weight_val")
         if (
             catalog_w_data is not None
@@ -41,7 +45,7 @@ def resolve_weight_bypass_candidate(
 
     if best_match_idx is not None:
         selected_idx = best_match_idx
-        cat_row = raw_catalog.iloc[selected_idx]
+        cat_row = _get_catalog_row(raw_catalog, selected_idx)
         catalog_w_data = cat_row.get("weight_val")
         cat_val = catalog_w_data[0]
         if min_diff_pct < 1.0:
@@ -49,7 +53,7 @@ def resolve_weight_bypass_candidate(
         else:
             weight_reason = f" | Weight Mismatch ({int(in_val)} vs {int(cat_val)})"
     else:
-        cat_row = raw_catalog.iloc[selected_idx]
+        cat_row = _get_catalog_row(raw_catalog, selected_idx)
         catalog_w_data = cat_row.get("weight_val")
         if (
             catalog_w_data is not None

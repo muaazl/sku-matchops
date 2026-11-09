@@ -68,11 +68,14 @@ TASK_REALTIME_MAX_SKUS = 50
 TASK_MAX_RETRIES = 3
 # Retry delay after attempt n is BACKOFF * 2**(n-1) seconds
 TASK_RETRY_BACKOFF_SECONDS = 5.0
-# A worker must renew its lease within this window or the task is reclaimed
-TASK_LEASE_SECONDS = 120.0
+# A worker must renew its lease within this window or the task is reclaimed (heartbeat runs every lease/3)
+TASK_LEASE_SECONDS = float(os.getenv("TASK_LEASE_SECONDS", "30.0"))
 TASK_POLL_INTERVAL = 0.5
 
 # --- Qdrant Vector DB Settings ---
+QDRANT_GRPC_PORT = int(os.getenv("QDRANT_GRPC_PORT", "6334"))
+QDRANT_PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true"
+QDRANT_HNSW_ON_DISK = os.getenv("QDRANT_HNSW_ON_DISK", "false").lower() == "true"
 QDRANT_HNSW_M = 16
 QDRANT_HNSW_EF_CONSTRUCT = 100
 QDRANT_INDEXING_THRESHOLD = 10000

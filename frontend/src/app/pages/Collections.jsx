@@ -70,24 +70,26 @@ export default function Collections() {
     queryKey: ['collections'],
     queryFn: async () => {
       const data = await getCollections();
+      const preloadedDetails = data.details && typeof data.details === 'object' ? data.details : null;
       const details = await Promise.all(
         data.collections.map(async (name) => {
           try {
-            const info = await getCollection(name);
+            const info = preloadedDetails?.[name] ?? (await getCollection(name));
             const size = info.config?.params?.vectors?.dense?.size || info.config?.params?.vectors?.size || 1024;
-            const dist =
+            const rawDist =
               info.config?.params?.vectors?.dense?.distance || info.config?.params?.vectors?.distance || 'Cosine';
+            const dist = typeof rawDist === 'string' ? rawDist : String(rawDist);
             return {
               name,
               status: info.status || 'unknown',
-              vectors_count: info.vectors_count || 0,
-              points_count: info.points_count || 0,
-              segments_count: info.segments_count || 0,
+              vectors_count: info.indexed_vectors_count ?? info.vectors_count ?? 0,
+              points_count: info.points_count ?? 0,
+              segments_count: info.segments_count ?? 0,
               vector_size: size,
               distance: dist,
               disk_bytes: info.optimizer_status?.disk_bytes || 0,
               ram_bytes: info.optimizer_status?.ram_bytes || 0,
-              shards_count: 1,
+              shards_count: info.config?.params?.shard_number || 1,
               vectors_config: `dense, ${size}, ${dist}`,
             };
           } catch (e) {

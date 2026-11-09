@@ -3,8 +3,10 @@ import io
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import Connection, text
 
+from backend.app.core import config as app_config
 from backend.app.core.security import Principal, get_principal
 from backend.app.db.session import get_db_connection
 from backend.app.schemas.models import ProcessedSkuResponse
@@ -113,8 +115,13 @@ def export_history(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
+    if format != "csv":
+        raise HTTPException(
+            status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv."
+        )
+
     query = "SELECT * FROM processed_skus WHERE tenant_id = :tenant_id"
-    params = {"tenant_id": principal.tenant_id}
+    params: dict = {"tenant_id": principal.tenant_id}
 
     if ids:
         id_list = [i.strip() for i in ids.split(",") if i.strip()]
@@ -125,25 +132,43 @@ def export_history(
         # No explicit id filter: cap the export instead of dumping the entire table.
         query += " ORDER BY created_at DESC LIMIT 50000"
 
-    rows = db.execute(text(query), params).mappings().fetchall()
-
-    if format == "csv":
-        output = io.StringIO()
-        if rows:
-            writer = csv.DictWriter(output, fieldnames=dict(rows[0]).keys())
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({k: _sanitize_csv_cell(v) for k, v in dict(row).items()})
-
-        return Response(
-            content=output.getvalue(),
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=export.csv"},
+    def _csv_chunks():
+        buf = io.StringIO()
+        writer = None
+        exec_conn = (
+            db.execution_options(stream_results=True, max_row_buffer=2000)
+            if hasattr(db, "execution_options") and not app_config.USE_PGBOUNCER
+            else db
         )
-    else:
-        raise HTTPException(
-            status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv."
-        )
+        result = exec_conn.execute(text(query), params)
+        try:
+            mappings = result.mappings()
+            batches = (
+                mappings.partitions(2000)
+                if hasattr(mappings, "partitions")
+                else [mappings.fetchall()]
+            )
+            for partition in batches:
+                for row in partition:
+                    row_dict = dict(row)
+                    if writer is None:
+                        writer = csv.DictWriter(buf, fieldnames=row_dict.keys())
+                        writer.writeheader()
+                    writer.writerow({k: _sanitize_csv_cell(v) for k, v in row_dict.items()})
+                chunk = buf.getvalue()
+                if chunk:
+                    yield chunk
+                    buf.seek(0)
+                    buf.truncate(0)
+        finally:
+            if hasattr(result, "close"):
+                result.close()
+
+    return StreamingResponse(
+        _csv_chunks(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=export.csv"},
+    )
 
 
 @router.get("/processed-skus/{id}", response_model=ProcessedSkuResponse)

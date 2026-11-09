@@ -3,7 +3,7 @@ from sqlalchemy import text
 
 from backend.app.core.security import Principal, get_principal, require_admin
 from backend.app.db.session import get_engine
-from backend.app.grpc_server import _job_progress, clear_job_progress
+from backend.app.grpc_server import clear_job_progress, publish_job_event, set_job_progress
 from engine.pipeline.task_queue import TaskQueue, get_task_queue
 from engine.rules_engine.loader import snapshot_rules
 
@@ -63,7 +63,11 @@ def replay_dead_letter(task_id: str, principal: Principal = Depends(require_admi
             {"id": job_id},
         )
     clear_job_progress(job_id)
-    _job_progress[job_id] = 0.0
+    set_job_progress(job_id, pct=0.0, stage="queued", tenant_id=principal.tenant_id)
+    publish_job_event(
+        principal.tenant_id,
+        {"id": job_id, "status": "queued", "current_stage": "queued", "progress_pct": 0.0},
+    )
     return {"message": "Replay queued", "job_id": job_id, "task_id": new_task_id}
 
 

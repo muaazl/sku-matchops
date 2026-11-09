@@ -18,7 +18,7 @@ import { PendingActions, PlayArrow, Refresh, Replay, Cancel } from '@mui/icons-m
 import { useSnackbar } from 'notistack';
 import { ConfirmDialog, EmptyState, PageContainer, PageHeader, StatusChip } from '../components/ui';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getJobs, cancelJob, retryJob } from '../api';
+import { getJobs, cancelJob, retryJob, subscribeJobStream } from '../api';
 import JobDetailModal from './JobDetailModal';
 import { fmtDuration } from '../utils';
 import {
@@ -41,6 +41,7 @@ export default function Jobs() {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [modalJobId, setModalJobId] = useState(jobId || null);
+  const [sseFallback, setSseFallback] = useState(false);
 
   useEffect(() => {
     if (jobId) {
@@ -73,7 +74,8 @@ export default function Jobs() {
         ...(filter !== 'all' ? { status: filter } : {}),
       }),
     refetchInterval: (query) => {
-      // Poll if any jobs are running or queued
+      if (!sseFallback) return false;
+      // Poll fallback only when Redis/SSE is unavailable
       const d = query.state.data?.data;
       if (d && d.some((j) => j.status === 'running' || j.status === 'queued')) {
         return 3000;
@@ -84,6 +86,53 @@ export default function Jobs() {
 
   const serverJobs = jobsResponse.data;
   const totalJobs = jobsResponse.total;
+  const hasActiveJobs = serverJobs.some((j) => j.status === 'running' || j.status === 'queued');
+
+  useEffect(() => {
+    if (!hasActiveJobs || sseFallback) return undefined;
+    return subscribeJobStream('/jobs/stream', {
+      onMessage: (evt) => {
+        if (evt.type === 'snapshot' && Array.isArray(evt.jobs)) {
+          const byId = new Map(evt.jobs.map((j) => [String(j.id), j]));
+          let finishedDuringConnect = false;
+          queryClient.setQueriesData({ queryKey: ['jobs'] }, (old) => {
+            if (!old?.data) return old;
+            return {
+              ...old,
+              data: old.data.map((r) => {
+                const snap = byId.get(String(r.id));
+                if (
+                  snap &&
+                  (r.status === 'running' || r.status === 'queued') &&
+                  !['running', 'queued'].includes(snap.status)
+                ) {
+                  finishedDuringConnect = true;
+                }
+                return snap || r;
+              }),
+            };
+          });
+          if (finishedDuringConnect) {
+            queryClient.invalidateQueries({ queryKey: ['jobs'] });
+          }
+          return;
+        }
+        if (!evt.id) return;
+        queryClient.setQueriesData({ queryKey: ['jobs'] }, (old) =>
+          old?.data
+            ? {
+                ...old,
+                data: old.data.map((r) => (String(r.id) === String(evt.id) ? { ...r, ...evt } : r)),
+              }
+            : old
+        );
+        if (['queued', 'completed', 'failed', 'cancelled'].includes(evt.status)) {
+          queryClient.invalidateQueries({ queryKey: ['jobs'] });
+        }
+      },
+      onError: () => setSseFallback(true),
+    });
+  }, [hasActiveJobs, sseFallback, queryClient]);
 
   const cancelMutation = useMutation({
     mutationFn: cancelJob,
@@ -128,24 +177,36 @@ export default function Jobs() {
               sx={{ flexWrap: 'wrap' }}
             >
               {STATUS_FILTERS.map((s) => (
-                <ToggleButton key={s} value={s} sx={{ textTransform: 'capitalize', px: 1.5 }}>
+                <ToggleButton key={s} value={s} sx={{ textTransform: 'capitalize', px: 1.5, height: 40 }}>
                   {s}
                 </ToggleButton>
               ))}
             </ToggleButtonGroup>
-            <Tooltip title="Refresh Jobs">
-              <span>
-                <IconButton
-                  aria-label="Refresh Jobs"
-                  onClick={() => refetch()}
-                  disabled={isLoading || isFetching}
-                  size="small"
-                  sx={{ border: (t) => `1px solid ${t.palette.divider}`, p: 0.8 }}
-                >
-                  <Refresh sx={{ fontSize: 17 }} className={isFetching ? 'animate-spin' : ''} />
-                </IconButton>
-              </span>
-            </Tooltip>
+            <Button
+              variant="outlined"
+              color="inherit"
+              size="small"
+              aria-label="Refresh Jobs"
+              onClick={() => refetch()}
+              disabled={isLoading || isFetching}
+              startIcon={
+                <Refresh
+                  sx={{
+                    fontSize: 16,
+                    ...(isFetching && {
+                      '@keyframes spin': {
+                        from: { transform: 'rotate(0deg)' },
+                        to: { transform: 'rotate(360deg)' },
+                      },
+                      animation: 'spin 0.9s linear infinite',
+                    }),
+                  }}
+                />
+              }
+              sx={{ height: 40, px: 1.75, flexShrink: 0 }}
+            >
+              Refresh
+            </Button>
           </Box>
         }
       />

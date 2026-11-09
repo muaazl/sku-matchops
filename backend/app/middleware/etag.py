@@ -12,8 +12,8 @@ ETAG_MAX_BODY_SIZE = 256 * 1024  # 256 KB
 
 class ETagMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # We only apply ETags to GET requests
-        if request.method != "GET":
+        # We only apply ETags to non-streaming GET requests
+        if request.method != "GET" or request.url.path.endswith("/stream"):
             return await call_next(request)
 
         response = await call_next(request)

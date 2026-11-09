@@ -342,7 +342,7 @@ export default function ProcessSKUs() {
       try {
         if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
           const buf = await readFileAsArrayBuffer(f);
-          const sheets = parseExcelWorkbook(buf);
+          const sheets = await parseExcelWorkbook(buf);
           const sheetNames = Object.keys(sheets);
           if (sheetNames.length === 0) {
             jobs.push({

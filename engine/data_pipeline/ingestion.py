@@ -439,7 +439,8 @@ class DataIngestion:
         catalog_pl = pl.read_csv(catalog_text.encode("utf-8"), ignore_errors=True)
         catalog_pl = catalog_pl.select(
             [
-                c for c in catalog_pl.columns
+                c
+                for c in catalog_pl.columns
                 if c.strip() and not c.startswith("Unnamed") and not c.startswith("_duplicated_")
             ]
         )

@@ -35,7 +35,7 @@ class EmbeddingEngine:
             opts.add_session_config_entry("session.use_mmap_for_weights", "1")
             opts.enable_cpu_mem_arena = False
             opts.intra_op_num_threads = config.MAX_CPU_CORES
-            opts.inter_op_num_threads = config.MAX_CPU_CORES
+            opts.inter_op_num_threads = 1
             return opts
 
         def _load_bi_encoder():
@@ -63,9 +63,7 @@ class EmbeddingEngine:
                         local_files_only=True,
                     )
                 except Exception:
-                    self.tokenizer = AutoTokenizer.from_pretrained(
-                        config.BI_ENCODER_MODEL
-                    )
+                    self.tokenizer = AutoTokenizer.from_pretrained(config.BI_ENCODER_MODEL)
 
                 self.bi_session = ort.InferenceSession(
                     config.BI_ENCODER_ONNX,
@@ -119,6 +117,7 @@ class EmbeddingEngine:
                 self.rerank_tokenizer = AutoTokenizer.from_pretrained(config.CROSS_ENCODER_MODEL)
 
             # 2. Load ONNX Session
+            self._cross_is_int8 = str(config.CROSS_ENCODER_ONNX).lower().endswith("_int8.onnx")
             try:
                 self.cross_session = ort.InferenceSession(
                     config.CROSS_ENCODER_ONNX,
@@ -127,6 +126,7 @@ class EmbeddingEngine:
                 )
                 logger.info("[EMBED] Cross-Encoder ONNX loaded.")
             except Exception as e:
+                self._cross_is_int8 = False
                 logger.warning(
                     f"[EMBED] Cross-Encoder ONNX unavailable ({e}); falling back to sentence-transformers."
                 )
@@ -255,7 +255,7 @@ class EmbeddingEngine:
                 resolved[text] = entry
                 self._str_cache[text] = entry
 
-            max_cache_size = int(os.getenv("STR_CACHE_MAX_SIZE", "10000"))
+            max_cache_size = int(os.getenv("STR_CACHE_MAX_SIZE", "25000"))
             while len(self._str_cache) > max_cache_size:
                 self._str_cache.popitem(last=False)
 
@@ -293,19 +293,75 @@ class EmbeddingEngine:
             return np.full(len(pairs), -10.0, dtype=np.float32)
 
         logger.debug(f"[EMBED] Scoring {len(pairs)} pairs with Cross-Encoder...")
-        scores = []
-        for i in range(0, len(pairs), batch_size):
-            batch = pairs[i : i + batch_size]
-            texts1 = [p[0] for p in batch]
-            texts2 = [p[1] for p in batch]
-            inputs = self.rerank_tokenizer(
-                texts1, texts2, return_tensors="np", padding=True, truncation=True, max_length=512
-            )
-            ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
-            with ONNX_INFERENCE_SECONDS.labels(model="cross_encoder").time():
-                logits = self.cross_session.run(None, ort_inputs)[0]
-            scores.extend(logits.flatten().tolist())
-        return np.array(scores, dtype=np.float32)
+        # Dynamic INT8 ONNX quantizes activations per-batch, so preserve exact batch composition
+        # when running INT8; for FP32 ONNX sessions, deduplicate + LRU-cache (t1, t2) pairs.
+        is_int8 = getattr(
+            self,
+            "_cross_is_int8",
+            str(config.CROSS_ENCODER_ONNX).lower().endswith("_int8.onnx"),
+        )
+        if is_int8:
+            scores = []
+            for i in range(0, len(pairs), batch_size):
+                batch = pairs[i : i + batch_size]
+                texts1 = [p[0] for p in batch]
+                texts2 = [p[1] for p in batch]
+                inputs = self.rerank_tokenizer(
+                    texts1,
+                    texts2,
+                    return_tensors="np",
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                )
+                ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
+                with ONNX_INFERENCE_SECONDS.labels(model="cross_encoder").time():
+                    logits = self.cross_session.run(None, ort_inputs)[0]
+                scores.extend(logits.flatten().tolist())
+            return np.array(scores, dtype=np.float32)
+
+        if not hasattr(self, "_ce_cache"):
+            self._ce_cache = OrderedDict()
+
+        resolved: dict[tuple[str, str], float] = {}
+        missing_pairs: list[tuple[str, str]] = []
+        missing_seen: set[tuple[str, str]] = set()
+        for p in pairs:
+            key = (p[0], p[1])
+            if key in self._ce_cache:
+                self._ce_cache.move_to_end(key)
+                resolved[key] = self._ce_cache[key]
+            elif key not in missing_seen:
+                missing_seen.add(key)
+                missing_pairs.append(key)
+
+        if missing_pairs:
+            new_scores: list[float] = []
+            for i in range(0, len(missing_pairs), batch_size):
+                batch = missing_pairs[i : i + batch_size]
+                texts1 = [p[0] for p in batch]
+                texts2 = [p[1] for p in batch]
+                inputs = self.rerank_tokenizer(
+                    texts1,
+                    texts2,
+                    return_tensors="np",
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                )
+                ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
+                with ONNX_INFERENCE_SECONDS.labels(model="cross_encoder").time():
+                    logits = self.cross_session.run(None, ort_inputs)[0]
+                new_scores.extend(logits.flatten().tolist())
+            max_ce_cache = int(os.getenv("CE_CACHE_MAX_SIZE", "25000"))
+            for key, val in zip(missing_pairs, new_scores):
+                fval = float(val)
+                resolved[key] = fval
+                self._ce_cache[key] = fval
+            while len(self._ce_cache) > max_ce_cache:
+                self._ce_cache.popitem(last=False)
+
+        return np.array([resolved[(p[0], p[1])] for p in pairs], dtype=np.float32)
 
     @staticmethod
     def predict_centroids_temperature(

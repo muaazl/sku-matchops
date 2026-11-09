@@ -21,6 +21,7 @@ from engine.core.resource_loader import (
     get_ner_engine,
     get_pipeline,
 )
+from engine.nlp.text_cleaner import TextPipeline
 from engine.rules_engine import run_rules_engine
 from engine.templates.template_suggest import suggest_tags_from_template
 
@@ -173,7 +174,9 @@ def process_request(
         ner_engine = get_ner_engine(domain)
         if ner_engine:
             sku_texts = [
-                f"{sku.get('name', '')} {sku.get('description', '')} {sku.get('category', '')}".strip()
+                TextPipeline.build_ner_input(
+                    sku.get("name", ""), sku.get("description", ""), sku.get("category", "")
+                )
                 for sku in skus
             ]
             ner_results = ner_engine.batch_extract_entities(sku_texts)
@@ -350,9 +353,6 @@ def process_request(
                 progress_callback=clf_progress_cb,
             )
             results.extend(chunk_results)
-            import gc
-
-            gc.collect()
 
         stage_timings["tag_all_skus_ms"] = round((time.perf_counter() - t_clf_tag_start) * 1000, 2)
 
@@ -615,10 +615,6 @@ def process_request(
                             f"Escalated from matcher [{prior}] -> {clf_note}" if prior else clf_note
                         )
 
-                import gc
-
-                gc.collect()
-
             stage_timings["pipeline_escalated_clf_ms"] = round(
                 (time.perf_counter() - t_esc_clf_start) * 1000, 2
             )
@@ -661,9 +657,7 @@ def process_request(
                 "category": row.get("suggested_region") if domain == config.DOMAIN_MARKET else None,
                 "price": sku.get("price", 0.0),
                 "confidence": conf_val,
-                "match_source": "Classifier"
-                if is_clf
-                else "Matcher",
+                "match_source": "Classifier" if is_clf else "Matcher",
                 "matched_sku": row.get("matched_catalog_name", ""),
                 "reasoning": row.get("logic_notes", ""),
             }

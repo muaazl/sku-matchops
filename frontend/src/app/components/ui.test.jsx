@@ -59,8 +59,9 @@ vi.mock('../api', () => ({
   ]),
   replayDeadLetter: vi.fn(async () => ({ job_id: '42', task_id: 'new-task' })),
   login: vi.fn(),
-  getModelsStatus: vi.fn(async () => ({ all_models_ready: true })),
+  getModelsStatus: vi.fn(async () => ({ loaded: true, all_models_ready: true })),
   loadModels: vi.fn(),
+  subscribeJobStream: vi.fn(() => () => {}),
 }));
 
 const ROLES = {
@@ -145,6 +146,14 @@ describe('Top bar session control', () => {
       useStore.getState().promptLoginOn401();
     });
     expect(screen.queryByLabelText('Username')).toBeNull();
+  });
+
+  it('does not show a startup Load ML models popup when models are unloaded', async () => {
+    api.getModelsStatus.mockResolvedValueOnce({ loaded: false, loading_in_progress: false });
+    renderLayout('admin');
+    const header = screen.getByRole('banner');
+    expect(await within(header).findByRole('button', { name: 'Load Models' })).toBeTruthy();
+    expect(screen.queryByText('Load ML models?')).toBeNull();
   });
 });
 

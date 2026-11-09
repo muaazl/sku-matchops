@@ -20,7 +20,7 @@ from engine import config
 from engine.core.grpc_utils import GRPC_CHANNEL_OPTIONS, grpc_metadata, result_to_pipeline_proto
 from engine.core.observability import SKUS_PROCESSED, trace_context
 from engine.pipeline.processor import process_request
-from engine.pipeline.task_queue import get_task_queue, run_worker
+from engine.pipeline.task_queue import get_task_queue, release_active_tasks, run_worker
 from engine.pipeline.uploader import process_upload
 from engine.protos import engine_service_pb2 as pb2
 from engine.protos import engine_service_pb2_grpc as pb2_grpc
@@ -30,7 +30,7 @@ logger = logging.getLogger("matchops.engine.worker")
 
 _batch_queue = queue.Queue()
 _cancelled_jobs: set[str] = set()
-_worker_thread: threading.Thread | None = None
+_worker_threads: list[threading.Thread] = []
 
 # Persistent HTTP session used exclusively for external Google Apps Script webhook delivery.
 # Apps Script /exec randomly hangs ~30% of requests; doPost overwrites the same cells, so re-POSTing is safe.
@@ -49,7 +49,40 @@ _stub_lock = threading.Lock()
 _callback_channels: dict[str, grpc.Channel] = {}
 _callback_stubs: dict[str, pb2_grpc.BackendCallbackServiceStub] = {}
 
-_exec_lock = threading.Lock()  # one job at a time per process, whichever queue it came from
+
+class _ExecGate:
+    """Thread-aware mutex allowing early release after CPU inference so slow HTTP webhooks never block queued jobs."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tls = threading.local()
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if getattr(self._tls, "held", False):
+            return True
+        ok = self._lock.acquire(blocking, timeout) if timeout >= 0 else self._lock.acquire(blocking)
+        if ok:
+            self._tls.held = True
+        return ok
+
+    def release(self) -> None:
+        if getattr(self._tls, "held", False):
+            self._tls.held = False
+            self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self) -> "_ExecGate":
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.release()
+
+
+_exec_lock = _ExecGate()  # one CPU inference job at a time per process; released before webhook I/O
+_worker_stop = threading.Event()  # set on SIGTERM/SIGINT so workers abort and release leases
 _queue_jobs: set[str] = set()  # jobs taken from the Redis queue
 _cancel_checked: dict[str, tuple[float, bool]] = {}
 
@@ -103,34 +136,48 @@ def is_job_cancelled(job_id: str) -> bool:
 def enqueue_batch_job(payload: dict[str, Any]) -> dict[str, Any]:
     """Fallback path: puts a job onto this process's in-memory queue (used when the Gateway
     could not reach the Redis queue and dispatched over gRPC)."""
-    global _worker_thread
+    global _worker_threads
     job_id = str(payload.get("job_id", ""))
     _cancelled_jobs.discard(job_id)
     _batch_queue.put(payload)
 
-    if _worker_thread is None or not _worker_thread.is_alive():
-        _worker_thread = threading.Thread(target=_worker_loop, daemon=True)
-        _worker_thread.start()
+    _worker_threads = [t for t in _worker_threads if t.is_alive()]
+    while len(_worker_threads) < 2:
+        t = threading.Thread(
+            target=_worker_loop, name=f"batch-worker-{len(_worker_threads)}", daemon=True
+        )
+        t.start()
+        _worker_threads.append(t)
 
     logger.info(f"[ENGINE WORKER] Enqueued job {job_id} ({len(payload.get('skus', []))} SKUs)")
     return {"status": "accepted", "job_id": job_id}
 
 
+def shutdown_workers() -> None:
+    """Signals Redis queue consumers to stop and immediately releases in-flight idempotent leases."""
+    _worker_stop.set()
+    release_active_tasks()
+
+
 def start_queue_worker() -> threading.Thread | None:
-    """Starts the Redis queue consumer for this process (None when the queue is disabled)."""
+    """Starts Redis queue consumers (2 threads gated by _exec_lock so webhook I/O overlaps with next job's CPU run)."""
     task_q = get_task_queue()
     if task_q is None:
         return None
-    thread = threading.Thread(
-        target=run_worker,
-        args=(task_q, _run_queued_job),
-        kwargs={"lock": _exec_lock},
-        name="queue-worker",
-        daemon=True,
-    )
-    thread.start()
-    logger.info("[ENGINE WORKER] Redis queue consumer started.")
-    return thread
+    _worker_stop.clear()
+    threads: list[threading.Thread] = []
+    for idx in range(2):
+        thread = threading.Thread(
+            target=run_worker,
+            args=(task_q, _run_queued_job),
+            kwargs={"lock": _exec_lock, "stop": _worker_stop},
+            name=f"queue-worker-{idx}",
+            daemon=True,
+        )
+        thread.start()
+        threads.append(thread)
+    logger.info("[ENGINE WORKER] Redis queue consumers started.")
+    return threads[0]
 
 
 def _worker_loop():
@@ -176,14 +223,20 @@ def _run_queued_job(payload: dict[str, Any]) -> None:
     job_id = str(payload.get("job_id", ""))
     _queue_jobs.add(job_id)
     try:
+        if _worker_stop.is_set():
+            raise InterruptedError("Worker shutting down")
         if is_job_cancelled(job_id):
             logger.info(f"[ENGINE WORKER] Skipped job {job_id} because it was already cancelled.")
             return
         try:
             _execute_job(payload)
         except InterruptedError:
+            if _worker_stop.is_set():
+                raise
             logger.info(f"[ENGINE WORKER] Job {job_id} cancelled successfully.")
         except Exception as e:
+            if _worker_stop.is_set():
+                raise
             if is_job_cancelled(job_id):
                 logger.info(f"[ENGINE WORKER] Job {job_id} cancelled during exception.")
                 return
@@ -223,7 +276,7 @@ def _execute_job(payload: dict[str, Any]) -> None:
         _cur_backend_grpc_url=backend_grpc_url,
     ):
         nonlocal last_progress_time, last_progress_pct, last_stage
-        if is_job_cancelled(_cur_job_id):
+        if _worker_stop.is_set() or is_job_cancelled(_cur_job_id):
             return
 
         now = time.time()
@@ -255,32 +308,37 @@ def _execute_job(payload: dict[str, Any]) -> None:
         except Exception as e:
             logger.debug(f"Failed to report progress via gRPC: {e}")
 
-    sync_rules_version()
-    # Pin one (rules, rule_version) pair for every chunk of this job: a reload mid-job
-    # must not change which rules evaluate it or the version its results are saved under
-    rule_snapshot = snapshot_rules(payload.get("tenant_id") or "default")
-    rule_version = rule_snapshot.version
-    # Execute processing
-    if task.lower() == "upload":
-        result_payload = process_upload(
-            skus=skus,
-            outlet_id=sheet_name,  # outlet ID is passed in sheet_name
-            job_id=job_id,
-            progress_callback=send_progress_update,
-            is_cancelled=lambda jid=job_id: is_job_cancelled(jid),
-            has_more_jobs=not _batch_queue.empty(),
-        )
-    else:
-        with pinned_rules(rule_snapshot):
-            result_payload = process_request(
+    send_progress_update("uploading" if task.lower() == "upload" else "embedding", 0.0)
+    with _exec_lock:
+        sync_rules_version()
+        # Pin one (rules, rule_version) pair for every chunk of this job: a reload mid-job
+        # must not change which rules evaluate it or the version its results are saved under
+        rule_snapshot = snapshot_rules(payload.get("tenant_id") or "default")
+        rule_version = rule_snapshot.version
+        # Execute CPU inference; _exec_lock is released immediately upon exit so slow outbound
+        # Google Sheets webhooks never stall CPU execution for the next queued job.
+        if task.lower() == "upload":
+            result_payload = process_upload(
                 skus=skus,
-                task=task,
-                domain=domain,
+                outlet_id=sheet_name,  # outlet ID is passed in sheet_name
                 job_id=job_id,
                 progress_callback=send_progress_update,
                 is_cancelled=lambda jid=job_id: is_job_cancelled(jid),
+                has_more_jobs=not _batch_queue.empty(),
             )
+        else:
+            with pinned_rules(rule_snapshot):
+                result_payload = process_request(
+                    skus=skus,
+                    task=task,
+                    domain=domain,
+                    job_id=job_id,
+                    progress_callback=send_progress_update,
+                    is_cancelled=lambda jid=job_id: _worker_stop.is_set() or is_job_cancelled(jid),
+                )
 
+    if _worker_stop.is_set() and task.lower() != "upload":
+        raise InterruptedError("Worker shutting down")
     if is_job_cancelled(job_id):
         logger.info(f"[ENGINE WORKER] Job {job_id} aborted mid-execution due to cancellation.")
         return

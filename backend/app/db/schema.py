@@ -116,6 +116,13 @@ jobs = Table(
     Index("idx_jobs_started_at", "started_at"),
     Index("idx_jobs_tenant_started", "tenant_id", "started_at"),
     Index("idx_jobs_status_started", "status", "started_at"),
+    Index(
+        "idx_jobs_sheet_trgm",
+        "sheet_name",
+        "target_sheet",
+        postgresql_using="gin",
+        postgresql_ops={"sheet_name": "gin_trgm_ops", "target_sheet": "gin_trgm_ops"},
+    ),
 )
 
 batches = Table(
@@ -179,7 +186,26 @@ processed_skus = Table(
         "idx_processed_skus_tenant_stats",
         "tenant_id",
         "created_at",
-        postgresql_include=["domain", "confidence", "match_source"],
+        postgresql_include=[
+            "domain",
+            "confidence",
+            "match_source",
+            "matched_catalog_name",
+            "bt",
+            "bt_confidence",
+        ],
+    ),
+    Index(
+        "idx_processed_skus_search_trgm",
+        "sku_name",
+        "bt",
+        "gk_json",
+        postgresql_using="gin",
+        postgresql_ops={
+            "sku_name": "gin_trgm_ops",
+            "bt": "gin_trgm_ops",
+            "gk_json": "gin_trgm_ops",
+        },
     ),
 )
 

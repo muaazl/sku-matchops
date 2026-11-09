@@ -76,6 +76,7 @@ services:
     container_name: sku_matchops_qdrant
     expose:
       - "6333"
+      - "6334"
     volumes:
       - ./data/qdrant:/qdrant/storage:z
     restart: unless-stopped
@@ -91,6 +92,8 @@ services:
       - "50051"
     environment:
       - QDRANT_URL=http://qdrant:6333
+      - QDRANT_GRPC_PORT=6334
+      - QDRANT_PREFER_GRPC=true
       - BACKEND_GRPC_URL=backend:50052
       - ENGINE_GRPC_PORT=50051
       - INTERNAL_GRPC_SECRET=${INTERNAL_GRPC_SECRET:-}
@@ -113,6 +116,18 @@ services:
         condition: service_started
       redis:
         condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import grpc, sys; from engine import config; from engine.core.grpc_utils import grpc_metadata; from engine.protos import engine_service_pb2 as pb2, engine_service_pb2_grpc as g; r = g.EngineInferenceServiceStub(grpc.insecure_channel(f'127.0.0.1:{config.ENGINE_GRPC_PORT}')).GetHealth(pb2.Empty(), metadata=grpc_metadata(), timeout=3); sys.exit(0 if r.all_models_ready else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
     restart: unless-stopped
 
   backend:

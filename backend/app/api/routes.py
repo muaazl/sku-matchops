@@ -4,6 +4,7 @@ from collections import deque
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Security
 from fastapi.security.api_key import APIKeyHeader
+from sqlalchemy import text
 
 from backend.app.api.endpoints.auth import router as auth_router
 from backend.app.api.endpoints.auth import users_router
@@ -20,6 +21,7 @@ from backend.app.api.endpoints.rules_api import router as rules_router
 from backend.app.api.endpoints.upload import router as upload_router
 from backend.app.core import config
 from backend.app.core.security import get_principal, require_platform_admin
+from backend.app.db.session import get_engine
 from backend.app.schemas.models import (
     ClassifyRequest,
     EnqueueJobResponse,
@@ -77,6 +79,25 @@ def health():
         "status": "ok",
         "service": "matchops-backend",
         "loaded_domains": loaded_domains,
+        "engine": engine_status,
+    }
+
+
+@api_router.get("/ready")
+def ready(response: Response):
+    try:
+        with get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        db_ok = False
+    engine_status = get_engine_health()
+    is_ready = db_ok and bool(engine_status.get("all_models_ready"))
+    if not is_ready:
+        response.status_code = 503
+    return {
+        "status": "ready" if is_ready else "not_ready",
+        "db": db_ok,
         "engine": engine_status,
     }
 

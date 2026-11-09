@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.core.config import DEFAULT_TENANT
 from backend.app.db.session import get_engine, get_next_job_id
-from backend.app.grpc_server import _job_eta, _job_progress, clear_job_progress
+from backend.app.grpc_server import clear_job_progress, publish_job_event, set_job_progress
 from backend.app.schemas.models import BaseRequest
 from backend.app.services.engine_client import dispatch_batch_job
 
@@ -82,8 +82,18 @@ def register_and_dispatch_job(
             conn.close()
 
     assert job_id is not None
-    _job_progress[job_id] = 0.0
-    _job_eta[job_id] = max(3, int(total_items * 0.04))
+    initial_eta = max(3, int(total_items * 0.04))
+    set_job_progress(job_id, pct=0.0, eta=initial_eta, stage="queued", tenant_id=tenant_id)
+    publish_job_event(
+        tenant_id,
+        {
+            "id": job_id,
+            "status": "queued",
+            "current_stage": "queued",
+            "progress_pct": 0.0,
+            "eta_seconds": initial_eta,
+        },
+    )
     logger.info(f"[JOB {job_id}] Queued {total_items} SKUs (task={job_type}, domain={domain})")
 
     try:
@@ -101,6 +111,16 @@ def register_and_dispatch_job(
                 )
         except Exception:
             pass
+        publish_job_event(
+            tenant_id,
+            {
+                "id": job_id,
+                "status": "failed",
+                "current_stage": "failed",
+                "error_message": str(dispatch_err),
+                "eta_seconds": None,
+            },
+        )
         raise RuntimeError(f"Failed to dispatch job to ML Engine: {dispatch_err}")
 
     return {"job_id": job_id, "status": "queued", "total_skus": total_items}

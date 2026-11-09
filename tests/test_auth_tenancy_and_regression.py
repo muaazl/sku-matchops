@@ -442,7 +442,7 @@ def test_onnx_timing_is_recorded_per_model():
     eng.rerank_tokenizer = lambda a, b, **kw: {"input_ids": np.ones((len(a), 1), dtype=np.int64)}
     eng.cross_session = SimpleNamespace(run=lambda _o, inp: [inp["input_ids"].astype(np.float32)])
     before = count("cross_encoder")
-    eng.score_cross_encoder([["a", "b"]] * 70, batch_size=32)
+    eng.score_cross_encoder([["a", f"b{i}"] for i in range(70)], batch_size=32)
     assert count("cross_encoder") - before == 3  # one observation per micro-batch (32+32+6)
 
 

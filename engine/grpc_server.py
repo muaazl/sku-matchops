@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from concurrent import futures
+from typing import Any
 
 import grpc
 from qdrant_client.http.models import FieldCondition, Filter, MatchAny, MatchValue
@@ -42,6 +43,12 @@ from engine.rules_engine.loader import (
 from engine.templates.template_suggest import suggest_tags_from_template
 
 logger = logging.getLogger("matchops.engine.grpc")
+
+
+def _get_vector_store() -> VectorStore:
+    vs = VectorStore.__new__(VectorStore)
+    vs.client = VectorStore.get_client()
+    return vs
 
 
 def _build_qdrant_filter(filters_json: str) -> Filter | None:
@@ -288,16 +295,47 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
 
     def ListVectorCollections(self, request, context):
         try:
-            client = VectorStore.get_client()
-            cols = [c.name for c in client.get_collections().collections]
-            return pb2.JsonPayloadResponse(payload_json=json.dumps({"collections": cols}))
+            vs = _get_vector_store()
+            cols = [
+                c.name
+                for c in vs._call_with_retry(
+                    "get_collections", vs.client.get_collections
+                ).collections
+            ]
+            details: dict[str, Any] = {}
+            if cols and hasattr(vs.client, "get_collection"):
+
+                def _fetch_info(col_name: str) -> tuple[str, dict[str, Any] | None]:
+                    try:
+                        info = vs._call_with_retry(
+                            "get_collection", vs.client.get_collection, collection_name=col_name
+                        )
+                        payload = (
+                            info.model_dump(mode="json")
+                            if hasattr(info, "model_dump")
+                            else (info.dict() if hasattr(info, "dict") else None)
+                        )
+                        return col_name, payload
+                    except Exception:
+                        return col_name, None
+
+                with futures.ThreadPoolExecutor(max_workers=min(len(cols), 6)) as pool:
+                    for col_name, payload in pool.map(_fetch_info, cols):
+                        if isinstance(payload, dict):
+                            details[col_name] = payload
+
+            return pb2.JsonPayloadResponse(
+                payload_json=json.dumps({"collections": cols, "details": details})
+            )
         except Exception as e:
             abort_rpc_error(context, logger, "ListVectorCollections", e)
 
     def GetVectorCollection(self, request, context):
         try:
-            client = VectorStore.get_client()
-            info = client.get_collection(collection_name=request.name)
+            vs = _get_vector_store()
+            info = vs._call_with_retry(
+                "get_collection", vs.client.get_collection, collection_name=request.name
+            )
             payload = info.model_dump(mode="json") if hasattr(info, "model_dump") else info.dict()
             return pb2.JsonPayloadResponse(payload_json=json.dumps(payload))
         except Exception as e:
@@ -321,7 +359,7 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 if (request.has_score_threshold and mode in ("dense", "sparse"))
                 else None
             )
-            client = VectorStore.get_client()
+            vs = _get_vector_store()
             from engine.core.resource_loader import _get_shared_models
             from engine.nlp.text_cleaner import TextPipeline
 
@@ -363,7 +401,9 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                     q_len = len(q_words)
                     fetch_limit = max((request.limit or 10) * 3, 30)
 
-                    raw_points = client.query_points(
+                    raw_points = vs._call_with_retry(
+                        "query_points (sparse collection search)",
+                        vs.client.query_points,
                         collection_name=request.name,
                         query=sparse_vector,
                         using="sparse",
@@ -378,7 +418,9 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                     for hit in raw_points:
                         p_load = hit.payload or {}
                         clean_name = str(p_load.get("clean_text") or "").strip().lower()
-                        doc_len = p_load.get("token_count") or (len(clean_name.split()) if clean_name else q_len)
+                        doc_len = p_load.get("token_count") or (
+                            len(clean_name.split()) if clean_name else q_len
+                        )
                         len_ratio = min(1.0, q_len / max(1, doc_len)) if q_len > 0 else 1.0
 
                         is_exact = bool(clean_name and clean_name == normalized_query)
@@ -393,7 +435,9 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 else:  # hybrid
                     from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
 
-                    points = client.query_points(
+                    points = vs._call_with_retry(
+                        "query_points (hybrid collection search)",
+                        vs.client.query_points,
                         collection_name=request.name,
                         prefetch=[
                             Prefetch(query=dense_list, using="dense", limit=request.limit or 10),
@@ -407,7 +451,9 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                         with_payload=True,
                     ).points
             else:  # dense
-                points = client.query_points(
+                points = vs._call_with_retry(
+                    "query_points (dense collection search)",
+                    vs.client.query_points,
                     collection_name=request.name,
                     query=dense_list,
                     using="dense",

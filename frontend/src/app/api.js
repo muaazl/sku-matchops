@@ -104,6 +104,53 @@ export const getTagStats = async (params) => (await api.get('/jobs/tag-stats', {
 export const cancelJob = async (id) => (await api.post(`/jobs/${id}/cancel`)).data;
 export const retryJob = async (id) => (await api.post(`/jobs/${id}/retry`)).data;
 
+export function subscribeJobStream(path, { onMessage, onError } = {}) {
+  const controller = new AbortController();
+  (async () => {
+    try {
+      const base = await resolveBaseUrl();
+      const headers = { Accept: 'text/event-stream' };
+      const { authToken, apiKey } = useStore.getState();
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      } else if (apiKey) {
+        headers['X-API-Key'] = apiKey;
+      }
+      const resp = await fetch(`${base}${path}`, { headers, signal: controller.signal });
+      if (resp.status === 401) {
+        useStore.getState().promptLoginOn401();
+      }
+      if (!resp.ok || !resp.body) {
+        throw new Error(`SSE stream failed (${resp.status})`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        let sep;
+        while ((sep = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('data: ')) {
+              onMessage?.(JSON.parse(line.slice(6)));
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        onError?.(err);
+      }
+    }
+  })();
+  return () => controller.abort();
+}
+
 // Batches
 export const createBatch = async (formData) =>
   (await api.post('/batches', formData, { headers: { 'Content-Type': 'multipart/form-data' } })).data;

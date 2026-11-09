@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+import grpc
 import httpx
 import numpy as np
 import pandas as pd
@@ -18,13 +19,16 @@ from qdrant_client.http.models import (
     Filter,
     Fusion,
     FusionQuery,
+    HnswConfigDiff,
     MatchAny,
     MatchValue,
+    OptimizersConfigDiff,
     PayloadSchemaType,
     PointStruct,
     Prefetch,
     QueryRequest,
     ScoredPoint,
+    SparseIndexParams,
     SparseVector,
     SparseVectorParams,
     VectorParams,
@@ -45,18 +49,52 @@ TRANSIENT_NETWORK_ERRORS = (
     OSError,
 )
 
+_NON_RETRYABLE_GRPC_CODES = frozenset(
+    {
+        grpc.StatusCode.NOT_FOUND,
+        grpc.StatusCode.INVALID_ARGUMENT,
+        grpc.StatusCode.ALREADY_EXISTS,
+        grpc.StatusCode.PERMISSION_DENIED,
+        grpc.StatusCode.UNAUTHENTICATED,
+        grpc.StatusCode.UNIMPLEMENTED,
+        grpc.StatusCode.FAILED_PRECONDITION,
+    }
+)
+
 
 class VectorStore:
     """Manages persistent vector storage and hybrid search using Qdrant."""
 
     _client: QdrantClient | None = None
+    _prefer_grpc_override: bool | None = None
     _checked_collections: set = set()
 
     @classmethod
-    def get_client(cls, force_reconnect: bool = False) -> QdrantClient:
+    def get_client(
+        cls, force_reconnect: bool = False, prefer_grpc: bool | None = None
+    ) -> QdrantClient:
         """Returns or reinitializes the singleton QdrantClient instance."""
+        if prefer_grpc is not None:
+            cls._prefer_grpc_override = prefer_grpc
         if cls._client is None or force_reconnect:
-            cls._client = QdrantClient(url=config.QDRANT_URL, timeout=config.QDRANT_TIMEOUT)
+            old_client = cls._client
+            use_grpc = (
+                cls._prefer_grpc_override
+                if cls._prefer_grpc_override is not None
+                else getattr(config, "QDRANT_PREFER_GRPC", True)
+            )
+            cls._client = QdrantClient(
+                url=config.QDRANT_URL,
+                grpc_port=getattr(config, "QDRANT_GRPC_PORT", 6334),
+                prefer_grpc=use_grpc,
+                timeout=config.QDRANT_TIMEOUT,
+                check_compatibility=False,
+            )
+            if old_client is not None:
+                try:
+                    old_client.close()
+                except Exception:
+                    pass
         return cls._client
 
     def __init__(self):
@@ -73,18 +111,55 @@ class VectorStore:
         backoff_factor: float = 2.0,
         **kwargs: Any,
     ) -> Any:
-        """Executes a Qdrant client call with automatic retries on transient network/DNS errors."""
+        """Executes a Qdrant client call with automatic retries, client rebinding, and gRPC->REST fallback."""
         delay = initial_delay
         last_error = None
+        bound_method_name = (
+            getattr(func, "__name__", None)
+            if getattr(func, "__self__", None) is self.client
+            else next(
+                (
+                    attr
+                    for attr in (
+                        "get_collections",
+                        "get_collection",
+                        "collection_exists",
+                        "create_collection",
+                        "update_collection",
+                        "create_payload_index",
+                        "upsert",
+                        "query_points",
+                        "query_batch_points",
+                        "scroll",
+                        "count",
+                    )
+                    if getattr(self.client, attr, None) is func
+                ),
+                None,
+            )
+        )
 
         for attempt in range(1, max_retries + 1):
             try:
                 return func(*args, **kwargs)
             except Exception as e:
                 last_error = e
+                if getattr(e, "status_code", None) in (400, 401, 403, 404, 409, 422):
+                    raise
+                if isinstance(e, grpc.RpcError) and e.code() in _NON_RETRYABLE_GRPC_CODES:
+                    raise
+
                 err_msg = str(e).lower()
+                is_grpc_unavailable = (
+                    isinstance(e, grpc.RpcError) and e.code() == grpc.StatusCode.UNAVAILABLE
+                )
                 is_transient = (
-                    isinstance(e, TRANSIENT_NETWORK_ERRORS)
+                    is_grpc_unavailable
+                    or (
+                        isinstance(e, grpc.RpcError)
+                        and e.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+                    )
+                    or isinstance(e, TRANSIENT_NETWORK_ERRORS)
                     or "name resolution" in err_msg
                     or "temporary failure" in err_msg
                     or "connection" in err_msg
@@ -99,6 +174,21 @@ class VectorStore:
                     )
                     raise
 
+                # If gRPC port (6334) is unreachable in a local/legacy container, fall back seamlessly to REST
+                if (
+                    is_grpc_unavailable
+                    and self.client is VectorStore._client
+                    and VectorStore._prefer_grpc_override is not False
+                    and getattr(config, "QDRANT_PREFER_GRPC", True)
+                ):
+                    logger.warning(
+                        f"[QDRANT] gRPC port unavailable during '{operation_name}'; falling back to HTTP REST client."
+                    )
+                    self.client = VectorStore.get_client(force_reconnect=True, prefer_grpc=False)
+                    if bound_method_name:
+                        func = getattr(self.client, bound_method_name)
+                    continue
+
                 logger.warning(
                     f"[QDRANT] Transient error during '{operation_name}' (attempt {attempt}/{max_retries}): {e}. "
                     f"Retrying in {delay:.2f}s..."
@@ -106,9 +196,11 @@ class VectorStore:
                 time.sleep(delay)
                 delay *= backoff_factor
 
-                # Refresh client instance on repeated connection glitches
-                if attempt >= 2:
+                # Refresh singleton client instance on repeated connection glitches and rebind method
+                if attempt >= 2 and self.client is VectorStore._client:
                     self.client = VectorStore.get_client(force_reconnect=True)
+                    if bound_method_name:
+                        func = getattr(self.client, bound_method_name)
 
         raise last_error
 
@@ -121,19 +213,14 @@ class VectorStore:
         )
 
     def _ensure_collection(self, collection_name: str):
-        """Creates the collection if it doesn't already exist with on-disk optimizations."""
+        """Creates the collection if it doesn't already exist and ensures indexes + HNSW settings."""
         if collection_name in self._checked_collections:
             return
+        hnsw_on_disk = getattr(config, "QDRANT_HNSW_ON_DISK", False)
         exists = self._call_with_retry(
             "collection_exists", self.client.collection_exists, collection_name
         )
         if not exists:
-            from qdrant_client.http.models import (
-                HnswConfigDiff,
-                OptimizersConfigDiff,
-                SparseIndexParams,
-            )
-
             self._call_with_retry(
                 "create_collection",
                 self.client.create_collection,
@@ -142,7 +229,7 @@ class VectorStore:
                     "dense": VectorParams(
                         size=config.BGE_M3_DENSE_DIM,
                         distance=Distance.COSINE,
-                        on_disk=True,  # Vectors stay on disk
+                        on_disk=True,  # Raw float32 vectors stay memmapped on disk
                     )
                 },
                 sparse_vectors_config={
@@ -153,7 +240,7 @@ class VectorStore:
                     )
                 },
                 hnsw_config=HnswConfigDiff(
-                    on_disk=True,  # HNSW graph stays on disk
+                    on_disk=hnsw_on_disk,
                     m=getattr(config, "QDRANT_HNSW_M", 16),
                     ef_construct=getattr(config, "QDRANT_HNSW_EF_CONSTRUCT", 100),
                 ),
@@ -162,22 +249,44 @@ class VectorStore:
                     memmap_threshold=getattr(config, "QDRANT_MEMMAP_THRESHOLD", 5000),
                 ),
             )
-            # Create payload indexes for fast filtering
             self._create_payload_indexes(collection_name)
+        else:
+            self._create_payload_indexes(collection_name)
+            if not hnsw_on_disk and hasattr(self.client, "update_collection"):
+                try:
+                    info = self._call_with_retry(
+                        "get_collection",
+                        self.client.get_collection,
+                        collection_name=collection_name,
+                    )
+                    cur_hnsw = getattr(getattr(info, "config", None), "hnsw_config", None)
+                    if getattr(cur_hnsw, "on_disk", None) is True:
+                        self._call_with_retry(
+                            "update_collection",
+                            self.client.update_collection,
+                            collection_name=collection_name,
+                            hnsw_config=HnswConfigDiff(on_disk=False),
+                        )
+                except Exception as e:
+                    logger.debug(
+                        f"[QDRANT] Could not inspect/update HNSW config on '{collection_name}': {e}"
+                    )
         self._checked_collections.add(collection_name)
 
     def _create_payload_indexes(self, collection_name: str):
         """Creates payload indexes for fields used in filtering."""
-        try:
-            self._call_with_retry(
-                "create_payload_index",
-                self.client.create_payload_index,
-                collection_name=collection_name,
-                field_name="basictype",
-                field_schema=PayloadSchemaType.KEYWORD,
-            )
-        except Exception as e:
-            logger.debug(f"[QDRANT] Could not create payload index on 'basictype': {e}")
+        index_fields = ("dict_type", "tag") if collection_name.endswith("_tags") else ("basictype",)
+        for field_name in index_fields:
+            try:
+                self._call_with_retry(
+                    "create_payload_index",
+                    self.client.create_payload_index,
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+            except Exception as e:
+                logger.debug(f"[QDRANT] Could not create payload index on '{field_name}': {e}")
 
     def create_versioned_collection(self, alias_name: str, version: int = 1) -> str:
         """Creates a versioned physical collection (e.g. {alias_name}_v{version}) with complete on-disk optimizations."""
@@ -279,9 +388,15 @@ class VectorStore:
 
         # Food domain weight cleanup: if weight_val has no extracted values, drop it
         w_val = cleaned.get("weight_val")
-        if domain == config.DOMAIN_FOOD or w_val in ([None, None, None], "[null, null, null]", None):
+        if domain == config.DOMAIN_FOOD or w_val in (
+            [None, None, None],
+            "[null, null, null]",
+            None,
+        ):
             cleaned.pop("weight_val", None)
-            if domain == config.DOMAIN_FOOD and cleaned.get("clean_no_weights") == cleaned.get("clean_text"):
+            if domain == config.DOMAIN_FOOD and cleaned.get("clean_no_weights") == cleaned.get(
+                "clean_text"
+            ):
                 cleaned.pop("clean_no_weights", None)
 
         # Clean entities: remove empty keys, convert sets to lists
@@ -664,6 +779,8 @@ class VectorStore:
         is in that list (used to restrict food GK search to the bt_gk_map).
         """
         collection_name = f"{domain}_tags"
+        if hasattr(self.client, "collection_exists"):
+            self._ensure_collection(collection_name)
 
         must_conditions = []
         if filter_dict_type:
@@ -674,19 +791,44 @@ class VectorStore:
             must_conditions.append(FieldCondition(key="tag", match=MatchAny(any=allowed_tags)))
 
         query_filter = Filter(must=must_conditions) if must_conditions else None
+        d_query = dense_query.tolist() if hasattr(dense_query, "tolist") else dense_query
+        sparse_vector = self._parse_sparse_dict(sparse_query)
+
+        if sparse_vector.indices and hasattr(self.client, "query_batch_points"):
+            batch_res = self._call_with_retry(
+                "query_batch_points (hybrid tags)",
+                self.client.query_batch_points,
+                collection_name=collection_name,
+                requests=[
+                    QueryRequest(
+                        query=d_query,
+                        using="dense",
+                        filter=query_filter,
+                        limit=limit,
+                        with_payload=["tag"],
+                    ),
+                    QueryRequest(
+                        query=sparse_vector,
+                        using="sparse",
+                        filter=query_filter,
+                        limit=limit,
+                        with_payload=["tag"],
+                    ),
+                ],
+            )
+            return batch_res[0].points, batch_res[1].points
 
         dense_results = self._call_with_retry(
             "query_points (dense tags)",
             self.client.query_points,
             collection_name=collection_name,
-            query=dense_query,
+            query=d_query,
             using="dense",
             query_filter=query_filter,
             limit=limit,
-            with_payload=True,
+            with_payload=["tag"],
         ).points
 
-        sparse_vector = self._parse_sparse_dict(sparse_query)
         sparse_results = []
         if sparse_vector.indices:
             sparse_results = self._call_with_retry(
@@ -697,7 +839,7 @@ class VectorStore:
                 using="sparse",
                 query_filter=query_filter,
                 limit=limit,
-                with_payload=True,
+                with_payload=["tag"],
             ).points
 
         return dense_results, sparse_results
@@ -717,6 +859,8 @@ class VectorStore:
             return []
 
         collection_name = f"{domain}_tags"
+        if hasattr(self.client, "collection_exists"):
+            self._ensure_collection(collection_name)
         if allowed_tags_list is None:
             allowed_tags_list = [None] * n
 
@@ -747,7 +891,7 @@ class VectorStore:
                     using="dense",
                     filter=query_filter,
                     limit=limit,
-                    with_payload=True,
+                    with_payload=["tag"],
                 )
             )
 
@@ -760,7 +904,7 @@ class VectorStore:
                         using="sparse",
                         filter=query_filter,
                         limit=limit,
-                        with_payload=True,
+                        with_payload=["tag"],
                     )
                 )
                 has_sparse_flags.append(True)

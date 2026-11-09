@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
 import {
   Alert,
@@ -18,10 +18,17 @@ import { Close } from '@mui/icons-material';
 import { CardSkeleton, SectionCard, StatusChip } from '../components/ui';
 import { JOB_STAGES, JOB_STAGE_LABELS } from '../constants';
 import { fmtEta, fmtTime, fmtDuration } from '../utils';
-import { useQuery } from '@tanstack/react-query';
-import { getJob } from '../api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getJob, subscribeJobStream } from '../api';
 
 export default function JobDetailModal({ jobId, open, onClose }) {
+  const queryClient = useQueryClient();
+  const [sseFallback, setSseFallback] = useState(false);
+
+  useEffect(() => {
+    setSseFallback(false);
+  }, [jobId, open]);
+
   const {
     data: job,
     isLoading,
@@ -31,10 +38,27 @@ export default function JobDetailModal({ jobId, open, onClose }) {
     queryFn: () => getJob(jobId),
     enabled: !!jobId && open,
     refetchInterval: (query) => {
+      if (!sseFallback) return false;
       const j = query.state.data;
       return j && (j.status === 'running' || j.status === 'queued') ? 2500 : false;
     },
   });
+
+  const isActive = job?.status === 'running' || job?.status === 'queued';
+
+  useEffect(() => {
+    if (!open || !jobId || !isActive || sseFallback) return undefined;
+    return subscribeJobStream(`/jobs/${jobId}/stream`, {
+      onMessage: (evt) => {
+        queryClient.setQueryData(['job', jobId], (old) => (old ? { ...old, ...evt } : evt));
+        if (['completed', 'failed', 'cancelled'].includes(evt.status)) {
+          queryClient.invalidateQueries({ queryKey: ['job', jobId] });
+          queryClient.invalidateQueries({ queryKey: ['jobs'] });
+        }
+      },
+      onError: () => setSseFallback(true),
+    });
+  }, [open, jobId, isActive, sseFallback, queryClient]);
 
   return (
     <Dialog

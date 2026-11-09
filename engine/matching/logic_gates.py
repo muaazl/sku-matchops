@@ -197,8 +197,10 @@ class LogicGates:
             reasons.append(f"Whole-SKU Fuzzy Match ({round(token_ratio)}%)")
 
         # 2. Flavor Conflict Gate
-        cat_entities = match_row.get("entities", {})
-        input_flavors = input_entities.get("flavor", set())
+        raw_cat_ents = match_row.get("entities")
+        cat_entities = raw_cat_ents if isinstance(raw_cat_ents, dict) else {}
+        in_ents = input_entities if isinstance(input_entities, dict) else {}
+        input_flavors = in_ents.get("flavor", set())
         catalog_flavors = cat_entities.get("flavor", set())
 
         # Identify flavors from each side using FOOD_FLAVORS_DICT.
@@ -305,9 +307,21 @@ class LogicGates:
         # --- Market Logic ---
         score = float(raw_ai_score)
         reasons = []
-        cat_entities = match_row["entities"]
-        catalog_w_data = match_row["weight_val"]
-        cat_clean = match_row["clean_text"]
+        raw_cat_ents = match_row.get("entities")
+        cat_entities = raw_cat_ents if isinstance(raw_cat_ents, dict) else {}
+        in_ents = input_entities if isinstance(input_entities, dict) else {}
+        raw_cat_w = match_row.get("weight_val")
+        catalog_w_data = (
+            raw_cat_w
+            if isinstance(raw_cat_w, (tuple, list)) and len(raw_cat_w) >= 3
+            else (None, None, None)
+        )
+        input_w_data = (
+            input_w_data
+            if isinstance(input_w_data, (tuple, list)) and len(input_w_data) >= 3
+            else (None, None, None)
+        )
+        cat_clean = str(match_row.get("clean_text") or "")
         cat_no_weights = match_row.get("clean_no_weights") or TextPipeline.strip_weights(cat_clean)
 
         # 1. Whole-SKU Fuzzy Bypass
@@ -377,13 +391,15 @@ class LogicGates:
 
         # 4. Entity Validation (Skipped if fuzzy bypass triggered)
         if not is_fuzzy_bypass:
+            in_brands = in_ents.get("brand", set())
+            cat_brands = cat_entities.get("brand", set())
             # Brand Check
             brand_check = self.compare_entity_sets(
-                input_entities["brand"], cat_entities["brand"], input_clean, cat_clean, "brand"
+                in_brands, cat_brands, input_clean, cat_clean, "brand"
             )
             # Flavor Check
             flavor_check = self.compare_entity_sets(
-                input_entities.get("flavor", set()),
+                in_ents.get("flavor", set()),
                 cat_entities.get("flavor", set()),
                 input_clean,
                 cat_clean,
@@ -397,20 +413,20 @@ class LogicGates:
                 return (
                     -10.0,
                     "Rejected",
-                    f"Brand Conflict: {input_entities['brand']} vs {cat_entities['brand']}",
+                    f"Brand Conflict: {in_brands} vs {cat_brands}",
                 )
 
             if has_flavor_conflict:
                 return (
                     -10.0,
                     "Rejected",
-                    f"Flavor Conflict: {input_entities.get('flavor')} vs {cat_entities.get('flavor')}",
+                    f"Flavor Conflict: {in_ents.get('flavor')} vs {cat_entities.get('flavor')}",
                 )
 
             # Penalties for other attributes (variant, scent, active ingredient) still run
             for attr in ["variant", "scent", "active ingredient"]:
                 attr_check = self.compare_entity_sets(
-                    input_entities.get(attr, set()),
+                    in_ents.get(attr, set()),
                     cat_entities.get(attr, set()),
                     input_clean,
                     cat_clean,
@@ -419,7 +435,7 @@ class LogicGates:
                 if attr_check == "Conflict":
                     score -= 3.0
                     reasons.append(
-                        f"{attr.capitalize()} Penalty: {input_entities.get(attr)} vs {cat_entities.get(attr)}"
+                        f"{attr.capitalize()} Penalty: {in_ents.get(attr)} vs {cat_entities.get(attr)}"
                     )
 
         # 5. Weight Normalization Boost/Penalty

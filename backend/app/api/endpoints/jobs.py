@@ -2,13 +2,22 @@ import json
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import Connection, text
+from starlette.concurrency import run_in_threadpool
 
 from backend.app.core.security import Principal, get_principal
 from backend.app.db.schema import jobs as jobs_table
-from backend.app.db.session import get_db_connection
-from backend.app.grpc_server import _job_progress, clear_job_progress
+from backend.app.db.session import get_db_connection, get_engine
+from backend.app.grpc_server import (
+    _job_progress,
+    clear_job_progress,
+    get_bulk_job_progress_states,
+    get_job_progress_state,
+    job_events_channel,
+    publish_job_event,
+)
 from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
 from backend.app.services.engine_client import cancel_engine_job
 from backend.app.services.worker import enqueue_job
@@ -16,12 +25,20 @@ from engine import config as engine_config
 
 # The list never shows the uploaded SKUs (~15 KB a job); /jobs/{id} and retry still read them
 _JOB_LIST_COLUMNS = ", ".join(c.name for c in jobs_table.columns if c.name != "input_skus_json")
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
 router = APIRouter()
 
 
-def _enrich_job_dict(job_dict: dict) -> dict:
-    """Enriches job dictionary with live in-memory progress_pct and rolling dynamic ETA."""
+def _enrich_job_dict(
+    job_dict: dict, prefetched_progress: tuple[float, int | None] | None = None
+) -> dict:
+    """Enriches job dictionary with live Redis/in-memory progress_pct and rolling dynamic ETA."""
     j_id = str(job_dict.get("id", ""))
     status = job_dict.get("status")
 
@@ -29,16 +46,31 @@ def _enrich_job_dict(job_dict: dict) -> dict:
         job_dict["progress_pct"] = 100.0
         job_dict["eta_seconds"] = 0
         return job_dict
-    elif status in ("failed", "cancelled"):
-        job_dict["progress_pct"] = _job_progress.get(j_id, 0.0)
+
+    if status in ("failed", "cancelled"):
+        job_dict["progress_pct"] = (
+            prefetched_progress[0]
+            if prefetched_progress is not None
+            else _job_progress.get(j_id, 0.0)
+        )
         job_dict["eta_seconds"] = None
         return job_dict
 
-    progress_pct = _job_progress.get(j_id, 0.0)
+    if status == "queued":
+        job_dict["progress_pct"] = 0.0
+        total = job_dict.get("total_items", 0)
+        job_dict["eta_seconds"] = max(3, int(total * 0.035)) if total > 0 else 5
+        return job_dict
+
+    progress_pct, cached_eta = (
+        prefetched_progress if prefetched_progress is not None else get_job_progress_state(j_id)
+    )
     job_dict["progress_pct"] = progress_pct
 
-    # Calculate dynamic rolling ETA for running/queued jobs
-    if status == "running" and job_dict.get("started_at"):
+    # Calculate dynamic rolling ETA for running jobs
+    if status == "running" and cached_eta is not None:
+        job_dict["eta_seconds"] = cached_eta
+    elif status == "running" and job_dict.get("started_at"):
         try:
             started_str = str(job_dict["started_at"]).replace(" ", "T")
             started_at = datetime.fromisoformat(started_str)
@@ -56,12 +88,16 @@ def _enrich_job_dict(job_dict: dict) -> dict:
                 job_dict["eta_seconds"] = max(3, int(est_total - elapsed))
         except Exception:
             job_dict["eta_seconds"] = None
-    elif status == "queued":
-        job_dict["progress_pct"] = 0.0
-        total = job_dict.get("total_items", 0)
-        job_dict["eta_seconds"] = max(3, int(total * 0.035)) if total > 0 else 5
 
     return job_dict
+
+
+def _enrich_job_rows(rows) -> list[dict]:
+    """Batch-enriches a sequence of job rows using at most 1 pipelined Redis call for running jobs."""
+    dicts = [dict(r) for r in rows]
+    running_ids = [str(d.get("id", "")) for d in dicts if d.get("status") == "running"]
+    progress_map = get_bulk_job_progress_states(running_ids) if running_ids else {}
+    return [_enrich_job_dict(d, progress_map.get(str(d.get("id", "")))) for d in dicts]
 
 
 _TIMEFRAME_INTERVALS = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}
@@ -136,7 +172,7 @@ def get_jobs(
         where += " AND domain = :domain"
         params["domain"] = domain
     if sheet_name:
-        where += " AND (sheet_name LIKE :sheet_name OR target_sheet LIKE :sheet_name)"
+        where += " AND (sheet_name ILIKE :sheet_name OR target_sheet ILIKE :sheet_name)"
         params["sheet_name"] = f"%{sheet_name}%"
 
     total_count = db.execute(text(f"SELECT COUNT(*) FROM jobs {where}"), params).scalar()
@@ -148,12 +184,7 @@ def get_jobs(
         params.update(limit=limit, offset=(page - 1) * limit)
 
     rows = db.execute(text(query), params).mappings().fetchall()
-
-    jobs = []
-    for row in rows:
-        job_dict = _enrich_job_dict(dict(row))
-        jobs.append(JobResponse(**job_dict))
-    return jobs
+    return [JobResponse(**job_dict) for job_dict in _enrich_job_rows(rows)]
 
 
 @router.get("/jobs/dashboard-stats")
@@ -170,32 +201,8 @@ def get_dashboard_stats(
     where_str, params = _stats_filter(domain, timeframe, principal.tenant_id)
     tenant = {"tenant_id": principal.tenant_id}
 
-    # 1. Total processed and confidence breakdown
-    stat_query = f"""
-        SELECT
-            COUNT(*) as total_skus,
-            AVG(confidence) as avg_conf,
-            SUM(CASE WHEN confidence >= 0.85 THEN 1 ELSE 0 END) as high_count,
-            SUM(CASE WHEN confidence >= 0.60 AND confidence < 0.85 THEN 1 ELSE 0 END) as med_count,
-            SUM(CASE WHEN confidence < 0.60 THEN 1 ELSE 0 END) as low_count
-        FROM processed_skus
-        WHERE {where_str}
-    """
-    stat_row = db.execute(text(stat_query), params).fetchone()
-
-    total_skus = stat_row[0] or 0
-    raw_avg = stat_row[1] or 0.0
-    avg_conf_pct = round(raw_avg * 100, 1) if raw_avg <= 1.0 else round(raw_avg, 1)
-    high_count = stat_row[2] or 0
-    med_count = stat_row[3] or 0
-    low_count = stat_row[4] or 0
-
-    high_pct = round((high_count / max(1, total_skus)) * 100, 1)
-    med_pct = round((med_count / max(1, total_skus)) * 100, 1)
-    low_pct = round((low_count / max(1, total_skus)) * 100, 1)
-
-    # 2. Match Source Breakdown
-    source_query = f"""
+    # 1 & 2. Single-pass processed_skus summary + match-source breakdown (answered via covering index)
+    summary_source_query = f"""
         SELECT
             CASE
                 WHEN LOWER(TRIM(COALESCE(match_source, ''))) IN ('matcher', 'catalogue') THEN 'Matcher'
@@ -204,20 +211,39 @@ def get_dashboard_stats(
                 WHEN (bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0) THEN 'Classifier'
                 ELSE 'Matcher'
             END as normalized_source,
-            COUNT(*) as count
+            COUNT(*) as cnt,
+            COALESCE(SUM(confidence), 0.0) as sum_conf,
+            COUNT(confidence) as cnt_conf,
+            COALESCE(SUM(CASE WHEN confidence >= 0.85 THEN 1 ELSE 0 END), 0) as high_count,
+            COALESCE(SUM(CASE WHEN confidence >= 0.60 AND confidence < 0.85 THEN 1 ELSE 0 END), 0) as med_count,
+            COALESCE(SUM(CASE WHEN confidence < 0.60 THEN 1 ELSE 0 END), 0) as low_count
         FROM processed_skus
         WHERE {where_str}
         GROUP BY normalized_source
-        ORDER BY count DESC
+        ORDER BY cnt DESC
     """
-    source_rows = db.execute(text(source_query), params).fetchall()
+    agg_rows = db.execute(text(summary_source_query), params).fetchall()
+
+    total_skus = sum(int(r[1] or 0) for r in agg_rows)
+    total_sum_conf = sum(float(r[2] or 0.0) for r in agg_rows)
+    total_cnt_conf = sum(int(r[3] or 0) for r in agg_rows)
+    raw_avg = (total_sum_conf / total_cnt_conf) if total_cnt_conf > 0 else 0.0
+    avg_conf_pct = round(raw_avg * 100, 1) if raw_avg <= 1.0 else round(raw_avg, 1)
+    high_count = sum(int(r[4] or 0) for r in agg_rows)
+    med_count = sum(int(r[5] or 0) for r in agg_rows)
+    low_count = sum(int(r[6] or 0) for r in agg_rows)
+
+    high_pct = round((high_count / max(1, total_skus)) * 100, 1)
+    med_pct = round((med_count / max(1, total_skus)) * 100, 1)
+    low_pct = round((low_count / max(1, total_skus)) * 100, 1)
+
     match_sources = [
         {
             "source": r[0],
             "count": r[1],
             "pct": round((r[1] / max(1, total_skus)) * 100, 1),
         }
-        for r in source_rows
+        for r in agg_rows
     ]
 
     # 3. Domain Breakdown
@@ -273,25 +299,23 @@ def get_dashboard_stats(
             c_pct = round(c_val * 100, 1) if c_val <= 1.0 else round(c_val, 1)
             volume_trend.append({"label": label, "skus": cnt, "avgConfidence": c_pct})
 
-    # 5. Legacy/Job counts for backward compatibility
-    active_jobs = db.execute(
+    # 5. Consolidated job counts in a single scan over jobs
+    job_counts_row = db.execute(
         text(
-            "SELECT COUNT(*) FROM jobs WHERE tenant_id = :tenant_id AND status IN ('queued', 'running')"
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status IN ('queued', 'running')) AS active_jobs,
+                COUNT(*) FILTER (WHERE status = 'completed' AND started_at >= now() - interval '7 days') AS completed_7d,
+                COUNT(*) FILTER (WHERE status = 'failed' AND started_at >= now() - interval '7 days') AS failed_7d
+            FROM jobs
+            WHERE tenant_id = :tenant_id
+            """
         ),
         tenant,
-    ).scalar()
-    completed_7d = db.execute(
-        text(
-            "SELECT COUNT(*) FROM jobs WHERE tenant_id = :tenant_id AND status = 'completed' AND started_at >= now() - interval '7 days'"
-        ),
-        tenant,
-    ).scalar()
-    failed_7d = db.execute(
-        text(
-            "SELECT COUNT(*) FROM jobs WHERE tenant_id = :tenant_id AND status = 'failed' AND started_at >= now() - interval '7 days'"
-        ),
-        tenant,
-    ).scalar()
+    ).fetchone()
+    active_jobs = int(job_counts_row[0] or 0) if job_counts_row else 0
+    completed_7d = int(job_counts_row[1] or 0) if job_counts_row else 0
+    failed_7d = int(job_counts_row[2] or 0) if job_counts_row else 0
     requests_24h = db.execute(
         text("SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'")
     ).scalar()
@@ -381,22 +405,29 @@ def get_tag_stats(
     auto_t = engine_config.AUTO_THRESHOLD
     review_t = engine_config.REVIEW_THRESHOLD
 
-    def status_breakdown(column: str) -> dict:
-        q = f"""
-            SELECT
-                SUM(CASE WHEN {column} >= :auto_t THEN 1 ELSE 0 END) as auto_count,
-                SUM(CASE WHEN {column} >= :review_t AND {column} < :auto_t THEN 1 ELSE 0 END) as review_count,
-                SUM(CASE WHEN {column} < :review_t THEN 1 ELSE 0 END) as low_count
-            FROM processed_skus
-            WHERE {where_str} AND {column} IS NOT NULL
-        """
-        row = db.execute(text(q), {"auto_t": auto_t, "review_t": review_t, **params}).fetchone()
-        return {"auto": row[0] or 0, "review": row[1] or 0, "low": row[2] or 0}
+    status_q = f"""
+        SELECT
+            COALESCE(SUM(CASE WHEN bt_confidence >= :auto_t THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN bt_confidence >= :review_t AND bt_confidence < :auto_t THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN bt_confidence < :review_t THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN gk_confidence >= :auto_t THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN gk_confidence >= :review_t AND gk_confidence < :auto_t THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN gk_confidence < :review_t THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN region_confidence >= :auto_t THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN region_confidence >= :review_t AND region_confidence < :auto_t THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN region_confidence < :review_t THEN 1 ELSE 0 END), 0)
+        FROM processed_skus
+        WHERE {where_str}
+    """
+    s_row = db.execute(
+        text(status_q), {"auto_t": auto_t, "review_t": review_t, **params}
+    ).fetchone()
+    vals = [int(v or 0) for v in (s_row or (0,) * 9)]
 
     tag_status_breakdown = [
-        {"tagType": "Basic Type", **status_breakdown("bt_confidence")},
-        {"tagType": "Generic Keyword", **status_breakdown("gk_confidence")},
-        {"tagType": "Region / Category", **status_breakdown("region_confidence")},
+        {"tagType": "Basic Type", "auto": vals[0], "review": vals[1], "low": vals[2]},
+        {"tagType": "Generic Keyword", "auto": vals[3], "review": vals[4], "low": vals[5]},
+        {"tagType": "Region / Category", "auto": vals[6], "review": vals[7], "low": vals[8]},
     ]
 
     return {
@@ -405,6 +436,72 @@ def get_tag_stats(
         "tagStatusBreakdown": tag_status_breakdown,
         "thresholds": {"auto": auto_t, "review": review_t},
     }
+
+
+async def _open_tenant_pubsub(tenant_id: str):
+    import redis.asyncio as aioredis
+
+    client = aioredis.from_url(
+        engine_config.REDIS_URL,
+        socket_connect_timeout=1.0,
+        health_check_interval=30,
+        decode_responses=True,
+    )
+    pubsub = client.pubsub(ignore_subscribe_messages=True)
+    try:
+        await pubsub.subscribe(job_events_channel(tenant_id))
+    except Exception as e:
+        await client.aclose()
+        raise HTTPException(status_code=503, detail=f"Job event stream unavailable: {e}")
+    return client, pubsub
+
+
+def _recent_tenant_jobs(tenant_id: str) -> list[dict]:
+    with get_engine().connect() as conn:
+        rows = (
+            conn.execute(
+                text(
+                    f"SELECT {_JOB_LIST_COLUMNS} FROM jobs "
+                    "WHERE tenant_id = :t ORDER BY started_at DESC LIMIT 25"
+                ),
+                {"t": tenant_id},
+            )
+            .mappings()
+            .fetchall()
+        )
+    return [JobResponse(**d).model_dump(mode="json") for d in _enrich_job_rows(rows)]
+
+
+def _single_tenant_job(job_id: str, principal: Principal) -> dict | None:
+    with get_engine().connect() as conn:
+        row = _tenant_job(conn, job_id, principal)
+    if not row:
+        return None
+    return JobResponse(**_enrich_job_dict(dict(row))).model_dump(mode="json")
+
+
+@router.get("/jobs/stream")
+async def stream_jobs(request: Request, principal: Principal = Depends(get_principal)):
+    """SSE stream of live job state changes for the caller's tenant."""
+    client, pubsub = await _open_tenant_pubsub(principal.tenant_id)
+
+    async def _gen():
+        try:
+            initial = await run_in_threadpool(_recent_tenant_jobs, principal.tenant_id)
+            yield f"data: {json.dumps({'type': 'snapshot', 'jobs': initial})}\n\n"
+            while not await request.is_disconnected():
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
+                if msg and msg.get("data"):
+                    yield f"data: {msg['data']}\n\n"
+                else:
+                    yield ": keepalive\n\n"
+        finally:
+            try:
+                await pubsub.aclose()
+            finally:
+                await client.aclose()
+
+    return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.get("/jobs/{id}", response_model=JobResponse)
@@ -419,6 +516,40 @@ def get_job(
 
     job_dict = _enrich_job_dict(dict(row))
     return JobResponse(**job_dict)
+
+
+@router.get("/jobs/{id}/stream")
+async def stream_job(id: str, request: Request, principal: Principal = Depends(get_principal)):
+    """SSE stream of live progress, stage, and terminal outcome for a single job."""
+    if await run_in_threadpool(_single_tenant_job, id, principal) is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    client, pubsub = await _open_tenant_pubsub(principal.tenant_id)
+
+    async def _gen():
+        try:
+            initial = await run_in_threadpool(_single_tenant_job, id, principal)
+            if initial is None:
+                return
+            yield f"data: {json.dumps(initial)}\n\n"
+            if initial.get("status") in _TERMINAL_STATUSES:
+                return
+            while not await request.is_disconnected():
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
+                if msg and msg.get("data"):
+                    payload = json.loads(msg["data"])
+                    if str(payload.get("id")) == str(id):
+                        yield f"data: {msg['data']}\n\n"
+                        if payload.get("status") in _TERMINAL_STATUSES:
+                            return
+                else:
+                    yield ": keepalive\n\n"
+        finally:
+            try:
+                await pubsub.aclose()
+            finally:
+                await client.aclose()
+
+    return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 @router.post("/jobs/{id}/cancel")
@@ -441,6 +572,15 @@ def cancel_job(
     )
     db.commit()
     clear_job_progress(id)
+    publish_job_event(
+        principal.tenant_id,
+        {
+            "id": str(id),
+            "status": "cancelled",
+            "current_stage": "cancelled",
+            "eta_seconds": None,
+        },
+    )
 
     # Notify ML Engine microservice
     cancel_engine_job(id)

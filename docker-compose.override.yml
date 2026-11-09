@@ -25,6 +25,7 @@ services:
   qdrant:
     ports:
       - "6333:6333"
+      - "6334:6334"
 
   engine:
     ports:
