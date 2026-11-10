@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -33,6 +34,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Create .env from .env.example if missing
+        run: |
+          if [ -f .env.example ] && [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -46,7 +53,7 @@ jobs:
       - name: Normalize repository owner name
         id: repo
         run: |
-          echo "image_base=${REGISTRY}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "image_base=${{ env.REGISTRY }}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Build and push ${{ matrix.service }} image
         uses: docker/build-push-action@v6

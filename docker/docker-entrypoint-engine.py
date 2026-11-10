@@ -80,8 +80,8 @@ def main():
         print(f"Could not parse or connect to QDRANT_URL={qdrant_url}: {e}", flush=True)
 
     # Sync from host bind-mounts to fast Docker volumes if present
-    sync_host_directory("/host_models", "/app/models", "model")
-    sync_host_directory("/host_cache", "/app/data/cache", "cache")
+    sync_host_directory("/host_models", "/app/engine/models", "model")
+    sync_host_directory("/host_cache", "/app/engine/data/cache", "cache")
 
     # Check and prepare ONNX & INT8 models (Idempotent)
     sys.path.insert(0, "/app")

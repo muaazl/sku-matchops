@@ -11,9 +11,7 @@ from backend.app.schemas.models import (
     RuleTestRequest,
 )
 from backend.app.services import rules_service
-from engine.rules_engine.actions import apply_actions
-from engine.rules_engine.evaluator import evaluate_conditions
-from engine.rules_engine.loader import Rule
+from backend.app.services.engine_client import test_rule_via_engine
 
 router = APIRouter()
 
@@ -60,40 +58,15 @@ def reorder_rules(
 @router.post("/rules/test-draft")
 def test_rule_draft(request: RuleDraftTestRequest):
     rule_dict = request.rule.model_dump()
-    row_values = (
-        0,
-        rule_dict["rule_id"],
-        rule_dict["domain"],
-        rule_dict["priority"],
-        rule_dict["description"],
-        rule_dict["reasoning"],
-        rule_dict["condition_logic"],
-        rule_dict["is_active"],
-    )
-    engine_rule = Rule(row_values)
-    engine_rule.conditions = [
+    rule_dict["conditions"] = [
         c if isinstance(c, dict) else c.model_dump() if hasattr(c, "model_dump") else dict(c)
         for c in rule_dict.get("conditions", [])
     ]
-    engine_rule.actions = [
+    rule_dict["actions"] = [
         a if isinstance(a, dict) else a.model_dump() if hasattr(a, "model_dump") else dict(a)
         for a in rule_dict.get("actions", [])
     ]
-
-    record = dict(request.sample_record)
-    fires = evaluate_conditions(engine_rule, record)
-    changes = ""
-    if fires:
-        changes = apply_actions(engine_rule, record)
-
-    return {
-        "rule_id": rule_dict["rule_id"],
-        "fires": fires,
-        "matched_conditions": engine_rule.conditions if fires else [],
-        "actions_applied": engine_rule.actions if fires else [],
-        "changes": changes,
-        "sample_record_after": record,
-    }
+    return test_rule_via_engine(rule_dict, dict(request.sample_record))
 
 
 @router.put("/rules/{rule_id}", response_model=RuleOperationResponse)
@@ -146,31 +119,7 @@ def test_rule(
     if not rule_dict:
         raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found.")
 
-    row_values = (
-        rule_dict.get("id", 0),
-        rule_dict["rule_id"],
-        rule_dict["domain"],
-        rule_dict["priority"],
-        rule_dict["description"],
-        rule_dict["reasoning"],
-        rule_dict["condition_logic"],
-        rule_dict["is_active"],
+    return test_rule_via_engine(
+        rule_dict, dict(request.sample_record), tenant_id=principal.tenant_id
     )
-    engine_rule = Rule(row_values)
-    engine_rule.conditions = rule_dict.get("conditions", [])
-    engine_rule.actions = rule_dict.get("actions", [])
 
-    record = dict(request.sample_record)
-    fires = evaluate_conditions(engine_rule, record)
-    changes = ""
-    if fires:
-        changes = apply_actions(engine_rule, record)
-
-    return {
-        "rule_id": rule_id,
-        "fires": fires,
-        "matched_conditions": rule_dict["conditions"] if fires else [],
-        "actions_applied": rule_dict["actions"] if fires else [],
-        "changes": changes,
-        "sample_record_after": record,
-    }

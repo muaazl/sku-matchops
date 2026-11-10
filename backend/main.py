@@ -12,15 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from backend.app.api.routes import api_router
+from backend.app.core import config
+from backend.app.core.observability import TraceIdMiddleware, configure_logging
 from backend.app.db.init import init_db
 from backend.app.db.session import get_engine
 from backend.app.grpc_server import ensure_backend_grpc_server, stop_backend_grpc_server
 from backend.app.middleware.audit_logging import AuditLoggingMiddleware
 from backend.app.middleware.etag import ETagMiddleware
 from backend.app.services.rules_service import sync_rules_everywhere
-from engine import config
-from engine.core.observability import TraceIdMiddleware, configure_logging
-from engine.pipeline.task_queue import get_task_queue
+from backend.app.services.task_queue import get_task_queue
 
 # Configure logging with standard stream and file handlers
 LOG_DIR = config.LOG_DIR

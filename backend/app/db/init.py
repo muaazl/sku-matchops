@@ -17,9 +17,10 @@ def _run_alembic_upgrade() -> bool:
     """Runs Alembic migrations programmatically to head."""
     # Search for alembic.ini in project root or current working directory
     possible_paths = [
+        Path(os.getcwd()) / "backend" / "alembic.ini",
         Path(os.getcwd()) / "alembic.ini",
-        Path(__file__).resolve().parent.parent.parent.parent / "alembic.ini",
         Path(__file__).resolve().parent.parent.parent / "alembic.ini",
+        Path(__file__).resolve().parent.parent.parent.parent / "alembic.ini",
     ]
     ini_path = next((p for p in possible_paths if p.is_file()), None)
     if not ini_path:

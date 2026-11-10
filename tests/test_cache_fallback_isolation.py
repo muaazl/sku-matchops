@@ -180,6 +180,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.assertIn("bt", dicts)
         self.assertIn("Butter", dicts["bt"])
         self.assertIn("Dairy", dicts["gk"])
+        self.assertEqual(os.listdir(self.test_dir), [], "Backend must not write to CACHE_DIR")
 
     @patch("requests.get")
     def test_flavor_rules_cache_evaluates_from_feather_without_network(self, mock_get):

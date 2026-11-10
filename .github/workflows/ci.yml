@@ -50,7 +50,8 @@ jobs:
           uv pip install --python .venv/bin/python \
             --extra-index-url https://download.pytorch.org/whl/cpu \
             --index-strategy unsafe-best-match \
-            -r requirements.txt \
+            -r backend/requirements.txt \
+            -r engine/requirements.txt \
             pytest pytest-cov ruff
 
       - name: Run Ruff linter
@@ -114,6 +115,9 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Create .env from .env.example
+        run: cp .env.example .env
 
       - name: Validate Docker Compose Configuration
         run: docker compose config -q

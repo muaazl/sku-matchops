@@ -1,7 +1,9 @@
+import io
 import logging
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+import pyarrow.feather as feather
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy import text
 
 from backend.app.core.security import require_platform_admin
@@ -393,3 +395,57 @@ def build_catalog_cache(background_tasks: BackgroundTasks):
 def refresh_catalog_cache(background_tasks: BackgroundTasks):
     """Forces cache invalidation and rebuilds cache in background (delegates to build_catalog_cache)."""
     return build_catalog_cache(background_tasks)
+
+
+@router.get(
+    "/catalog/{domain}/snapshot/catalog.feather",
+    dependencies=[Depends(require_platform_admin)],
+)
+def get_catalog_feather_snapshot(domain: str):
+    """Streams the catalog table for the specified domain serialized as Feather binary."""
+    if domain not in ("market", "food"):
+        raise HTTPException(status_code=400, detail="Invalid domain. Must be 'market' or 'food'.")
+    try:
+        cat_df, _ = get_catalog_and_brands(domain)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    cat_feather = cat_df.copy()
+    if "entities" in cat_feather.columns:
+        cat_feather = cat_feather.drop(columns=["entities"])
+    if "weight_val" in cat_feather.columns:
+        cat_feather["weight_val"] = cat_feather["weight_val"].astype(str)
+    buf = io.BytesIO()
+    feather.write_feather(cat_feather.reset_index(drop=True), buf, compression="lz4")
+    return Response(content=buf.getvalue(), media_type="application/octet-stream")
+
+
+@router.get(
+    "/catalog/{domain}/snapshot/brands.feather",
+    dependencies=[Depends(require_platform_admin)],
+)
+def get_brands_feather_snapshot(domain: str):
+    """Streams the brand_flavors table for the specified domain serialized as Feather binary."""
+    if domain not in ("market", "food"):
+        raise HTTPException(status_code=400, detail="Invalid domain. Must be 'market' or 'food'.")
+    try:
+        _, brands_df = get_catalog_and_brands(domain)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    buf = io.BytesIO()
+    feather.write_feather(brands_df.reset_index(drop=True), buf, compression="lz4")
+    return Response(content=buf.getvalue(), media_type="application/octet-stream")
+
+
+@router.get(
+    "/catalog/{domain}/snapshot/dictionaries.json",
+    dependencies=[Depends(require_platform_admin)],
+)
+def get_dictionaries_snapshot(domain: str):
+    """Returns classifier dictionaries for the specified domain directly from PostgreSQL."""
+    if domain not in ("market", "food"):
+        raise HTTPException(status_code=400, detail="Invalid domain. Must be 'market' or 'food'.")
+    try:
+        return get_classifier_dicts(domain)
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+

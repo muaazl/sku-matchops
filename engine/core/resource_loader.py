@@ -5,6 +5,7 @@ Handles loading, warm-up, and singleton caching of ML pipelines, NER, and Classi
 
 import gc
 import logging
+import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -368,12 +369,95 @@ def trigger_model_load(reload: bool = False) -> tuple[str, str]:
     return "started", "Model loading triggered."
 
 
+def _fetch_snapshot_from_backend(domain: str) -> bool:
+    """Fetches catalog snapshot (Feather files & dictionaries) from backend API and writes to CACHE_DIR."""
+    import requests
+
+    backend_url = getattr(config, "BACKEND_HTTP_URL", "http://127.0.0.1:8000").rstrip("/")
+    api_key = getattr(config, "API_KEY", "bismillah")
+    headers = {"X-API-Key": api_key}
+
+    os.makedirs(config.CACHE_DIR, exist_ok=True)
+    cat_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
+    brands_path = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
+    dicts_path = os.path.join(config.CACHE_DIR, f"{domain}_classifier_dicts.json")
+
+    try:
+        # 1. Catalog Feather
+        r_cat = requests.get(
+            f"{backend_url}/catalog/{domain}/snapshot/catalog.feather",
+            headers=headers,
+            timeout=1.5,
+        )
+        if r_cat.status_code != 200:
+            return False
+
+        # 2. Brands Feather
+        r_brands = requests.get(
+            f"{backend_url}/catalog/{domain}/snapshot/brands.feather",
+            headers=headers,
+            timeout=1.5,
+        )
+        if r_brands.status_code != 200:
+            return False
+
+        with open(cat_path, "wb") as f:
+            f.write(r_cat.content)
+        with open(brands_path, "wb") as f:
+            f.write(r_brands.content)
+
+        # 3. Dictionaries JSON (optional best effort)
+        try:
+            r_dicts = requests.get(
+                f"{backend_url}/catalog/{domain}/snapshot/dictionaries.json",
+                headers=headers,
+                timeout=1.5,
+            )
+            if r_dicts.status_code == 200:
+                with open(dicts_path, "w", encoding="utf-8") as f:
+                    f.write(r_dicts.text)
+        except Exception as dict_err:
+            logger.warning(
+                f"[ENGINE] Failed to fetch dictionary snapshot for {domain}: {dict_err}"
+            )
+
+        return True
+    except Exception as e:
+        logger.warning(f"[ENGINE] Failed to reach backend snapshot for {domain}: {e}")
+        return False
+
+
+def _rebuild_data_caches() -> None:
+    """Engine owns data/cache: pull snapshot from backend; fallback to sheets/offline if backend unreachable."""
+    DataIngestion.clear_mem_cache()
+    for d in (config.DOMAIN_MARKET, config.DOMAIN_FOOD):
+        try:
+            ok = _fetch_snapshot_from_backend(d)
+            if ok:
+                logger.info(
+                    f"[ENGINE] Successfully updated local cache from backend snapshot for {d}."
+                )
+            else:
+                logger.warning(
+                    f"[ENGINE] Backend snapshot unavailable for {d}; falling back to local/Sheets cache."
+                )
+                DataIngestion.load_catalog(config.GOOGLE_SHEET_ID, domain=d, force_fetch=False)
+                DataIngestion.load_classifier_dictionaries(
+                    config.GOOGLE_SHEET_ID, d, force_fetch=False
+                )
+        except Exception as e:
+            # Keep serving from the previous on-disk cache rather than failing the reload.
+            logger.error(f"[ENGINE] Cache rebuild failed for {d}, using existing cache: {e}")
+            DataIngestion.clear_mem_cache(d)
+
+
 def _bg_load_models(reload: bool = False) -> None:
     global _queue_worker
     try:
         logger.info("[ENGINE] Background model loading and warmup started...")
         if reload:
             reset_statuses(clear_caches=True)
+            _rebuild_data_caches()
             gc.collect()
 
         try:

@@ -13,18 +13,18 @@ import grpc
 
 from backend.app.core import config as backend_config
 from backend.app.core.config import DEFAULT_TENANT
-from backend.app.schemas.models import BaseRequest
-from engine.core.grpc_utils import (
+from backend.app.core.grpc_utils import (
     GRPC_CHANNEL_OPTIONS,
     dict_to_sku_proto,
     grpc_metadata,
     pipeline_proto_to_result,
     unwrap_rpc_error,
 )
-from engine.core.observability import TRACE_ID
-from engine.pipeline.task_queue import get_task_queue
-from engine.protos import engine_service_pb2 as pb2
-from engine.protos import engine_service_pb2_grpc as pb2_grpc
+from backend.app.core.observability import get_trace_id
+from backend.app.protos import engine_service_pb2 as pb2
+from backend.app.protos import engine_service_pb2_grpc as pb2_grpc
+from backend.app.schemas.models import BaseRequest
+from backend.app.services.task_queue import get_task_queue
 
 logger = logging.getLogger("matchops.engine_client")
 
@@ -218,7 +218,7 @@ def dispatch_batch_job(
         "sheet_name": request.sheet_name,
         "spreadsheet_id": request.spreadsheet_id,
         "tenant_id": tenant_id,
-        "trace_id": TRACE_ID.get(),
+        "trace_id": get_trace_id(),
     }
     queued = _try_enqueue_redis(job_id, payload, "job")
     if queued is not None:
@@ -284,7 +284,7 @@ def dispatch_upload_job(
         "callback_url": None,
         "spreadsheet_id": None,
         "tenant_id": tenant_id,
-        "trace_id": TRACE_ID.get(),
+        "trace_id": get_trace_id(),
     }
     queued = _try_enqueue_redis(job_id, payload, "upload job")
     if queued is not None:
@@ -563,3 +563,97 @@ def run_sku_audit(
         return json.loads(resp.audit_json)
     except Exception as re:
         unwrap_rpc_error(re, ENGINE_GRPC_URL)
+
+
+def rerun_rules_via_engine(
+    sku_name: str,
+    domain: str,
+    bt: str,
+    gk: str,
+    region: str = "",
+    category: str = "",
+    price: float = 0.0,
+    confidence: float = 1.0,
+    match_source: str = "Classifier",
+    matched_sku: str = "",
+    reasoning: str = "",
+    tenant_id: str = DEFAULT_TENANT,
+) -> dict[str, Any]:
+    """Evaluates business rules for a single SKU prediction on the ML Engine via gRPC."""
+    stub = get_stub()
+    req = pb2.RerunRulesRequest(
+        sku_name=sku_name,
+        domain=domain,
+        bt=bt,
+        gk=gk,
+        region=region or "",
+        category=category or "",
+        price=float(price or 0.0),
+        confidence=float(confidence or 1.0),
+        match_source=match_source or "Classifier",
+        matched_sku=matched_sku or "",
+        reasoning=reasoning or "",
+        tenant_id=tenant_id or DEFAULT_TENANT,
+    )
+    try:
+        resp = stub.RerunRules(req, metadata=grpc_metadata(), timeout=10.0)
+        return {
+            "suggested_bt": resp.suggested_bt,
+            "suggested_gk": resp.suggested_gk,
+            "suggested_region": resp.suggested_region,
+            "rules_applied": resp.rules_applied,
+        }
+    except Exception as e:
+        try:
+            from backend.app.core.rules_evaluator import rerun_rules_locally
+
+            return rerun_rules_locally(
+                sku_name=sku_name,
+                domain=domain,
+                bt=bt,
+                gk=gk,
+                region=region,
+                category=category,
+                price=price,
+                confidence=confidence,
+                match_source=match_source,
+                matched_sku=matched_sku,
+                reasoning=reasoning,
+                tenant_id=tenant_id,
+            )
+        except Exception:
+            unwrap_rpc_error(e, ENGINE_GRPC_URL)
+            raise
+
+
+def test_rule_via_engine(
+    rule_dict: dict[str, Any],
+    sample_record: dict[str, Any],
+    tenant_id: str = DEFAULT_TENANT,
+) -> dict[str, Any]:
+    """Tests a rule against a sample record on the ML Engine via gRPC."""
+    stub = get_stub()
+    req = pb2.TestRuleRequest(
+        rule_json=json.dumps(rule_dict, default=str),
+        sample_record_json=json.dumps(sample_record, default=str),
+        tenant_id=tenant_id or DEFAULT_TENANT,
+    )
+    try:
+        resp = stub.TestRule(req, metadata=grpc_metadata(), timeout=10.0)
+        return {
+            "rule_id": resp.rule_id,
+            "fires": resp.fires,
+            "matched_conditions": json.loads(resp.matched_conditions_json or "[]"),
+            "actions_applied": json.loads(resp.actions_applied_json or "[]"),
+            "changes": resp.changes,
+            "sample_record_after": json.loads(resp.sample_record_after_json or "{}"),
+        }
+    except Exception as e:
+        try:
+            from backend.app.core.rules_evaluator import evaluate_rule_locally
+
+            return evaluate_rule_locally(rule_dict, sample_record)
+        except Exception:
+            unwrap_rpc_error(e, ENGINE_GRPC_URL)
+            raise
+

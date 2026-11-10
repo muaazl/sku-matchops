@@ -10,9 +10,9 @@ from typing import Any
 
 from sqlalchemy import text
 
+from backend.app.core.helpers import compute_weighted_confidence
+from backend.app.core.observability import MATCH_CONFIDENCE
 from backend.app.db.session import get_engine, upsert_processed_skus
-from engine.classification.tagger import compute_weighted_confidence
-from engine.core.observability import MATCH_CONFIDENCE
 
 logger = logging.getLogger("matchops.backend.persistence")
 

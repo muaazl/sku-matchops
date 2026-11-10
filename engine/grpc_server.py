@@ -34,8 +34,11 @@ from engine.pipeline.processor import process_request
 from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job
 from engine.protos import engine_service_pb2 as pb2
 from engine.protos import engine_service_pb2_grpc as pb2_grpc
-from engine.rules_engine import refresh_rules_cache
+from engine.rules_engine import refresh_rules_cache, run_rules_engine
+from engine.rules_engine.actions import apply_actions
+from engine.rules_engine.evaluator import evaluate_conditions
 from engine.rules_engine.loader import (
+    Rule,
     pinned_rules,
     set_rules_from_dicts,
     snapshot_rules,
@@ -467,6 +470,82 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             return pb2.JsonPayloadResponse(payload_json=json.dumps({"results": res}))
         except Exception as e:
             abort_rpc_error(context, logger, "SearchVectorCollection", e)
+
+    def RerunRules(self, request, context):
+        tenant = request.tenant_id or "default"
+        try:
+            gk_list = [x.strip() for x in request.gk.split(",") if x.strip()]
+            record = {
+                "sku_name": request.sku_name,
+                "domain": request.domain,
+                "bt": request.bt,
+                "gk": gk_list,
+                "region": request.region if request.domain == "food" else None,
+                "category": request.category if request.domain == "market" else None,
+                "price": request.price,
+                "confidence": request.confidence,
+                "match_source": request.match_source,
+                "matched_sku": request.matched_sku,
+                "reasoning": request.reasoning,
+                "rules_applied": [],
+            }
+            with pinned_rules(snapshot_rules(tenant)):
+                aug_record = run_rules_engine(record)
+
+            rules_applied = aug_record.get("rules_applied", [])
+            rules_applied_str = json.dumps(rules_applied) if rules_applied else ""
+
+            return pb2.RerunRulesResponse(
+                suggested_bt=str(aug_record.get("bt") or ""),
+                suggested_gk=", ".join(aug_record.get("gk", [])),
+                suggested_region=str(
+                    aug_record.get("region") or aug_record.get("category") or ""
+                ),
+                rules_applied=rules_applied_str,
+            )
+        except Exception as e:
+            abort_rpc_error(context, logger, "RerunRules", e)
+
+    def TestRule(self, request, context):
+        try:
+            rule_dict = json.loads(request.rule_json)
+            sample_record = json.loads(request.sample_record_json)
+
+            row_values = (
+                rule_dict.get("id", 0),
+                rule_dict["rule_id"],
+                rule_dict["domain"],
+                rule_dict["priority"],
+                rule_dict["description"],
+                rule_dict["reasoning"],
+                rule_dict["condition_logic"],
+                rule_dict.get("is_active", 1),
+            )
+            engine_rule = Rule(row_values)
+            engine_rule.conditions = rule_dict.get("conditions", [])
+            engine_rule.actions = rule_dict.get("actions", [])
+
+            record = dict(sample_record)
+            fires = evaluate_conditions(engine_rule, record)
+            changes = ""
+            if fires:
+                changes = apply_actions(engine_rule, record)
+
+            return pb2.TestRuleResponse(
+                rule_id=rule_dict["rule_id"],
+                fires=bool(fires),
+                matched_conditions_json=json.dumps(
+                    rule_dict.get("conditions", []) if fires else []
+                ),
+                actions_applied_json=json.dumps(
+                    rule_dict.get("actions", []) if fires else []
+                ),
+                changes=str(changes),
+                sample_record_after_json=json.dumps(record),
+            )
+        except Exception as e:
+            abort_rpc_error(context, logger, "TestRule", e)
+
 
 
 def start_grpc_server(port: int | None = None, host: str = "0.0.0.0") -> grpc.Server:

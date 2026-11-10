@@ -39,9 +39,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 
 DATA_DIR = os.path.join(ROOT_DIR, "data")
-CACHE_DIR = os.path.join(DATA_DIR, "cache")
-STAGING_DIR = os.path.join(CACHE_DIR, "staged_sheets")
-QDRANT_DATA_DIR = os.path.join(DATA_DIR, "qdrant")
+CACHE_DIR = os.path.join(BASE_DIR, "data", "cache")
+STAGING_DIR = os.path.join(DATA_DIR, "staged_sheets")
+QDRANT_DATA_DIR = os.path.join(BASE_DIR, "data", "qdrant")
 
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
@@ -54,9 +54,11 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 # Rule-cache distribution & invalidation (snapshot + version keys + pub/sub)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# --- Engine & Callback gRPC Services ---
+# --- Engine & Callback Services ---
 ENGINE_GRPC_PORT = int(os.getenv("ENGINE_GRPC_PORT", "50051"))
 BACKEND_GRPC_URL = os.getenv("BACKEND_GRPC_URL", "127.0.0.1:50052")
+BACKEND_HTTP_URL = os.getenv("BACKEND_HTTP_URL", "http://127.0.0.1:8000")
+API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
 INTERNAL_GRPC_SECRET = os.getenv("INTERNAL_GRPC_SECRET", "")
 
 # --- Distributed job queue (Redis) ---
@@ -92,7 +94,7 @@ QDRANT_COLLECTION_FOOD = "food_catalog"
 CACHE_SALT = "MatchOps_v2"
 
 # --- Model Artifacts & Quantization ---
-ONNX_DIR = os.path.join(ROOT_DIR, "models")
+ONNX_DIR = os.path.join(BASE_DIR, "models")
 ARCFACE_DIR = os.path.join(ONNX_DIR, "arcface")
 
 USE_INT8_MODELS = os.getenv("USE_INT8_MODELS", "true").lower() == "true"

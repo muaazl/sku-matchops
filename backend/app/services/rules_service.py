@@ -1,13 +1,88 @@
+import hashlib
+import json
 from typing import Any
 
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
+from backend.app.core import config
 from backend.app.core.config import DEFAULT_TENANT
 from backend.app.db.session import get_connection, next_seq_id
 from backend.app.schemas.models import RuleModel
 from backend.app.services.engine_client import refresh_engine_rules
-from engine.rules_engine.loader import publish_rules_snapshot
+
+RULES_DATA_KEY = "matchops:rules:data"
+RULES_VERSION_KEY = "matchops:rules:version"
+RULES_INVALIDATE_CHANNEL = "matchops:rules:invalidate"
+
+
+def compute_rules_version(rules_data: list[dict[str, Any]]) -> str:
+    if not rules_data:
+        return "4f53cda18c2baa0c"
+    fingerprint = [
+        [
+            r.get("rule_id"),
+            r.get("domain"),
+            r.get("priority"),
+            r.get("condition_logic"),
+            r.get("conditions", []),
+            r.get("actions", []),
+        ]
+        for r in rules_data
+    ]
+    return hashlib.sha256(
+        json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def publish_rules_snapshot(rules_data: list[dict[str, Any]]) -> tuple[str, bool]:
+    import sys
+
+    # In monorepo unit test environments where engine loader is loaded in the same process:
+    if "engine.rules_engine.loader" in sys.modules:
+        loader = sys.modules["engine.rules_engine.loader"]
+        return loader.publish_rules_snapshot(rules_data)
+
+    version = compute_rules_version(rules_data)
+    try:
+        import redis
+
+        client = redis.Redis.from_url(
+            config.REDIS_URL, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
+        )
+        payload = json.dumps(rules_data, default=str)
+        pipe = client.pipeline(transaction=True)
+        pipe.set(RULES_DATA_KEY, payload)
+        pipe.set(RULES_VERSION_KEY, version)
+        pipe.publish(RULES_INVALIDATE_CHANNEL, version)
+        pipe.execute()
+        return version, True
+    except Exception:
+        return version, False
+
+
+def get_rule_version(tenant_id: str = DEFAULT_TENANT) -> str:
+    import sys
+
+    if "engine.rules_engine.loader" in sys.modules:
+        loader = sys.modules["engine.rules_engine.loader"]
+        return loader.snapshot_rules(tenant_id).version
+
+    try:
+        import redis
+
+        client = redis.Redis.from_url(
+            config.REDIS_URL, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
+        )
+        v = client.get(RULES_VERSION_KEY)
+        if v:
+            return v
+    except Exception:
+        pass
+    active_rules = [
+        r for r in load_active_rules_from_db() if r.get("tenant_id", DEFAULT_TENANT) == tenant_id
+    ]
+    return compute_rules_version(active_rules)
 
 
 def load_active_rules_from_db(db: Connection | None = None) -> list[dict[str, Any]]:

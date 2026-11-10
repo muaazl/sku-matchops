@@ -15,16 +15,15 @@ import grpc
 from sqlalchemy import text
 
 from backend.app.core import config
-from backend.app.db.session import get_engine, log_outbound_request
-from backend.app.services.persistence import record_job_completion, record_job_failure
-from engine import config as engine_config
-from engine.core.grpc_utils import (
+from backend.app.core.grpc_utils import (
     GRPC_CHANNEL_OPTIONS,
     GrpcContextInterceptor,
     pipeline_proto_to_result,
 )
-from engine.protos import engine_service_pb2 as pb2
-from engine.protos import engine_service_pb2_grpc as pb2_grpc
+from backend.app.db.session import get_engine, log_outbound_request
+from backend.app.protos import engine_service_pb2 as pb2
+from backend.app.protos import engine_service_pb2_grpc as pb2_grpc
+from backend.app.services.persistence import record_job_completion, record_job_failure
 
 logger = logging.getLogger("matchops.backend.grpc")
 
@@ -60,7 +59,7 @@ def _progress_redis():
     global _redis_client, _redis_target
     if time.monotonic() < _redis_down_until:
         return None
-    url = engine_config.REDIS_URL
+    url = config.REDIS_URL
     with _redis_lock:
         if _redis_client is None or _redis_target != url:
             try:

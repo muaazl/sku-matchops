@@ -827,7 +827,7 @@ export default function CatalogSearch() {
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         title="Sync from Google Sheets"
-        message="Are you sure you want to synchronize the catalog with Google Sheets? This will download the latest sheets, update Meilisearch/Qdrant databases, and rebuild the classifier models in the background."
+        message="Are you sure you want to synchronize the catalog with Google Sheets? This will download the latest sheets, update Qdrant databases, and rebuild the classifier models in the background."
         onConfirm={() => {
           setConfirmOpen(false);
           handleSyncCache();

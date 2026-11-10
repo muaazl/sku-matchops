@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import Connection, text
 from starlette.concurrency import run_in_threadpool
 
+from backend.app.core import config as backend_config
 from backend.app.core.security import Principal, get_principal
 from backend.app.db.schema import jobs as jobs_table
 from backend.app.db.session import get_db_connection, get_engine
@@ -21,7 +22,6 @@ from backend.app.grpc_server import (
 from backend.app.schemas.models import BaseRequest, JobResponse, SKUItem
 from backend.app.services.engine_client import cancel_engine_job
 from backend.app.services.worker import enqueue_job
-from engine import config as engine_config
 
 # The list never shows the uploaded SKUs (~15 KB a job); /jobs/{id} and retry still read them
 _JOB_LIST_COLUMNS = ", ".join(c.name for c in jobs_table.columns if c.name != "input_skus_json")
@@ -402,8 +402,8 @@ def get_tag_stats(
     # confidence columns using the same thresholds the live tagger applies
     # (engine/classification/tagger.py get_status()), so this can never drift
     # out of sync with the actual pipeline behavior.
-    auto_t = engine_config.AUTO_THRESHOLD
-    review_t = engine_config.REVIEW_THRESHOLD
+    auto_t = backend_config.AUTO_THRESHOLD
+    review_t = backend_config.REVIEW_THRESHOLD
 
     status_q = f"""
         SELECT
@@ -442,7 +442,7 @@ async def _open_tenant_pubsub(tenant_id: str):
     import redis.asyncio as aioredis
 
     client = aioredis.from_url(
-        engine_config.REDIS_URL,
+        backend_config.REDIS_URL,
         socket_connect_timeout=1.0,
         health_check_interval=30,
         decode_responses=True,

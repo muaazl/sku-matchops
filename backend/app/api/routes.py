@@ -20,6 +20,7 @@ from backend.app.api.endpoints.requests_log import router as requests_log_router
 from backend.app.api.endpoints.rules_api import router as rules_router
 from backend.app.api.endpoints.upload import router as upload_router
 from backend.app.core import config
+from backend.app.core.observability import metrics_payload
 from backend.app.core.security import get_principal, require_platform_admin
 from backend.app.db.session import get_engine
 from backend.app.schemas.models import (
@@ -30,8 +31,6 @@ from backend.app.schemas.models import (
 )
 from backend.app.services.engine_client import get_engine_health
 from backend.app.services.worker import enqueue_job
-from engine import config as engine_config
-from engine.core.observability import metrics_payload
 
 api_router = APIRouter()
 
@@ -149,7 +148,7 @@ def get_logs(lines: int = Query(500, ge=1, le=20000)):
     """
     Returns the last N lines of the application logs.
     """
-    log_file = engine_config.LOG_FILE
+    log_file = config.LOG_FILE
 
     if not os.path.exists(log_file):
         return {"logs": "Log file not found."}

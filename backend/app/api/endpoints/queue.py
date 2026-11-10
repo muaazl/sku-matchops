@@ -4,8 +4,8 @@ from sqlalchemy import text
 from backend.app.core.security import Principal, get_principal, require_admin
 from backend.app.db.session import get_engine
 from backend.app.grpc_server import clear_job_progress, publish_job_event, set_job_progress
-from engine.pipeline.task_queue import TaskQueue, get_task_queue
-from engine.rules_engine.loader import snapshot_rules
+from backend.app.services.rules_service import get_rule_version
+from backend.app.services.task_queue import TaskQueue, get_task_queue
 
 router = APIRouter()
 
@@ -99,7 +99,7 @@ def system_status(principal: Principal = Depends(get_principal)):
     return {
         "tenant_id": principal.tenant_id,
         "processed_skus": processed,
-        "rule_version": snapshot_rules(principal.tenant_id).version,
+        "rule_version": get_rule_version(principal.tenant_id),
         "queue_online": queue_online,
         "queue_depth": queue_depth,
         "dlq_size": dlq_size,

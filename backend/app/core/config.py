@@ -8,6 +8,7 @@ load_dotenv()
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
 APPSCRIPT_WEBHOOK_URL = os.getenv("APPSCRIPT_WEBHOOK_URL", "")
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
 # --- PostgreSQL & PgBouncer (owned exclusively by the Backend Gateway) ---
 DATABASE_URL = os.getenv(
@@ -26,6 +27,18 @@ ENGINE_GRPC_URL = os.getenv("ENGINE_GRPC_URL", "127.0.0.1:50051")
 BACKEND_GRPC_PORT = int(os.getenv("BACKEND_GRPC_PORT", "50052"))
 BACKEND_GRPC_URL = os.getenv("BACKEND_GRPC_URL", f"127.0.0.1:{BACKEND_GRPC_PORT}")
 INTERNAL_GRPC_SECRET = os.getenv("INTERNAL_GRPC_SECRET", "")
+
+# --- Redis & Task Queue ---
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# --- Thresholds ---
+AUTO_THRESHOLD = float(os.getenv("AUTO_THRESHOLD", "0.85"))
+REVIEW_THRESHOLD = float(os.getenv("REVIEW_THRESHOLD", "0.60"))
+
+# --- Logging ---
+LOG_DIR = os.getenv("LOG_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "logs"))
+LOG_FILE = os.getenv("LOG_FILE", os.path.join(LOG_DIR, "backend.log"))
+LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
 
 # --- Authentication / RBAC ---
 # Off (dev default): unauthenticated requests act as an admin of the X-Tenant-ID tenant

@@ -1,19 +1,22 @@
-import json
 import logging
-import os
 import threading
 from typing import Any
 
-import joblib
 import pandas as pd
 import requests
 from sqlalchemy import text
 
+from backend.app.core import config as backend_config
+from backend.app.core.constants import (
+    CATALOG_COL_MAP_FOOD,
+    CATALOG_COL_MAP_MARKET,
+    FOOD_CATALOG_SHEET,
+    MARKET_CATALOG_SHEET,
+    get_third_tag_col,
+)
+from backend.app.core.helpers import calculate_row_hash, clean_price
 from backend.app.db.session import get_connection
 from backend.app.services.catalog_sync import query_catalog_from_database
-from engine import config as engine_config
-from engine.data_pipeline.cache_manager import calculate_row_hash, clean_price
-from engine.data_pipeline.ingestion import DataIngestion
 
 logger = logging.getLogger("matchops.catalog_service")
 
@@ -22,69 +25,34 @@ _build_in_progress = False
 
 
 def get_catalog_and_brands(domain: str):
-    """Load catalog and brands/flavors from local Feather cache, falling back to PostgreSQL."""
-    try:
-        return DataIngestion.load_catalog(engine_config.GOOGLE_SHEET_ID, domain, force_fetch=False)
-    except RuntimeError:
-        cat_df, brands_df = query_catalog_from_database(domain)
-        if cat_df.empty:
-            raise RuntimeError(
-                f"No catalog data found in Feather cache or PostgreSQL for domain '{domain}'."
-            )
-        return cat_df, brands_df
+    """Load catalog and brands/flavors from PostgreSQL (backend source of truth)."""
+    cat_df, brands_df = query_catalog_from_database(domain)
+    if cat_df.empty:
+        raise RuntimeError(f"No catalog data found in PostgreSQL for domain '{domain}'.")
+    return cat_df, brands_df
 
 
 def get_classifier_dicts(domain: str) -> dict[str, Any]:
-    """Load classifier dictionaries (GK, BT, category/region tags) from local cache or PostgreSQL."""
-    dicts_cache = os.path.join(engine_config.CACHE_DIR, f"{domain}_classifier_dicts.json")
-    if os.path.exists(dicts_cache):
-        try:
-            with open(dicts_cache, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"Failed to read dict cache for domain {domain}: {e}")
-
-    try:
-        dicts = DataIngestion.load_classifier_dictionaries(
-            engine_config.GOOGLE_SHEET_ID, domain, force_fetch=False
-        )
-    except RuntimeError:
-        third_tag_key = engine_config.get_third_tag_col(domain)
-        dicts = {"gk": [], "bt": [], third_tag_key: []}
-        with get_connection() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT tag_type, tag FROM classifier_dictionaries "
-                    "WHERE domain = :domain ORDER BY id"
-                ),
-                {"domain": domain},
-            ).fetchall()
-        if not rows:
-            raise RuntimeError(
-                f"No classifier dictionaries found in local cache or PostgreSQL for domain '{domain}'."
-            )
-        for tag_type, tag in rows:
-            dicts.setdefault(tag_type, []).append(tag)
-
-    try:
-        os.makedirs(engine_config.CACHE_DIR, exist_ok=True)
-        with open(dicts_cache, "w", encoding="utf-8") as f:
-            json.dump(dicts, f, indent=2)
-    except Exception as e:
-        logger.warning(f"Failed to save dict cache for domain {domain}: {e}")
+    """Load classifier dictionaries (GK, BT, category/region tags) from PostgreSQL."""
+    third_tag_key = get_third_tag_col(domain)
+    dicts = {"gk": [], "bt": [], third_tag_key: []}
+    with get_connection() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT tag_type, tag FROM classifier_dictionaries "
+                "WHERE domain = :domain ORDER BY id"
+            ),
+            {"domain": domain},
+        ).fetchall()
+    if not rows:
+        raise RuntimeError(f"No classifier dictionaries found in PostgreSQL for domain '{domain}'.")
+    for tag_type, tag in rows:
+        dicts.setdefault(tag_type, []).append(tag)
     return dicts
 
 
 def get_bt_gk_cache(domain: str) -> dict[str, Any]:
-    """Load the cached BT-GK map and umbrella tags from pkl file, or reconstruct from PostgreSQL."""
-    cache_path = os.path.join(engine_config.CACHE_DIR, f"{domain}_bt_gk_cache.pkl")
-    if os.path.exists(cache_path):
-        try:
-            return joblib.load(cache_path)
-        except Exception as e:
-            logger.warning(f"Failed to load BT-GK cache for domain {domain}: {e}")
-
-    # Reconstruct from the bt_gk_map table if pkl cache is missing
+    """Load the BT-GK map from PostgreSQL. Umbrella/third-tag maps are engine-internal."""
     try:
         with get_connection() as conn:
             rows = conn.execute(
@@ -176,18 +144,18 @@ def check_changes_for_domain(domain: str, limit: int = 50) -> dict:
         conn.close()
 
     sheet_name = (
-        engine_config.FOOD_CATALOG_SHEET if domain == "food" else engine_config.MARKET_CATALOG_SHEET
+        FOOD_CATALOG_SHEET if domain == "food" else MARKET_CATALOG_SHEET
     )
-    url = f"https://docs.google.com/spreadsheets/d/{engine_config.GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name.replace(' ', '%20')}"
+    url = f"https://docs.google.com/spreadsheets/d/{backend_config.GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name.replace(' ', '%20')}"
     r = requests.get(url, timeout=15)
     r.raise_for_status()
 
     catalog_pl = pl.read_csv(r.content, ignore_errors=True)
     catalog_pl = catalog_pl.select([c for c in catalog_pl.columns if not c.startswith("Unnamed")])
     col_map = (
-        engine_config.CATALOG_COL_MAP_FOOD
+        CATALOG_COL_MAP_FOOD
         if domain == "food"
-        else engine_config.CATALOG_COL_MAP_MARKET
+        else CATALOG_COL_MAP_MARKET
     )
     catalog_pl = catalog_pl.rename({k: v for k, v in col_map.items() if k in catalog_pl.columns})
     new_df = catalog_pl.to_pandas()
@@ -287,7 +255,7 @@ def check_changes_for_domain(domain: str, limit: int = 50) -> dict:
 
 
 def _bg_build_cache():
-    """Background task to rebuild Feather caches and warm up classifiers/pipelines."""
+    """Background task: sync source data into PostgreSQL, then tell the engine to rebuild its caches."""
     global _build_in_progress
     logger.info("Background cache build and pre-training started...")
     try:
@@ -299,14 +267,14 @@ def _bg_build_cache():
         )
 
         for domain in ("market", "food"):
-            logger.info(f"Rebuilding Feather cache for {domain}...")
-            cat_df, _ = sync_catalog_to_database(engine_config.GOOGLE_SHEET_ID, domain=domain)
+            logger.info(f"Syncing {domain} catalog into PostgreSQL...")
+            cat_df, _ = sync_catalog_to_database(backend_config.GOOGLE_SHEET_ID, domain=domain)
             try:
                 sync_classifier_dictionaries_to_database(
-                    engine_config.GOOGLE_SHEET_ID, domain=domain
+                    backend_config.GOOGLE_SHEET_ID, domain=domain
                 )
                 sync_bt_gk_map_to_database(
-                    engine_config.GOOGLE_SHEET_ID, domain=domain, cat_df=cat_df
+                    backend_config.GOOGLE_SHEET_ID, domain=domain, cat_df=cat_df
                 )
                 compute_and_store_dictionary_counts(domain, cat_df=cat_df)
 
