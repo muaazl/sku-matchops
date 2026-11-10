@@ -123,9 +123,7 @@ def sync_catalog_to_database(
     """
     if not sheet_id:
         sheet_id = backend_config.GOOGLE_SHEET_ID
-    sheet_name = (
-        FOOD_CATALOG_SHEET if domain == DOMAIN_FOOD else MARKET_CATALOG_SHEET
-    )
+    sheet_name = FOOD_CATALOG_SHEET if domain == DOMAIN_FOOD else MARKET_CATALOG_SHEET
     brand_sheet = "Food_Flavors" if domain == DOMAIN_FOOD else "Market_Brands"
 
     logger.info(
@@ -150,11 +148,7 @@ def sync_catalog_to_database(
     # Clean/Parse Polars DataFrames
     catalog_pl = pl.read_csv(catalog_text.encode("utf-8"), ignore_errors=True)
     catalog_pl = catalog_pl.select([c for c in catalog_pl.columns if not c.startswith("Unnamed")])
-    col_map = (
-        CATALOG_COL_MAP_FOOD
-        if domain == DOMAIN_FOOD
-        else CATALOG_COL_MAP_MARKET
-    )
+    col_map = CATALOG_COL_MAP_FOOD if domain == DOMAIN_FOOD else CATALOG_COL_MAP_MARKET
     catalog_pl = catalog_pl.rename({k: v for k, v in col_map.items() if k in catalog_pl.columns})
 
     if "Name" in catalog_pl.columns:
@@ -308,9 +302,7 @@ def sync_catalog_to_database(
 
         for row in brands_df_raw.to_dict(orient="records"):
             row = _nan_to_none(row)
-            name_val = (
-                row.get("Flavor Name") if domain == DOMAIN_FOOD else row.get("Brand Name")
-            )
+            name_val = row.get("Flavor Name") if domain == DOMAIN_FOOD else row.get("Brand Name")
             raw_name = str(name_val).strip().lower()
             brand_counts_new[raw_name] = brand_counts_new.get(raw_name, 0) + 1
             uid = f"{raw_name}#occ_{brand_counts_new[raw_name]}"

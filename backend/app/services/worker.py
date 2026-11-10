@@ -109,8 +109,8 @@ def register_and_dispatch_job(
                     ),
                     {"err": str(dispatch_err), "id": job_id},
                 )
-        except Exception:
-            pass
+        except Exception as db_err:
+            logger.error(f"[JOB {job_id}] Failed to record failure state in database: {db_err}")
         publish_job_event(
             tenant_id,
             {

@@ -11,7 +11,7 @@ from typing import Any
 import grpc
 
 from backend.app.core import config
-from backend.app.core.observability import TRACE_ID, get_trace_id
+from backend.app.core.observability import TENANT_ID, TRACE_ID, get_tenant_id, get_trace_id
 from backend.app.protos import engine_service_pb2 as pb2
 
 logger = logging.getLogger("matchops.backend.grpc_utils")
@@ -25,11 +25,15 @@ GRPC_CHANNEL_OPTIONS = (
 
 
 def grpc_metadata() -> tuple[tuple[str, str], ...]:
-    """Outbound gRPC metadata carrying active trace_id and shared internal secret."""
+    """Outbound gRPC metadata carrying active trace_id, tenant_id, and shared internal secret."""
     meta: list[tuple[str, str]] = []
     trace_id = get_trace_id()
     if trace_id != "-":
         meta.append(("x-request-id", trace_id))
+
+    tenant_id = get_tenant_id()
+    if tenant_id != "-":
+        meta.append(("x-tenant-id", tenant_id))
 
     secret = config.INTERNAL_GRPC_SECRET
     if not secret:
@@ -53,27 +57,54 @@ class GrpcContextInterceptor(grpc.ServerInterceptor):
 
         meta = {k.lower(): v for k, v in (handler_call_details.invocation_metadata or ())}
         secret = config.INTERNAL_GRPC_SECRET
-        if secret and not hmac.compare_digest(str(meta.get("x-internal-secret", "")), secret):
+        if not secret:
+            import sys
 
-            def _unauthenticated(_request, context):
-                context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid internal gRPC secret.")
+            if "engine.config" in sys.modules:
+                secret = getattr(sys.modules["engine.config"], "INTERNAL_GRPC_SECRET", "")
+
+        if secret:
+            incoming = str(meta.get("x-internal-secret", ""))
+            if not incoming or not hmac.compare_digest(incoming, secret):
+
+                def _unauthenticated(_request, context):
+                    context.abort(
+                        grpc.StatusCode.UNAUTHENTICATED, "Invalid or missing internal gRPC secret."
+                    )
+
+                return grpc.unary_unary_rpc_method_handler(
+                    _unauthenticated,
+                    request_deserializer=handler.request_deserializer,
+                    response_serializer=handler.response_serializer,
+                )
+        elif getattr(config, "ENVIRONMENT", "development") in ("production", "prod"):
+
+            def _prod_unauthenticated(_request, context):
+                context.abort(
+                    grpc.StatusCode.UNAUTHENTICATED,
+                    "INTERNAL_GRPC_SECRET must be configured in production environments.",
+                )
 
             return grpc.unary_unary_rpc_method_handler(
-                _unauthenticated,
+                _prod_unauthenticated,
                 request_deserializer=handler.request_deserializer,
                 response_serializer=handler.response_serializer,
             )
 
         raw_trace = str(meta.get("x-request-id", ""))
         trace_id = raw_trace if _VALID_TRACE.match(raw_trace) else "-"
+        raw_tenant = str(meta.get("x-tenant-id", ""))
+        tenant_id = raw_tenant if raw_tenant else "-"
         inner = handler.unary_unary
 
         def _scoped(request, context):
             token = TRACE_ID.set(trace_id)
+            tenant_token = TENANT_ID.set(tenant_id)
             try:
                 return inner(request, context)
             finally:
                 TRACE_ID.reset(token)
+                TENANT_ID.reset(tenant_token)
 
         return grpc.unary_unary_rpc_method_handler(
             _scoped,

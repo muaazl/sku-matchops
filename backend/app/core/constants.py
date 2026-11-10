@@ -47,4 +47,3 @@ CATALOG_COL_MAP_MARKET = {
 
 def get_third_tag_col(domain: str = "market") -> str:
     return "region" if domain == "food" else "category"
-

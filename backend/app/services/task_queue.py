@@ -8,11 +8,26 @@ import logging
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from backend.app.core import config
 
 logger = logging.getLogger("matchops.backend.task_queue")
+
+
+@runtime_checkable
+class TaskQueueProtocol(Protocol):
+    def enqueue(self, payload: dict[str, Any], queue: str | None = None) -> str: ...
+    def request_cancel(self, job_id: str) -> None: ...
+    def is_cancelled(self, job_id: str) -> bool: ...
+    def dlq_items(self, limit: int = 100, tenant_id: str | None = None) -> list[dict]: ...
+    def dlq_count(self, tenant_id: str = "default") -> int: ...
+    def replay(self, task_id: str, tenant_id: str | None = None) -> str | None: ...
+    def drop_dlq(self, task_id: str, tenant_id: str | None = None) -> bool: ...
+    def tracked_job_ids(self) -> set[str]: ...
+    def stats(self) -> dict[str, int]: ...
+    def ping(self) -> bool: ...
+
 
 REALTIME = "matchops:queue:realtime"
 BULK = "matchops:queue:bulk"
@@ -23,6 +38,10 @@ TASKS = "matchops:queue:tasks"
 TASK_JOBS = "matchops:queue:task_jobs"
 DELAYED = {REALTIME: f"{REALTIME}:delayed", BULK: f"{BULK}:delayed"}
 CANCEL_PREFIX = "matchops:job:cancelled:"
+
+
+def tenant_dlq_key(tenant_id: str = "default") -> str:
+    return f"matchops:queue:dlq:{tenant_id or 'default'}"
 
 
 def _now() -> float:
@@ -70,7 +89,21 @@ class TaskQueue:
     def is_cancelled(self, job_id: str) -> bool:
         return bool(self.r.exists(f"{CANCEL_PREFIX}{job_id}"))
 
-    def dlq_items(self, limit: int = 100) -> list[dict]:
+    def dlq_items(self, limit: int = 100, tenant_id: str | None = None) -> list[dict]:
+        if tenant_id:
+            t_dlq = tenant_dlq_key(tenant_id)
+            raws = self.r.lrange(t_dlq, 0, limit - 1)
+            if raws:
+                return [json.loads(raw) for raw in raws]
+            # Fallback for un-partitioned legacy DLQ entries
+            items = []
+            for raw in self.r.lrange(DLQ, 0, -1):
+                entry = json.loads(raw)
+                if str(entry.get("payload", {}).get("tenant_id") or "default") == tenant_id:
+                    items.append(entry)
+                    if len(items) >= limit:
+                        break
+            return items
         return [json.loads(raw) for raw in self.r.lrange(DLQ, 0, limit - 1)]
 
     def dlq_count(self, tenant_id: str = "default") -> int:
@@ -93,24 +126,48 @@ class TaskQueue:
             self.r.hset(DLQ_TENANTS, mapping=counts)
         return counts.get(tenant_id, 0)
 
-    def replay(self, task_id: str) -> str | None:
-        for raw in self.r.lrange(DLQ, 0, -1):
-            entry = json.loads(raw)
-            if entry["task_id"] == task_id and self.r.lrem(DLQ, 1, raw):
-                tenant_id = str(entry["payload"].get("tenant_id") or "default")
-                if self.r.hincrby(DLQ_TENANTS, tenant_id, -1) <= 0:
-                    self.r.hdel(DLQ_TENANTS, tenant_id)
-                return self.enqueue(entry["payload"], queue=entry["queue"])
+    def replay(self, task_id: str, tenant_id: str | None = None) -> str | None:
+        target_keys = [tenant_dlq_key(tenant_id)] if tenant_id else []
+        if DLQ not in target_keys:
+            target_keys.append(DLQ)
+
+        for q_key in target_keys:
+            for raw in self.r.lrange(q_key, 0, -1):
+                entry = json.loads(raw)
+                if entry["task_id"] == task_id:
+                    entry_tenant = str(entry.get("payload", {}).get("tenant_id") or "default")
+                    if tenant_id and entry_tenant != tenant_id:
+                        continue
+                    if self.r.lrem(q_key, 1, raw):
+                        if q_key != DLQ:
+                            self.r.lrem(DLQ, 1, raw)
+                        else:
+                            self.r.lrem(tenant_dlq_key(entry_tenant), 1, raw)
+                        if self.r.hincrby(DLQ_TENANTS, entry_tenant, -1) <= 0:
+                            self.r.hdel(DLQ_TENANTS, entry_tenant)
+                        return self.enqueue(entry["payload"], queue=entry["queue"])
         return None
 
-    def drop_dlq(self, task_id: str) -> bool:
-        for raw in self.r.lrange(DLQ, 0, -1):
-            entry = json.loads(raw)
-            if entry["task_id"] == task_id and self.r.lrem(DLQ, 1, raw):
-                tenant_id = str(entry["payload"].get("tenant_id") or "default")
-                if self.r.hincrby(DLQ_TENANTS, tenant_id, -1) <= 0:
-                    self.r.hdel(DLQ_TENANTS, tenant_id)
-                return True
+    def drop_dlq(self, task_id: str, tenant_id: str | None = None) -> bool:
+        target_keys = [tenant_dlq_key(tenant_id)] if tenant_id else []
+        if DLQ not in target_keys:
+            target_keys.append(DLQ)
+
+        for q_key in target_keys:
+            for raw in self.r.lrange(q_key, 0, -1):
+                entry = json.loads(raw)
+                if entry["task_id"] == task_id:
+                    entry_tenant = str(entry.get("payload", {}).get("tenant_id") or "default")
+                    if tenant_id and entry_tenant != tenant_id:
+                        continue
+                    if self.r.lrem(q_key, 1, raw):
+                        if q_key != DLQ:
+                            self.r.lrem(DLQ, 1, raw)
+                        else:
+                            self.r.lrem(tenant_dlq_key(entry_tenant), 1, raw)
+                        if self.r.hincrby(DLQ_TENANTS, entry_tenant, -1) <= 0:
+                            self.r.hdel(DLQ_TENANTS, entry_tenant)
+                        return True
         return False
 
     def tracked_job_ids(self) -> set[str]:

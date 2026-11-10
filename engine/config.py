@@ -55,11 +55,20 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 # --- Engine & Callback Services ---
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 ENGINE_GRPC_PORT = int(os.getenv("ENGINE_GRPC_PORT", "50051"))
 BACKEND_GRPC_URL = os.getenv("BACKEND_GRPC_URL", "127.0.0.1:50052")
 BACKEND_HTTP_URL = os.getenv("BACKEND_HTTP_URL", "http://127.0.0.1:8000")
 API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
 INTERNAL_GRPC_SECRET = os.getenv("INTERNAL_GRPC_SECRET", "")
+
+if ENVIRONMENT in ("production", "prod"):
+    if not API_KEY or API_KEY == "bismillah":
+        raise RuntimeError(
+            "A secure, non-default MATCHOPS_API_KEY must be configured in production environments."
+        )
+    if not INTERNAL_GRPC_SECRET:
+        raise RuntimeError("INTERNAL_GRPC_SECRET must be configured in production environments.")
 
 # --- Distributed job queue (Redis) ---
 # Off -> direct gRPC dispatch to a single engine. On but Redis unreachable -> same fallback.

@@ -417,9 +417,7 @@ def _fetch_snapshot_from_backend(domain: str) -> bool:
                 with open(dicts_path, "w", encoding="utf-8") as f:
                     f.write(r_dicts.text)
         except Exception as dict_err:
-            logger.warning(
-                f"[ENGINE] Failed to fetch dictionary snapshot for {domain}: {dict_err}"
-            )
+            logger.warning(f"[ENGINE] Failed to fetch dictionary snapshot for {domain}: {dict_err}")
 
         return True
     except Exception as e:

@@ -36,7 +36,12 @@ AUTO_THRESHOLD = float(os.getenv("AUTO_THRESHOLD", "0.85"))
 REVIEW_THRESHOLD = float(os.getenv("REVIEW_THRESHOLD", "0.60"))
 
 # --- Logging ---
-LOG_DIR = os.getenv("LOG_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "logs"))
+LOG_DIR = os.getenv(
+    "LOG_DIR",
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "logs"
+    ),
+)
 LOG_FILE = os.getenv("LOG_FILE", os.path.join(LOG_DIR, "backend.log"))
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
 
@@ -55,3 +60,9 @@ if ENVIRONMENT in ("production", "prod"):
         raise RuntimeError("AUTH_ENABLED must be true in production environments.")
     if not JWT_SECRET or JWT_SECRET == "change_me_in_production":
         raise RuntimeError("A secure JWT_SECRET must be configured in production environments.")
+    if not API_KEY or API_KEY == "bismillah":
+        raise RuntimeError(
+            "A secure, non-default MATCHOPS_API_KEY must be configured in production environments."
+        )
+    if not INTERNAL_GRPC_SECRET:
+        raise RuntimeError("INTERNAL_GRPC_SECRET must be configured in production environments.")

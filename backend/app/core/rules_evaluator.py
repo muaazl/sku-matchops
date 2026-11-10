@@ -29,7 +29,10 @@ def _evaluate_single_condition(cond: dict[str, Any], record: dict[str, Any]) -> 
 
         elif ctype == "gk_contains":
             raw_gk = record.get("gk", [])
-            gks = [str(g).lower() for g in (raw_gk if isinstance(raw_gk, list) else str(raw_gk).split(","))]
+            gks = [
+                str(g).lower()
+                for g in (raw_gk if isinstance(raw_gk, list) else str(raw_gk).split(","))
+            ]
             result = val.lower() in [g.strip() for g in gks]
 
         elif ctype == "category_contains":
@@ -100,14 +103,22 @@ def apply_rule_actions(rule_dict: dict[str, Any], record: dict[str, Any]) -> lis
                     changes.append(f"BT changed to '{val}'")
             elif atype == "add_gk":
                 raw_gk = record.get("gk")
-                gk_list = list(raw_gk) if isinstance(raw_gk, list) else [g.strip() for g in str(raw_gk or "").split(",") if g.strip()]
+                gk_list = (
+                    list(raw_gk)
+                    if isinstance(raw_gk, list)
+                    else [g.strip() for g in str(raw_gk or "").split(",") if g.strip()]
+                )
                 if val not in gk_list:
                     gk_list.append(val)
                     record["gk"] = gk_list
                     changes.append(f"Added GK '{val}'")
             elif atype == "remove_gk":
                 raw_gk = record.get("gk")
-                gk_list = list(raw_gk) if isinstance(raw_gk, list) else [g.strip() for g in str(raw_gk or "").split(",") if g.strip()]
+                gk_list = (
+                    list(raw_gk)
+                    if isinstance(raw_gk, list)
+                    else [g.strip() for g in str(raw_gk or "").split(",") if g.strip()]
+                )
                 if val in gk_list:
                     gk_list.remove(val)
                     record["gk"] = gk_list
@@ -132,7 +143,9 @@ def apply_rule_actions(rule_dict: dict[str, Any], record: dict[str, Any]) -> lis
     return changes
 
 
-def evaluate_rule_locally(rule_dict: dict[str, Any], sample_record: dict[str, Any]) -> dict[str, Any]:
+def evaluate_rule_locally(
+    rule_dict: dict[str, Any], sample_record: dict[str, Any]
+) -> dict[str, Any]:
     record = dict(sample_record)
     fires = evaluate_rule_conditions(rule_dict, record)
     changes = []
@@ -176,7 +189,9 @@ def rerun_rules_locally(
         "matched_sku": matched_sku,
         "reasoning": reasoning,
     }
-    rules = [r for r in load_active_rules_from_db() if r.get("tenant_id", DEFAULT_TENANT) == tenant_id]
+    rules = [
+        r for r in load_active_rules_from_db() if r.get("tenant_id", DEFAULT_TENANT) == tenant_id
+    ]
     applied_rules = []
     for r in sorted(rules, key=lambda x: x.get("priority", 100)):
         if evaluate_rule_conditions(r, record):

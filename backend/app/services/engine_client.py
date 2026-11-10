@@ -656,4 +656,3 @@ def test_rule_via_engine(
         except Exception:
             unwrap_rpc_error(e, ENGINE_GRPC_URL)
             raise
-

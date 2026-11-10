@@ -100,12 +100,17 @@ def startup_event():
                 {"live": live_job_ids},
             )
             stuck_count = cur.rowcount
+            # Reconcile batches: only mark failed if no remaining active jobs exist for the batch
             conn.execute(
                 text("""
                 UPDATE batches SET status = 'failed', completed_at = now()
-                WHERE status IN ('queued', 'running') AND NOT (id = ANY(:live))
-                """),
-                {"live": live_job_ids},
+                WHERE status IN ('queued', 'running')
+                  AND id NOT IN (
+                      SELECT DISTINCT batch_id FROM jobs
+                      WHERE status IN ('queued', 'running')
+                        AND batch_id IS NOT NULL
+                  )
+                """)
             )
         if stuck_count:
             logger.warning(
@@ -126,6 +131,12 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         shutdown_event()
+        try:
+            from backend.app.api.endpoints.jobs import close_async_redis_pool
+
+            await close_async_redis_pool()
+        except Exception:
+            pass
 
 
 app = FastAPI(

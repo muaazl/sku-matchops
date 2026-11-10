@@ -122,4 +122,3 @@ def test_rule(
     return test_rule_via_engine(
         rule_dict, dict(request.sample_record), tenant_id=principal.tenant_id
     )
-

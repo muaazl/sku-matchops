@@ -1,36 +1,40 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import text
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import Connection, text
 
 from backend.app.core.security import Principal, get_principal, require_admin
-from backend.app.db.session import get_engine
+from backend.app.db.session import get_db_connection
 from backend.app.grpc_server import clear_job_progress, publish_job_event, set_job_progress
 from backend.app.services.rules_service import get_rule_version
-from backend.app.services.task_queue import TaskQueue, get_task_queue
+from backend.app.services.task_queue import TaskQueue, TaskQueueProtocol, get_task_queue
 
 router = APIRouter()
 
 
-def _queue() -> TaskQueue:
+def get_queue() -> TaskQueueProtocol:
     queue = get_task_queue()
     if queue is None:
         raise HTTPException(status_code=503, detail="Task queue is disabled (TASK_QUEUE_ENABLED).")
     return queue
 
 
-def _tenant_items(queue: TaskQueue, principal: Principal) -> list[dict]:
-    """DLQ entries of the caller's tenant (jobs queued before tenancy count as 'default')."""
-    return [
-        e
-        for e in queue.dlq_items(limit=10000)
-        if e["payload"].get("tenant_id", "default") == principal.tenant_id
-    ]
+# Backwards compatibility alias
+_queue = get_queue
+
+
+def _tenant_items(queue: TaskQueueProtocol, principal: Principal, limit: int = 100) -> list[dict]:
+    """DLQ entries of the caller's tenant."""
+    return queue.dlq_items(limit=limit, tenant_id=principal.tenant_id)
 
 
 @router.get("/queue/dlq")
-def list_dead_letters(limit: int = 100, principal: Principal = Depends(require_admin)):
+def list_dead_letters(
+    limit: int = Query(default=100, ge=1, le=1000),
+    principal: Principal = Depends(require_admin),
+    queue: TaskQueueProtocol = Depends(get_queue),
+):
     """The tenant's dead-lettered tasks: payload plus job_id, batch_id, error, attempts, failed_at."""
     try:
-        return _tenant_items(_queue(), principal)[:limit]
+        return _tenant_items(queue, principal, limit=limit)
     except HTTPException:
         raise
     except Exception as e:
@@ -38,30 +42,84 @@ def list_dead_letters(limit: int = 100, principal: Principal = Depends(require_a
 
 
 @router.post("/queue/dlq/{task_id}/replay")
-def replay_dead_letter(task_id: str, principal: Principal = Depends(require_admin)):
+def replay_dead_letter(
+    task_id: str,
+    principal: Principal = Depends(require_admin),
+    queue: TaskQueueProtocol = Depends(get_queue),
+    db: Connection = Depends(get_db_connection),
+):
     """Re-queues a dead-lettered task with a fresh retry budget and marks its job queued again."""
-    queue = _queue()
-    entry = next((e for e in _tenant_items(queue, principal) if e["task_id"] == task_id), None)
+    try:
+        entry = next(
+            (e for e in _tenant_items(queue, principal, limit=10000) if e["task_id"] == task_id),
+            None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Task queue unavailable: {e}")
+
     if entry is None:
         raise HTTPException(status_code=404, detail="Dead-letter entry not found")
 
-    new_task_id = queue.replay(task_id)
+    job_id = entry["job_id"]
+    payload = entry.get("payload") or {}
+    batch_id = entry.get("batch_id") or payload.get("batch_id") or job_id
+
+    # 1. Update SQL state with tenant-scoping first
+    res = db.execute(
+        text(
+            "UPDATE jobs SET status = 'queued', current_stage = 'queued', error_message = NULL, "
+            "completed_at = NULL WHERE id = :id AND tenant_id = :tenant_id"
+        ),
+        {"id": job_id, "tenant_id": principal.tenant_id},
+    )
+    if res.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Job record not found for tenant")
+
+    db.execute(
+        text(
+            "UPDATE batches SET status = 'queued', completed_at = NULL WHERE id = :id AND tenant_id = :tenant_id"
+        ),
+        {"id": batch_id, "tenant_id": principal.tenant_id},
+    )
+    db.commit()
+
+    # 2. Replay in Redis with error compensation
+    try:
+        new_task_id = queue.replay(task_id, tenant_id=principal.tenant_id)
+    except Exception as e:
+        try:
+            db.execute(
+                text(
+                    "UPDATE jobs SET status = 'failed', current_stage = 'failed', error_message = 'Replay queue failed' "
+                    "WHERE id = :id AND tenant_id = :tenant_id"
+                ),
+                {"id": job_id, "tenant_id": principal.tenant_id},
+            )
+            db.execute(
+                text(
+                    "UPDATE batches SET status = 'failed' WHERE id = :id AND tenant_id = :tenant_id"
+                ),
+                {"id": batch_id, "tenant_id": principal.tenant_id},
+            )
+            db.commit()
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail=f"Task queue replay failed: {e}")
+
     if new_task_id is None:  # replayed concurrently by someone else
+        try:
+            db.execute(
+                text(
+                    "UPDATE jobs SET status = 'failed', current_stage = 'failed', error_message = 'Concurrent replay detected' "
+                    "WHERE id = :id AND tenant_id = :tenant_id"
+                ),
+                {"id": job_id, "tenant_id": principal.tenant_id},
+            )
+            db.commit()
+        except Exception:
+            pass
         raise HTTPException(status_code=409, detail="Dead-letter entry was already replayed")
 
-    job_id = entry["job_id"]
-    with get_engine().begin() as conn:
-        conn.execute(
-            text(
-                "UPDATE jobs SET status = 'queued', current_stage = 'queued', error_message = NULL, "
-                "completed_at = NULL WHERE id = :id"
-            ),
-            {"id": job_id},
-        )
-        conn.execute(
-            text("UPDATE batches SET status = 'queued', completed_at = NULL WHERE id = :id"),
-            {"id": job_id},
-        )
     clear_job_progress(job_id)
     set_job_progress(job_id, pct=0.0, stage="queued", tenant_id=principal.tenant_id)
     publish_job_event(
@@ -72,24 +130,22 @@ def replay_dead_letter(task_id: str, principal: Principal = Depends(require_admi
 
 
 @router.get("/system/status")
-def system_status(principal: Principal = Depends(get_principal)):
+def system_status(
+    principal: Principal = Depends(get_principal),
+    db: Connection = Depends(get_db_connection),
+):
     """Operational counters for the portal health strip, scoped to the caller's tenant.
     Queue depths span every tenant, so only platform admins receive them."""
-    with get_engine().connect() as conn:
-        processed = conn.execute(
-            text("SELECT COUNT(*) FROM processed_skus WHERE tenant_id = :t"),
-            {"t": principal.tenant_id},
-        ).scalar()
+    processed = db.execute(
+        text("SELECT COUNT(*) FROM processed_skus WHERE tenant_id = :t"),
+        {"t": principal.tenant_id},
+    ).scalar()
 
     queue_depth, dlq_size, queue_online = None, None, False
     try:
         queue = get_task_queue()
         if queue is not None:
-            dlq_size = (
-                queue.dlq_count(principal.tenant_id)
-                if hasattr(queue, "dlq_count")
-                else len(_tenant_items(queue, principal))
-            )
+            dlq_size = queue.dlq_count(principal.tenant_id)
             if principal.is_platform_admin:
                 queue_depth = queue.stats()
             queue_online = True

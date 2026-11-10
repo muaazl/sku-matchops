@@ -12,14 +12,17 @@ raw request log). X-Tenant-ID defaults to the caller's home tenant.
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import re
 import secrets
+import socket
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 import jwt
-from fastapi import Depends, Header, HTTPException, Security
+from fastapi import Depends, Header, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer
 from fastapi.security.api_key import APIKeyHeader
 
@@ -35,6 +38,74 @@ _bearer = HTTPBearer(auto_error=False)
 _oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
 _api_key = APIKeyHeader(name="X-API-Key", auto_error=False)
 _ephemeral_secret = secrets.token_urlsafe(48)
+
+DISALLOWED_NETWORKS = [
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def validate_outbound_url(url: str, allowed_domains: tuple[str, ...] | None = None) -> str:
+    """Validates an outbound URL to prevent Server-Side Request Forgery (SSRF).
+
+    Rejects:
+      - Non-http/https schemes
+      - Missing hostname
+      - Domains not in allowed_domains (if provided)
+      - Resolution to private, loopback, or link-local IP addresses (RFC 1918 / 3927)
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError("URL must be a non-empty string.")
+
+    parsed = urlparse(url.strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(
+            f"Invalid URL scheme: '{parsed.scheme}'. Only HTTP and HTTPS are permitted."
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL must include a valid hostname.")
+
+    hostname_lower = hostname.lower()
+
+    if allowed_domains is not None:
+        if not any(
+            hostname_lower == d.lower() or hostname_lower.endswith("." + d.lower())
+            for d in allowed_domains
+        ):
+            raise ValueError(
+                f"Domain '{hostname}' is not in the allowed outbound whitelist: {allowed_domains}"
+            )
+
+    if hostname_lower in ("localhost", "metadata.google.internal", "instance-data"):
+        raise ValueError(f"Access to internal hostname '{hostname}' is prohibited.")
+
+    try:
+        try:
+            ip_addrs = [ipaddress.ip_address(hostname)]
+        except ValueError:
+            addr_info = socket.getaddrinfo(hostname, None)
+            ip_addrs = [ipaddress.ip_address(sockaddr[0]) for *_, sockaddr in addr_info]
+
+        for ip_addr in ip_addrs:
+            for net in DISALLOWED_NETWORKS:
+                if ip_addr in net:
+                    raise ValueError(
+                        f"Access to private/internal network address '{ip_addr}' is prohibited."
+                    )
+    except socket.gaierror as e:
+        logger.warning(f"Could not resolve hostname '{hostname}' during pre-flight SSRF check: {e}")
+
+    return url
 
 
 @dataclass(frozen=True)
@@ -113,6 +184,7 @@ def _tenant_header(x_tenant_id: str | None) -> str | None:
 
 
 def get_principal(
+    request: Request,
     bearer: HTTPAuthorizationCredentials | None = Security(_bearer),
     oauth2_token: str | None = Security(_oauth2_scheme),
     api_key: str | None = Security(_api_key),
@@ -124,7 +196,7 @@ def get_principal(
     if token_str is not None:
         principal = _decode(token_str)
     elif api_key is not None:
-        if not hmac.compare_digest(api_key, config.API_KEY):
+        if not config.API_KEY or not hmac.compare_digest(api_key, config.API_KEY):
             raise HTTPException(status_code=401, detail="Invalid API key.")
         principal = Principal("api-key", ADMIN, config.DEFAULT_TENANT)
     elif not config.AUTH_ENABLED:
@@ -137,7 +209,13 @@ def get_principal(
     if tenant_header and tenant_header != principal.home_tenant:
         if not principal.is_platform_admin:
             raise HTTPException(status_code=403, detail="Cannot act on another tenant.")
-        return replace(principal, tenant_id=tenant_header)
+        principal = replace(principal, tenant_id=tenant_header)
+
+    if request is not None:
+        request.state.tenant_id = principal.tenant_id
+    from backend.app.core.observability import TENANT_ID
+
+    TENANT_ID.set(principal.tenant_id)
     return principal
 
 

@@ -219,8 +219,8 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
                     _mark_redis_down()
 
         tenant_id = _job_tenant.get(j_id)
-        # Only perform a DB write when the stage changes
-        if last_stage != request.current_stage:
+        # Only perform a DB write when the stage changes or when first observed
+        if last_stage != request.current_stage or _job_stage.get(j_id) is None:
             try:
                 with get_engine().begin() as conn:
                     # Never resurrect a job that already reached a terminal state

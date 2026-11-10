@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 TRACE_ID: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="-")
+TENANT_ID: contextvars.ContextVar[str] = contextvars.ContextVar("tenant_id", default="-")
 _VALID_TRACE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -26,17 +27,22 @@ def new_trace_id() -> str:
 
 
 @contextmanager
-def trace_context(trace_id: str | None) -> Iterator[str]:
-    """Binds a trace id to the current thread/context so every log line carries it."""
+def trace_context(trace_id: str | None, tenant_id: str | None = None) -> Iterator[str]:
+    """Binds a trace id and optional tenant id to the current thread/context so every log line carries it."""
     token = TRACE_ID.set(trace_id if trace_id and trace_id != "-" else new_trace_id())
+    tenant_token = (
+        TENANT_ID.set(tenant_id if tenant_id and tenant_id != "-" else "-") if tenant_id else None
+    )
     try:
         yield TRACE_ID.get()
     finally:
         TRACE_ID.reset(token)
+        if tenant_token:
+            TENANT_ID.reset(tenant_token)
 
 
 TEXT_LOG_FORMAT = (
-    "%(asctime)s - [%(levelname)s] - %(name)s - [trace=%(trace_id)s] - "
+    "%(asctime)s - [%(levelname)s] - %(name)s - [trace=%(trace_id)s] [tenant=%(tenant_id)s] - "
     "[%(filename)s:%(lineno)d] - %(message)s"
 )
 
@@ -56,12 +62,32 @@ def get_trace_id() -> str:
     return tid
 
 
+def get_tenant_id() -> str:
+    tid = TENANT_ID.get()
+    if tid == "-":
+        import sys
+
+        if "engine.core.observability" in sys.modules:
+            try:
+                engine_tid = sys.modules["engine.core.observability"].TENANT_ID.get()
+                if engine_tid and engine_tid != "-":
+                    return engine_tid
+            except Exception:
+                pass
+    return tid
+
+
 class TraceIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         tid = get_trace_id()
         existing = getattr(record, "trace_id", None)
         if tid != "-" or not existing or existing == "-":
             record.trace_id = tid
+
+        tenant = get_tenant_id()
+        existing_tenant = getattr(record, "tenant_id", None)
+        if tenant != "-" or not existing_tenant or existing_tenant == "-":
+            record.tenant_id = tenant
         return True
 
 
@@ -73,6 +99,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
             "trace_id": getattr(record, "trace_id", get_trace_id()),
+            "tenant_id": getattr(record, "tenant_id", get_tenant_id()),
             "module": f"{record.filename}:{record.lineno}",
         }
         if record.exc_info:
@@ -82,9 +109,7 @@ class JsonFormatter(logging.Formatter):
 
 def configure_logging(logger: logging.Logger | None = None, log_format: str = "text") -> None:
     logger = logger or logging.getLogger()
-    formatter = (
-        JsonFormatter() if log_format == "json" else logging.Formatter(TEXT_LOG_FORMAT)
-    )
+    formatter = JsonFormatter() if log_format == "json" else logging.Formatter(TEXT_LOG_FORMAT)
     for handler in logger.handlers:
         if not any(isinstance(f, TraceIdFilter) for f in handler.filters):
             handler.addFilter(TraceIdFilter())
@@ -127,15 +152,45 @@ def metrics_payload() -> tuple[bytes, str]:
 
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
-    """FastAPI/Starlette middleware that binds inbound X-Request-ID or mints a new trace_id."""
+    """FastAPI/Starlette middleware that binds inbound X-Request-ID or mints a new trace_id,
+    propagates X-Tenant-ID, and records HTTP metrics for Prometheus."""
 
     async def dispatch(self, request: Request, call_next):
         header_val = (request.headers.get("x-request-id") or "").strip()
         trace_id = header_val if _VALID_TRACE.match(header_val) else new_trace_id()
-        token = TRACE_ID.set(trace_id)
+        token_trace = TRACE_ID.set(trace_id)
+
+        tenant_val = (request.headers.get("x-tenant-id") or "-").strip()
+        token_tenant = TENANT_ID.set(tenant_val if tenant_val else "-")
+
+        import time
+
+        start_time = time.monotonic()
+        status_code = 500
         try:
             response: Response = await call_next(request)
+            status_code = response.status_code
             response.headers["X-Request-ID"] = trace_id
             return response
         finally:
-            TRACE_ID.reset(token)
+            duration = time.monotonic() - start_time
+            try:
+                # Normalize common dynamic paths (e.g. /jobs/<uuid>)
+                path_label = request.url.path
+                if path_label.startswith("/api/v1/jobs/") and len(path_label.split("/")) > 4:
+                    parts = path_label.split("/")
+                    path_label = "/api/v1/jobs/{id}" + ("/" + parts[5] if len(parts) > 5 else "")
+                elif path_label.startswith("/jobs/") and len(path_label.split("/")) > 2:
+                    parts = path_label.split("/")
+                    path_label = "/jobs/{id}" + ("/" + parts[3] if len(parts) > 3 else "")
+
+                HTTP_REQUESTS_TOTAL.labels(
+                    method=request.method, path=path_label, status=str(status_code)
+                ).inc()
+                HTTP_REQUEST_DURATION_SECONDS.labels(
+                    method=request.method, path=path_label
+                ).observe(duration)
+            except Exception:
+                pass
+            TRACE_ID.reset(token_trace)
+            TENANT_ID.reset(token_tenant)

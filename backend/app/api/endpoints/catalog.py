@@ -448,4 +448,3 @@ def get_dictionaries_snapshot(domain: str):
         return get_classifier_dicts(domain)
     except RuntimeError as e:
         raise HTTPException(status_code=404, detail=str(e))
-

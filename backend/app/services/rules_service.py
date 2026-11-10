@@ -16,6 +16,14 @@ RULES_VERSION_KEY = "matchops:rules:version"
 RULES_INVALIDATE_CHANNEL = "matchops:rules:invalidate"
 
 
+def rules_data_key(tenant_id: str = DEFAULT_TENANT) -> str:
+    return f"matchops:rules:data:{tenant_id}"
+
+
+def rules_version_key(tenant_id: str = DEFAULT_TENANT) -> str:
+    return f"matchops:rules:version:{tenant_id}"
+
+
 def compute_rules_version(rules_data: list[dict[str, Any]]) -> str:
     if not rules_data:
         return "4f53cda18c2baa0c"
@@ -35,13 +43,15 @@ def compute_rules_version(rules_data: list[dict[str, Any]]) -> str:
     ).hexdigest()[:16]
 
 
-def publish_rules_snapshot(rules_data: list[dict[str, Any]]) -> tuple[str, bool]:
+def publish_rules_snapshot(
+    rules_data: list[dict[str, Any]], tenant_id: str | None = None
+) -> tuple[str, bool]:
     import sys
 
     # In monorepo unit test environments where engine loader is loaded in the same process:
     if "engine.rules_engine.loader" in sys.modules:
         loader = sys.modules["engine.rules_engine.loader"]
-        return loader.publish_rules_snapshot(rules_data)
+        return loader.publish_rules_snapshot(rules_data, tenant_id=tenant_id)
 
     version = compute_rules_version(rules_data)
     try:
@@ -54,7 +64,22 @@ def publish_rules_snapshot(rules_data: list[dict[str, Any]]) -> tuple[str, bool]
         pipe = client.pipeline(transaction=True)
         pipe.set(RULES_DATA_KEY, payload)
         pipe.set(RULES_VERSION_KEY, version)
-        pipe.publish(RULES_INVALIDATE_CHANNEL, version)
+
+        if tenant_id:
+            pipe.set(rules_data_key(tenant_id), payload)
+            pipe.set(rules_version_key(tenant_id), version)
+            pipe.publish(RULES_INVALIDATE_CHANNEL, f"{tenant_id}:{version}")
+        else:
+            tenant_rules: dict[str, list[dict[str, Any]]] = {}
+            for r in rules_data:
+                t = r.get("tenant_id", DEFAULT_TENANT)
+                tenant_rules.setdefault(t, []).append(r)
+            for t, trules in tenant_rules.items():
+                t_ver = compute_rules_version(trules)
+                pipe.set(rules_data_key(t), json.dumps(trules, default=str))
+                pipe.set(rules_version_key(t), t_ver)
+            pipe.publish(RULES_INVALIDATE_CHANNEL, version)
+
         pipe.execute()
         return version, True
     except Exception:
@@ -74,36 +99,59 @@ def get_rule_version(tenant_id: str = DEFAULT_TENANT) -> str:
         client = redis.Redis.from_url(
             config.REDIS_URL, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
         )
-        v = client.get(RULES_VERSION_KEY)
+        v = client.get(rules_version_key(tenant_id))
         if v:
             return v
+        v_global = client.get(RULES_VERSION_KEY)
+        if v_global and tenant_id == DEFAULT_TENANT:
+            return v_global
     except Exception:
         pass
     active_rules = [
-        r for r in load_active_rules_from_db() if r.get("tenant_id", DEFAULT_TENANT) == tenant_id
+        r
+        for r in load_active_rules_from_db(tenant_id=tenant_id)
+        if r.get("tenant_id", DEFAULT_TENANT) == tenant_id
     ]
     return compute_rules_version(active_rules)
 
 
-def load_active_rules_from_db(db: Connection | None = None) -> list[dict[str, Any]]:
-    """Loads all active rules (across all tenants) from PostgreSQL for Redis/gRPC distribution."""
+def load_active_rules_from_db(
+    db: Connection | None = None, tenant_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Loads active rules (optionally filtered by tenant_id) from PostgreSQL for Redis/gRPC distribution."""
     owns_conn = db is None
     conn = get_connection() if owns_conn else db
     assert conn is not None
     try:
-        rule_rows = (
-            conn.execute(
-                text("""
-                SELECT id, rule_id, domain, priority, description, reasoning,
-                       condition_logic, is_active, tenant_id
-                FROM rules
-                WHERE is_active = 1
-                ORDER BY priority ASC, rule_id ASC
-                """)
+        if tenant_id:
+            rule_rows = (
+                conn.execute(
+                    text("""
+                    SELECT id, rule_id, domain, priority, description, reasoning,
+                           condition_logic, is_active, tenant_id
+                    FROM rules
+                    WHERE is_active = 1 AND tenant_id = :tenant_id
+                    ORDER BY priority ASC, rule_id ASC
+                    """),
+                    {"tenant_id": tenant_id},
+                )
+                .mappings()
+                .fetchall()
             )
-            .mappings()
-            .fetchall()
-        )
+        else:
+            rule_rows = (
+                conn.execute(
+                    text("""
+                    SELECT id, rule_id, domain, priority, description, reasoning,
+                           condition_logic, is_active, tenant_id
+                    FROM rules
+                    WHERE is_active = 1
+                    ORDER BY priority ASC, rule_id ASC
+                    """)
+                )
+                .mappings()
+                .fetchall()
+            )
         if not rule_rows:
             return []
 
@@ -161,18 +209,20 @@ def load_active_rules_from_db(db: Connection | None = None) -> list[dict[str, An
     return rules
 
 
-def sync_rules_everywhere(db: Connection | None = None) -> tuple[str, bool]:
-    """Loads active rules from PostgreSQL, publishes the snapshot + version to Redis, and falls
-    back to direct gRPC RefreshRules if Redis is unreachable."""
-    rules_data = load_active_rules_from_db(db)
-    version, published = publish_rules_snapshot(rules_data)
+def sync_rules_everywhere(
+    db: Connection | None = None, tenant_id: str | None = None
+) -> tuple[str, bool]:
+    """Loads active rules from PostgreSQL (optionally tenant-scoped), publishes the snapshot + version
+    to Redis, and falls back to direct gRPC RefreshRules if Redis is unreachable."""
+    rules_data = load_active_rules_from_db(db, tenant_id=tenant_id)
+    version, published = publish_rules_snapshot(rules_data, tenant_id=tenant_id)
     if not published:
         refresh_engine_rules(rules_data=rules_data, version=version)
     return version, published
 
 
-def _refresh_rules_everywhere(db: Connection | None = None) -> None:
-    sync_rules_everywhere(db)
+def _refresh_rules_everywhere(db: Connection | None = None, tenant_id: str | None = None) -> None:
+    sync_rules_everywhere(db, tenant_id=tenant_id)
 
 
 def _rule_fields(rule: RuleModel) -> dict[str, Any]:
@@ -342,7 +392,7 @@ def create_rule_entry(db: Connection, rule: RuleModel, tenant_id: str = DEFAULT_
             )
             _insert_conditions_and_actions(db, new_id, rule)
             db.commit()
-            _refresh_rules_everywhere(db)
+            _refresh_rules_everywhere(db, tenant_id=tenant_id)
             return new_id
         except IntegrityError as e:
             db.rollback()
@@ -381,7 +431,7 @@ def update_rule_entry(
         db.execute(text("DELETE FROM actions WHERE rule_id = :rule_id"), params)
         _insert_conditions_and_actions(db, rule_id, rule)
         db.commit()
-        _refresh_rules_everywhere(db)
+        _refresh_rules_everywhere(db, tenant_id=tenant_id)
         return True
     except Exception as e:
         db.rollback()
@@ -399,7 +449,7 @@ def delete_rule_entry(db: Connection, rule_id: str, tenant_id: str = DEFAULT_TEN
         db.execute(text("DELETE FROM actions WHERE rule_id = :rule_id"), params)
         db.execute(text("DELETE FROM rules WHERE rule_id = :rule_id"), params)
         db.commit()
-        _refresh_rules_everywhere(db)
+        _refresh_rules_everywhere(db, tenant_id=tenant_id)
         return True
     except Exception as e:
         db.rollback()
@@ -426,7 +476,7 @@ def reorder_rules_entries(
             ],
         )
         db.commit()
-        _refresh_rules_everywhere(db)
+        _refresh_rules_everywhere(db, tenant_id=tenant_id)
         return True
     except Exception as e:
         db.rollback()

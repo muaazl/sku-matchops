@@ -106,7 +106,10 @@ def check_changes_for_domain(domain: str, limit: int = 50) -> dict:
     old_hashes = {}
     try:
         cached_df = pd.read_sql_query(
-            text("SELECT * FROM catalog_items WHERE domain = :domain"),
+            text(
+                "SELECT id, domain, name, brand, flavor, generic_keywords, price, description, row_hash "
+                "FROM catalog_items WHERE domain = :domain"
+            ),
             conn,
             params={"domain": domain},
         )
@@ -143,20 +146,14 @@ def check_changes_for_domain(domain: str, limit: int = 50) -> dict:
     finally:
         conn.close()
 
-    sheet_name = (
-        FOOD_CATALOG_SHEET if domain == "food" else MARKET_CATALOG_SHEET
-    )
+    sheet_name = FOOD_CATALOG_SHEET if domain == "food" else MARKET_CATALOG_SHEET
     url = f"https://docs.google.com/spreadsheets/d/{backend_config.GOOGLE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name.replace(' ', '%20')}"
     r = requests.get(url, timeout=15)
     r.raise_for_status()
 
     catalog_pl = pl.read_csv(r.content, ignore_errors=True)
     catalog_pl = catalog_pl.select([c for c in catalog_pl.columns if not c.startswith("Unnamed")])
-    col_map = (
-        CATALOG_COL_MAP_FOOD
-        if domain == "food"
-        else CATALOG_COL_MAP_MARKET
-    )
+    col_map = CATALOG_COL_MAP_FOOD if domain == "food" else CATALOG_COL_MAP_MARKET
     catalog_pl = catalog_pl.rename({k: v for k, v in col_map.items() if k in catalog_pl.columns})
     new_df = catalog_pl.to_pandas()
 
@@ -295,30 +292,71 @@ def _bg_build_cache():
         _build_in_progress = False
 
 
+BUILD_LOCK_KEY = "matchops:lock:catalog_build"
+
+
+def _get_redis_lock_client():
+    try:
+        import redis
+
+        return redis.Redis.from_url(
+            backend_config.REDIS_URL,
+            socket_connect_timeout=1,
+            socket_timeout=2,
+            decode_responses=True,
+        )
+    except Exception:
+        return None
+
+
 def trigger_build_cache() -> tuple[bool, str]:
     """
-    Attempts to acquire the build lock and initiate background cache rebuilding.
+    Attempts to acquire the cluster-wide distributed build lock (or local lock fallback)
+    and initiate background cache rebuilding.
     Returns (started, message).
     """
     global _build_in_progress
     if _build_in_progress:
         return False, "Cache building is already in progress."
 
-    acquired = _build_lock.acquire(blocking=False)
-    if not acquired:
-        return False, "Cache building already active."
+    client = _get_redis_lock_client()
+    if client:
+        try:
+            # 30-minute lock TTL with atomic NX acquisition across all cluster nodes
+            acquired = client.set(BUILD_LOCK_KEY, "locked", nx=True, ex=1800)
+            if not acquired:
+                return False, "Catalog cache build is already in progress across cluster."
+        except Exception as e:
+            logger.warning(f"Redis lock failed ({e}); falling back to local thread lock.")
+            if not _build_lock.acquire(blocking=False):
+                return False, "Cache building already active."
+    else:
+        if not _build_lock.acquire(blocking=False):
+            return False, "Cache building already active."
 
     _build_in_progress = True
     return True, "Cache building and pre-training initiated in background."
 
 
 def get_build_task_callable():
-    """Returns the wrapped background task callable that releases the lock upon completion."""
+    """Returns the wrapped background task callable that releases the distributed and local locks upon completion."""
 
     def run_with_lock():
+        global _build_in_progress
         try:
             _bg_build_cache()
         finally:
-            _build_lock.release()
+            _build_in_progress = False
+            client = _get_redis_lock_client()
+            if client:
+                try:
+                    client.delete(BUILD_LOCK_KEY)
+                except Exception:
+                    pass
+            if _build_lock.locked():
+                try:
+                    _build_lock.release()
+                except Exception:
+                    pass
 
     return run_with_lock

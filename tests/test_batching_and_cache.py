@@ -266,9 +266,9 @@ def rule_db(pg, monkeypatch):
     loads = []
     real_load = loader.load_rules_from_cache
 
-    def counting_load():
+    def counting_load(*args, **kwargs):
         loads.append(1)
-        real_load()
+        real_load(*args, **kwargs)
 
     monkeypatch.setattr(loader, "load_rules_from_cache", counting_load)
     monkeypatch.setattr(loader, "_RULES_CACHE", None)
@@ -367,9 +367,15 @@ def test_redis_down_pushes_rules_via_grpc_refresh(rule_db, monkeypatch):
 def test_gateway_falls_back_to_grpc_refresh_when_redis_down(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        rules_service, "load_active_rules_from_db", lambda db=None: [{"rule_id": "1"}]
+        rules_service,
+        "load_active_rules_from_db",
+        lambda db=None, tenant_id=None: [{"rule_id": "1"}],
     )
-    monkeypatch.setattr(rules_service, "publish_rules_snapshot", lambda data: ("v1", False))
+    monkeypatch.setattr(
+        rules_service,
+        "publish_rules_snapshot",
+        lambda data, tenant_id=None: ("v1", False),
+    )
     monkeypatch.setattr(
         rules_service,
         "refresh_engine_rules",
@@ -379,7 +385,11 @@ def test_gateway_falls_back_to_grpc_refresh_when_redis_down(monkeypatch):
     assert calls == [([{"rule_id": "1"}], "v1")]
 
     calls.clear()
-    monkeypatch.setattr(rules_service, "publish_rules_snapshot", lambda data: ("v1", True))
+    monkeypatch.setattr(
+        rules_service,
+        "publish_rules_snapshot",
+        lambda data, tenant_id=None: ("v1", True),
+    )
     rules_service._refresh_rules_everywhere()
     assert calls == []
 

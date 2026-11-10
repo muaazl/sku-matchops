@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from backend.app.api.routes import api_router
 from backend.app.db.session import get_engine
-from backend.app.grpc_server import start_backend_grpc_server
+from backend.app.grpc_server import clear_job_progress, start_backend_grpc_server
 from backend.app.schemas.models import BaseRequest, SKUItem
 from backend.app.services.worker import enqueue_job
 from engine.pipeline.worker_runner import _get_backend_stub
@@ -24,12 +24,14 @@ client = TestClient(app)
 
 
 def _delete_job(job_id: str) -> None:
+    clear_job_progress(job_id)
     with get_engine().begin() as conn:
         conn.execute(text("DELETE FROM jobs WHERE id = :id"), {"id": job_id})
         conn.execute(text("DELETE FROM processed_skus WHERE batch_id = :id"), {"id": job_id})
 
 
 class TestDecoupledEngineIntegration(unittest.TestCase):
+    @pytest.mark.usefixtures("loopback")
     @patch("backend.app.api.routes.get_engine_health")
     def test_health_with_engine_status(self, mock_health):
         mock_health.return_value = {
@@ -311,6 +313,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             srv.stop(grace=0)
             _delete_job(job_id)
 
+    @pytest.mark.usefixtures("loopback")
     def test_grpc_secret_ssrf_pinning_typed_upload_and_error_mapping(self):
         """Verifies INTERNAL_GRPC_SECRET, SSRF pinning, typed upload, and 400/404 RPC error mapping."""
         from types import SimpleNamespace
@@ -432,6 +435,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
     def test_model_load_lifecycle_concurrency_and_reload_cache_eviction(self):
         """trigger_model_load guards concurrent loads, evicts caches on reload, and skips duplicate classifier calls."""
         import threading
+        import time
 
         from engine.core import resource_loader as rl
 
@@ -461,6 +465,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
 
             with (
                 patch.object(rl, "_get_shared_models", return_value=(None, None)),
+                patch.object(rl, "_rebuild_data_caches"),
                 patch.object(rl, "refresh_rules_cache"),
                 patch.object(rl, "start_invalidation_listener"),
                 patch.object(rl, "clear_flavor_cache"),
@@ -472,7 +477,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
                 self.assertEqual(status, "started")
                 self.assertTrue(done.wait(timeout=5.0))
                 while rl._model_load_lock.locked():
-                    pass
+                    time.sleep(0.01)
 
             self.assertEqual(loaded_domains, ["market", "food"])
             mock_clf.assert_not_called()
@@ -539,6 +544,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             call_order.index("progress:embedding:0.0"), call_order.index("process_request")
         )
 
+    @pytest.mark.usefixtures("loopback")
     def test_ready_probe_and_job_sse_stream(self):
         """GET /ready reflects model readiness (503 vs 200) and /jobs/{id}/stream streams SSE frames."""
         from unittest.mock import MagicMock
@@ -591,10 +597,13 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
         fake_conn_ctx = MagicMock()
         fake_db_engine = MagicMock()
         fake_db_engine.connect.return_value = fake_conn_ctx
+        mock_r = MagicMock()
+        mock_r.ping.return_value = True
 
         client = TestClient(app)
         with (
             patch("backend.app.api.routes.get_engine", return_value=fake_db_engine),
+            patch("redis.Redis.from_url", return_value=mock_r),
             patch(
                 "backend.app.api.routes.get_engine_health",
                 return_value={"status": "ok", "all_models_ready": False},
@@ -606,6 +615,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
 
         with (
             patch("backend.app.api.routes.get_engine", return_value=fake_db_engine),
+            patch("redis.Redis.from_url", return_value=mock_r),
             patch(
                 "backend.app.api.routes.get_engine_health",
                 return_value={"status": "ok", "all_models_ready": True},

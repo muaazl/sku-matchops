@@ -498,9 +498,7 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             return pb2.RerunRulesResponse(
                 suggested_bt=str(aug_record.get("bt") or ""),
                 suggested_gk=", ".join(aug_record.get("gk", [])),
-                suggested_region=str(
-                    aug_record.get("region") or aug_record.get("category") or ""
-                ),
+                suggested_region=str(aug_record.get("region") or aug_record.get("category") or ""),
                 rules_applied=rules_applied_str,
             )
         except Exception as e:
@@ -537,15 +535,12 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 matched_conditions_json=json.dumps(
                     rule_dict.get("conditions", []) if fires else []
                 ),
-                actions_applied_json=json.dumps(
-                    rule_dict.get("actions", []) if fires else []
-                ),
+                actions_applied_json=json.dumps(rule_dict.get("actions", []) if fires else []),
                 changes=str(changes),
                 sample_record_after_json=json.dumps(record),
             )
         except Exception as e:
             abort_rpc_error(context, logger, "TestRule", e)
-
 
 
 def start_grpc_server(port: int | None = None, host: str = "0.0.0.0") -> grpc.Server:

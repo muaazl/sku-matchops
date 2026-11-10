@@ -8,7 +8,7 @@ from sqlalchemy import Connection, text
 
 from backend.app.core import config as app_config
 from backend.app.core.security import Principal, get_principal
-from backend.app.db.session import get_db_connection
+from backend.app.db.session import get_db_connection, get_engine
 from backend.app.schemas.models import ProcessedSkuResponse
 
 router = APIRouter()
@@ -108,37 +108,31 @@ def get_history(
     return [dict(row) for row in rows]
 
 
-@router.get("/processed-skus/export")
-def export_history(
-    ids: str | None = None,
-    format: Literal["csv", "xlsx"] = "csv",
-    db: Connection = Depends(get_db_connection),
-    principal: Principal = Depends(get_principal),
-):
-    if format != "csv":
-        raise HTTPException(
-            status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv."
-        )
-
+def generate_csv_chunks(principal: Principal, ids: str | None = None, db: Connection | None = None):
+    """Generates sanitized CSV chunks for export, managing its own DB connection lifecycle."""
     query = "SELECT * FROM processed_skus WHERE tenant_id = :tenant_id"
     params: dict = {"tenant_id": principal.tenant_id}
 
     if ids:
-        id_list = [i.strip() for i in ids.split(",") if i.strip()]
+        id_list = [i.strip() for i in ids.split(",") if i.strip()][:1000]
         if id_list:
             query += " AND id = ANY(:ids)"
             params["ids"] = id_list
+        else:
+            query += " ORDER BY created_at DESC LIMIT 50000"
     else:
         # No explicit id filter: cap the export instead of dumping the entire table.
         query += " ORDER BY created_at DESC LIMIT 50000"
 
-    def _csv_chunks():
-        buf = io.StringIO()
-        writer = None
+    buf = io.StringIO()
+    writer = None
+
+    def _execute_and_stream(conn):
+        nonlocal writer
         exec_conn = (
-            db.execution_options(stream_results=True, max_row_buffer=2000)
-            if hasattr(db, "execution_options") and not app_config.USE_PGBOUNCER
-            else db
+            conn.execution_options(stream_results=True, max_row_buffer=2000)
+            if hasattr(conn, "execution_options") and not app_config.USE_PGBOUNCER
+            else conn
         )
         result = exec_conn.execute(text(query), params)
         try:
@@ -164,8 +158,33 @@ def export_history(
             if hasattr(result, "close"):
                 result.close()
 
+    if db is not None:
+        yield from _execute_and_stream(db)
+    else:
+        with get_engine().connect() as conn:
+            yield from _execute_and_stream(conn)
+
+
+def _streaming_db() -> Connection | None:
+    """Route dependency returning None so StreamingResponse manages its own DB connection lifecycle,
+    while allowing unit tests to inject a mock connection directly."""
+    return None
+
+
+@router.get("/processed-skus/export")
+def export_history(
+    ids: str | None = None,
+    format: Literal["csv", "xlsx"] = "csv",
+    principal: Principal = Depends(get_principal),
+    db: Connection | None = Depends(_streaming_db),
+):
+    if format != "csv":
+        raise HTTPException(
+            status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv."
+        )
+
     return StreamingResponse(
-        _csv_chunks(),
+        generate_csv_chunks(principal, ids=ids, db=db),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=export.csv"},
     )

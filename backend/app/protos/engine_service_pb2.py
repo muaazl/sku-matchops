@@ -3,6 +3,7 @@
 # source: engine/protos/engine_service.proto
 # Protobuf Python Version: 7.35.1
 """Generated protocol buffer code."""
+
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
@@ -10,127 +11,122 @@ from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
 
 _runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC,
-    7,
-    35,
-    1,
-    '',
-    'engine/protos/engine_service.proto'
+    _runtime_version.Domain.PUBLIC, 7, 35, 1, "", "engine/protos/engine_service.proto"
 )
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-
-
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\"engine/protos/engine_service.proto\x12\x12matchops.engine.v1\"\x07\n\x05\x45mpty\"N\n\x08SKUInput\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05price\x18\x02 \x01(\x01\x12\x13\n\x0b\x64\x65scription\x18\x03 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x04 \x01(\t\"q\n\x0cMatchRequest\x12*\n\x04skus\x18\x01 \x03(\x0b\x32\x1c.matchops.engine.v1.SKUInput\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\x12\n\nrules_json\x18\x03 \x01(\t\x12\x11\n\ttenant_id\x18\x04 \x01(\t\"\xc0\x01\n\x0fMatchResultItem\x12\x1c\n\x14matched_catalog_name\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x13\n\x0blogic_notes\x18\x04 \x01(\t\x12\x14\n\x0csuggested_bt\x18\x05 \x01(\t\x12\x14\n\x0csuggested_gk\x18\x06 \x01(\t\x12\x18\n\x10suggested_region\x18\x07 \x01(\t\x12\x15\n\rrules_applied\x18\x08 \x01(\t\"\xa5\x02\n\rMatchResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\r\n\x05total\x18\x03 \x01(\x05\x12\x34\n\x07results\x18\x04 \x03(\x0b\x32#.matchops.engine.v1.MatchResultItem\x12J\n\rstage_timings\x18\x05 \x03(\x0b\x32\x33.matchops.engine.v1.MatchResponse.StageTimingsEntry\x12\x18\n\x10\x64uration_seconds\x18\x06 \x01(\x01\x12\x14\n\x0crule_version\x18\x07 \x01(\t\x1a\x33\n\x11StageTimingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01\"t\n\x0f\x43lassifyRequest\x12*\n\x04skus\x18\x01 \x03(\x0b\x32\x1c.matchops.engine.v1.SKUInput\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\x12\n\nrules_json\x18\x03 \x01(\t\x12\x11\n\ttenant_id\x18\x04 \x01(\t\"\xd7\x02\n\x12\x43lassifyResultItem\x12\x14\n\x0csuggested_bt\x18\x01 \x01(\t\x12\x15\n\rbt_confidence\x18\x02 \x01(\x01\x12\x11\n\tbt_status\x18\x03 \x01(\t\x12\x11\n\tbt_source\x18\x04 \x01(\t\x12\r\n\x05model\x18\x05 \x01(\t\x12\x10\n\x08\x62t_model\x18\x06 \x01(\t\x12\x14\n\x0csuggested_gk\x18\x07 \x01(\t\x12\x15\n\rgk_confidence\x18\x08 \x01(\x01\x12\x11\n\tgk_status\x18\t \x01(\t\x12\x18\n\x10suggested_region\x18\n \x01(\t\x12\x19\n\x11region_confidence\x18\x0b \x01(\x01\x12\x15\n\rregion_status\x18\x0c \x01(\t\x12\x15\n\rregion_source\x18\r \x01(\t\x12\x15\n\rrules_applied\x18\x0e \x01(\t\x12\x13\n\x0blogic_notes\x18\x0f \x01(\t\"\xae\x02\n\x10\x43lassifyResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\r\n\x05total\x18\x03 \x01(\x05\x12\x37\n\x07results\x18\x04 \x03(\x0b\x32&.matchops.engine.v1.ClassifyResultItem\x12M\n\rstage_timings\x18\x05 \x03(\x0b\x32\x36.matchops.engine.v1.ClassifyResponse.StageTimingsEntry\x12\x18\n\x10\x64uration_seconds\x18\x06 \x01(\x01\x12\x14\n\x0crule_version\x18\x07 \x01(\t\x1a\x33\n\x11StageTimingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01\"\x83\x01\n\x10SingleRunRequest\x12\x0c\n\x04task\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12*\n\x04skus\x18\x03 \x03(\x0b\x32\x1c.matchops.engine.v1.SKUInput\x12\x12\n\nrules_json\x18\x04 \x01(\t\x12\x11\n\ttenant_id\x18\x05 \x01(\t\"\xf4\x03\n\x12PipelineResultItem\x12\x1c\n\x14matched_catalog_name\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x13\n\x0blogic_notes\x18\x04 \x01(\t\x12\x14\n\x0csuggested_bt\x18\x05 \x01(\t\x12\x15\n\rbt_confidence\x18\x06 \x01(\x01\x12\x11\n\tbt_status\x18\x07 \x01(\t\x12\x11\n\tbt_source\x18\x08 \x01(\t\x12\r\n\x05model\x18\t \x01(\t\x12\x10\n\x08\x62t_model\x18\n \x01(\t\x12\x14\n\x0csuggested_gk\x18\x0b \x01(\t\x12\x15\n\rgk_confidence\x18\x0c \x01(\x01\x12\x11\n\tgk_status\x18\r \x01(\t\x12\x18\n\x10suggested_region\x18\x0e \x01(\t\x12\x19\n\x11region_confidence\x18\x0f \x01(\x01\x12\x15\n\rregion_status\x18\x10 \x01(\t\x12\x15\n\rregion_source\x18\x11 \x01(\t\x12\x15\n\rrules_applied\x18\x12 \x01(\t\x12\x17\n\x0fpipeline_source\x18\x13 \x01(\t\x12\x19\n\x11\x65xtracted_flavors\x18\x14 \x03(\t\x12\x18\n\x10\x65xtracted_brands\x18\x15 \x03(\t\x12\x10\n\x08sku_name\x18\x16 \x01(\t\"\xbe\x02\n\x11SingleRunResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0c\n\x04task\x18\x02 \x01(\t\x12\x0e\n\x06\x64omain\x18\x03 \x01(\t\x12\r\n\x05total\x18\x04 \x01(\x05\x12\x37\n\x07results\x18\x05 \x03(\x0b\x32&.matchops.engine.v1.PipelineResultItem\x12N\n\rstage_timings\x18\x06 \x03(\x0b\x32\x37.matchops.engine.v1.SingleRunResponse.StageTimingsEntry\x12\x18\n\x10\x64uration_seconds\x18\x07 \x01(\x01\x12\x14\n\x0crule_version\x18\x08 \x01(\t\x1a\x33\n\x11StageTimingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01\"n\n\x0eSuggestRequest\x12\x10\n\x08sku_name\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\x12\n\ncurrent_bt\x18\x03 \x01(\t\x12\x12\n\nexclude_bt\x18\x04 \x01(\t\x12\x12\n\nexclude_gk\x18\x05 \x01(\t\"\xa2\x01\n\x0fSuggestResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x10\n\x08sku_name\x18\x02 \x01(\t\x12\x14\n\x0csuggested_bt\x18\x03 \x01(\t\x12\x14\n\x0csuggested_gk\x18\x04 \x01(\t\x12\x18\n\x10suggested_region\x18\x05 \x01(\t\x12\x15\n\rtemplate_used\x18\x06 \x01(\t\x12\x10\n\x08is_match\x18\x07 \x01(\x08\"\x87\x01\n\x0c\x41uditRequest\x12\x10\n\x08sku_name\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\x0c\n\x04task\x18\x03 \x01(\t\x12\r\n\x05price\x18\x04 \x01(\x01\x12\x13\n\x0b\x64\x65scription\x18\x05 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x06 \x01(\t\x12\x11\n\ttenant_id\x18\x07 \x01(\t\"#\n\rAuditResponse\x12\x12\n\naudit_json\x18\x01 \x01(\t\"\x82\x02\n\x0f\x42\x61tchJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0c\n\x04task\x18\x02 \x01(\t\x12\x0e\n\x06\x64omain\x18\x03 \x01(\t\x12*\n\x04skus\x18\x04 \x03(\x0b\x32\x1c.matchops.engine.v1.SKUInput\x12\x14\n\x0c\x63\x61llback_url\x18\x05 \x01(\t\x12\x12\n\nsheet_name\x18\x06 \x01(\t\x12\x12\n\ncreated_by\x18\x07 \x01(\t\x12\x11\n\ttenant_id\x18\x08 \x01(\t\x12\x12\n\nrules_json\x18\t \x01(\t\x12\x16\n\x0espreadsheet_id\x18\n \x01(\t\x12\x18\n\x10\x62\x61\x63kend_grpc_url\x18\x0b \x01(\t\"}\n\rUploadSkuItem\x12=\n\x06\x66ields\x18\x01 \x03(\x0b\x32-.matchops.engine.v1.UploadSkuItem.FieldsEntry\x1a-\n\x0b\x46ieldsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x82\x02\n\x10UploadJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0c\n\x04task\x18\x02 \x01(\t\x12\x0e\n\x06\x64omain\x18\x03 \x01(\t\x12\x11\n\tfile_path\x18\x04 \x01(\t\x12\x14\n\x0c\x63\x61llback_url\x18\x05 \x01(\t\x12\x12\n\nsheet_name\x18\x06 \x01(\t\x12\x12\n\ncreated_by\x18\x07 \x01(\t\x12\x11\n\ttenant_id\x18\x08 \x01(\t\x12\x11\n\tskus_json\x18\t \x01(\t\x12\x18\n\x10\x62\x61\x63kend_grpc_url\x18\n \x01(\t\x12/\n\x04skus\x18\x0b \x03(\x0b\x32!.matchops.engine.v1.UploadSkuItem\"5\n\x13JobDispatchResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0e\n\x06job_id\x18\x02 \x01(\t\"\"\n\x10\x43\x61ncelJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\"4\n\x11\x43\x61ncelJobResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"c\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07service\x18\x02 \x01(\t\x12\x16\n\x0eloaded_domains\x18\x03 \x03(\t\x12\x18\n\x10\x61ll_models_ready\x18\x04 \x01(\x08\"9\n\x11\x44omainModelStatus\x12\x10\n\x08pipeline\x18\x01 \x01(\t\x12\x12\n\nclassifier\x18\x02 \x01(\t\"\xc5\x01\n\x14ModelsStatusResponse\x12\x46\n\x07\x64omains\x18\x01 \x03(\x0b\x32\x35.matchops.engine.v1.ModelsStatusResponse.DomainsEntry\x12\x0e\n\x06status\x18\x02 \x01(\t\x1aU\n\x0c\x44omainsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x34\n\x05value\x18\x02 \x01(\x0b\x32%.matchops.engine.v1.DomainModelStatus:\x02\x38\x01\"5\n\x13ManageModelsRequest\x12\x0e\n\x06\x61\x63tion\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\"7\n\x14ManageModelsResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\":\n\x13RefreshRulesRequest\x12\x12\n\nrules_json\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\"7\n\x14RefreshRulesResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"\'\n\x17VectorCollectionRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\"\x9b\x01\n\x13VectorSearchRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05query\x18\x02 \x01(\t\x12\r\n\x05limit\x18\x03 \x01(\x05\x12\x17\n\x0fscore_threshold\x18\x04 \x01(\x01\x12\x1b\n\x13has_score_threshold\x18\x05 \x01(\x08\x12\x14\n\x0c\x66ilters_json\x18\x06 \x01(\t\x12\x0c\n\x04mode\x18\x07 \x01(\t\"+\n\x13JsonPayloadResponse\x12\x14\n\x0cpayload_json\x18\x01 \x01(\t\"\xe3\x01\n\x11RerunRulesRequest\x12\x10\n\x08sku_name\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\n\n\x02\x62t\x18\x03 \x01(\t\x12\n\n\x02gk\x18\x04 \x01(\t\x12\x0e\n\x06region\x18\x05 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x06 \x01(\t\x12\r\n\x05price\x18\x07 \x01(\x01\x12\x12\n\nconfidence\x18\x08 \x01(\x01\x12\x14\n\x0cmatch_source\x18\t \x01(\t\x12\x13\n\x0bmatched_sku\x18\n \x01(\t\x12\x11\n\treasoning\x18\x0b \x01(\t\x12\x11\n\ttenant_id\x18\x0c \x01(\t\"q\n\x12RerunRulesResponse\x12\x14\n\x0csuggested_bt\x18\x01 \x01(\t\x12\x14\n\x0csuggested_gk\x18\x02 \x01(\t\x12\x18\n\x10suggested_region\x18\x03 \x01(\t\x12\x15\n\rrules_applied\x18\x04 \x01(\t\"S\n\x0fTestRuleRequest\x12\x11\n\trule_json\x18\x01 \x01(\t\x12\x1a\n\x12sample_record_json\x18\x02 \x01(\t\x12\x11\n\ttenant_id\x18\x03 \x01(\t\"\xa4\x01\n\x10TestRuleResponse\x12\x0f\n\x07rule_id\x18\x01 \x01(\t\x12\r\n\x05\x66ires\x18\x02 \x01(\x08\x12\x1f\n\x17matched_conditions_json\x18\x03 \x01(\t\x12\x1c\n\x14\x61\x63tions_applied_json\x18\x04 \x01(\t\x12\x0f\n\x07\x63hanges\x18\x05 \x01(\t\x12 \n\x18sample_record_after_json\x18\x06 \x01(\t\"w\n\x12JobProgressRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x15\n\rcurrent_stage\x18\x02 \x01(\t\x12\x14\n\x0cprogress_pct\x18\x03 \x01(\x01\x12\x13\n\x0b\x65ta_seconds\x18\x04 \x01(\x03\x12\x0f\n\x07has_eta\x18\x05 \x01(\x08\"\xb6\x02\n\x12JobCompleteRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0e\n\x06\x64omain\x18\x03 \x01(\t\x12\x0c\n\x04task\x18\x04 \x01(\t\x12\x14\n\x0cresults_json\x18\x05 \x01(\t\x12\x14\n\x0crule_version\x18\x06 \x01(\t\x12\x18\n\x10\x64uration_minutes\x18\x07 \x01(\x01\x12\x11\n\thigh_conf\x18\x08 \x01(\x05\x12\x10\n\x08med_conf\x18\t \x01(\x05\x12\x10\n\x08low_conf\x18\n \x01(\x05\x12\x12\n\nmatch_rate\x18\x0b \x01(\x01\x12\x18\n\x10webhook_log_json\x18\x0c \x01(\t\x12\x37\n\x07results\x18\r \x03(\x0b\x32&.matchops.engine.v1.PipelineResultItem\"w\n\x0eJobFailRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x15\n\rerror_message\x18\x03 \x01(\t\x12\x18\n\x10\x64uration_minutes\x18\x04 \x01(\x01\x12\x14\n\x0cis_cancelled\x18\x05 \x01(\x08\"%\n\x13JobCallbackResponse\x12\x0e\n\x06status\x18\x01 \x01(\t2\xb4\x0c\n\x16\x45ngineInferenceService\x12L\n\x05Match\x12 .matchops.engine.v1.MatchRequest\x1a!.matchops.engine.v1.MatchResponse\x12U\n\x08\x43lassify\x12#.matchops.engine.v1.ClassifyRequest\x1a$.matchops.engine.v1.ClassifyResponse\x12X\n\tRunSingle\x12$.matchops.engine.v1.SingleRunRequest\x1a%.matchops.engine.v1.SingleRunResponse\x12V\n\x0bSuggestTags\x12\".matchops.engine.v1.SuggestRequest\x1a#.matchops.engine.v1.SuggestResponse\x12O\n\x08RunAudit\x12 .matchops.engine.v1.AuditRequest\x1a!.matchops.engine.v1.AuditResponse\x12`\n\x10\x44ispatchBatchJob\x12#.matchops.engine.v1.BatchJobRequest\x1a\'.matchops.engine.v1.JobDispatchResponse\x12\x62\n\x11\x44ispatchUploadJob\x12$.matchops.engine.v1.UploadJobRequest\x1a\'.matchops.engine.v1.JobDispatchResponse\x12X\n\tCancelJob\x12$.matchops.engine.v1.CancelJobRequest\x1a%.matchops.engine.v1.CancelJobResponse\x12J\n\tGetHealth\x12\x19.matchops.engine.v1.Empty\x1a\".matchops.engine.v1.HealthResponse\x12V\n\x0fGetModelsStatus\x12\x19.matchops.engine.v1.Empty\x1a(.matchops.engine.v1.ModelsStatusResponse\x12\x61\n\x0cManageModels\x12\'.matchops.engine.v1.ManageModelsRequest\x1a(.matchops.engine.v1.ManageModelsResponse\x12\x61\n\x0cRefreshRules\x12\'.matchops.engine.v1.RefreshRulesRequest\x1a(.matchops.engine.v1.RefreshRulesResponse\x12[\n\x15ListVectorCollections\x12\x19.matchops.engine.v1.Empty\x1a\'.matchops.engine.v1.JsonPayloadResponse\x12k\n\x13GetVectorCollection\x12+.matchops.engine.v1.VectorCollectionRequest\x1a\'.matchops.engine.v1.JsonPayloadResponse\x12j\n\x16SearchVectorCollection\x12\'.matchops.engine.v1.VectorSearchRequest\x1a\'.matchops.engine.v1.JsonPayloadResponse\x12[\n\nRerunRules\x12%.matchops.engine.v1.RerunRulesRequest\x1a&.matchops.engine.v1.RerunRulesResponse\x12U\n\x08TestRule\x12#.matchops.engine.v1.TestRuleRequest\x1a$.matchops.engine.v1.TestRuleResponse2\xb6\x02\n\x16\x42\x61\x63kendCallbackService\x12\x64\n\x11ReportJobProgress\x12&.matchops.engine.v1.JobProgressRequest\x1a\'.matchops.engine.v1.JobCallbackResponse\x12^\n\x0b\x43ompleteJob\x12&.matchops.engine.v1.JobCompleteRequest\x1a\'.matchops.engine.v1.JobCallbackResponse\x12V\n\x07\x46\x61ilJob\x12\".matchops.engine.v1.JobFailRequest\x1a\'.matchops.engine.v1.JobCallbackResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+    b'\n"engine/protos/engine_service.proto\x12\x12matchops.engine.v1"\x07\n\x05\x45mpty"N\n\x08SKUInput\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05price\x18\x02 \x01(\x01\x12\x13\n\x0b\x64\x65scription\x18\x03 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x04 \x01(\t"q\n\x0cMatchRequest\x12*\n\x04skus\x18\x01 \x03(\x0b\x32\x1c.matchops.engine.v1.SKUInput\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\x12\n\nrules_json\x18\x03 \x01(\t\x12\x11\n\ttenant_id\x18\x04 \x01(\t"\xc0\x01\n\x0fMatchResultItem\x12\x1c\n\x14matched_catalog_name\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x13\n\x0blogic_notes\x18\x04 \x01(\t\x12\x14\n\x0csuggested_bt\x18\x05 \x01(\t\x12\x14\n\x0csuggested_gk\x18\x06 \x01(\t\x12\x18\n\x10suggested_region\x18\x07 \x01(\t\x12\x15\n\rrules_applied\x18\x08 \x01(\t"\xa5\x02\n\rMatchResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\r\n\x05total\x18\x03 \x01(\x05\x12\x34\n\x07results\x18\x04 \x03(\x0b\x32#.matchops.engine.v1.MatchResultItem\x12J\n\rstage_timings\x18\x05 \x03(\x0b\x32\x33.matchops.engine.v1.MatchResponse.StageTimingsEntry\x12\x18\n\x10\x64uration_seconds\x18\x06 \x01(\x01\x12\x14\n\x0crule_version\x18\x07 \x01(\t\x1a\x33\n\x11StageTimingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01"t\n\x0f\x43lassifyRequest\x12*\n\x04skus\x18\x01 \x03(\x0b\x32\x1c.matchops.engine.v1.SKUInput\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\x12\n\nrules_json\x18\x03 \x01(\t\x12\x11\n\ttenant_id\x18\x04 \x01(\t"\xd7\x02\n\x12\x43lassifyResultItem\x12\x14\n\x0csuggested_bt\x18\x01 \x01(\t\x12\x15\n\rbt_confidence\x18\x02 \x01(\x01\x12\x11\n\tbt_status\x18\x03 \x01(\t\x12\x11\n\tbt_source\x18\x04 \x01(\t\x12\r\n\x05model\x18\x05 \x01(\t\x12\x10\n\x08\x62t_model\x18\x06 \x01(\t\x12\x14\n\x0csuggested_gk\x18\x07 \x01(\t\x12\x15\n\rgk_confidence\x18\x08 \x01(\x01\x12\x11\n\tgk_status\x18\t \x01(\t\x12\x18\n\x10suggested_region\x18\n \x01(\t\x12\x19\n\x11region_confidence\x18\x0b \x01(\x01\x12\x15\n\rregion_status\x18\x0c \x01(\t\x12\x15\n\rregion_source\x18\r \x01(\t\x12\x15\n\rrules_applied\x18\x0e \x01(\t\x12\x13\n\x0blogic_notes\x18\x0f \x01(\t"\xae\x02\n\x10\x43lassifyResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\r\n\x05total\x18\x03 \x01(\x05\x12\x37\n\x07results\x18\x04 \x03(\x0b\x32&.matchops.engine.v1.ClassifyResultItem\x12M\n\rstage_timings\x18\x05 \x03(\x0b\x32\x36.matchops.engine.v1.ClassifyResponse.StageTimingsEntry\x12\x18\n\x10\x64uration_seconds\x18\x06 \x01(\x01\x12\x14\n\x0crule_version\x18\x07 \x01(\t\x1a\x33\n\x11StageTimingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01"\x83\x01\n\x10SingleRunRequest\x12\x0c\n\x04task\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12*\n\x04skus\x18\x03 \x03(\x0b\x32\x1c.matchops.engine.v1.SKUInput\x12\x12\n\nrules_json\x18\x04 \x01(\t\x12\x11\n\ttenant_id\x18\x05 \x01(\t"\xf4\x03\n\x12PipelineResultItem\x12\x1c\n\x14matched_catalog_name\x18\x01 \x01(\t\x12\r\n\x05score\x18\x02 \x01(\x01\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x13\n\x0blogic_notes\x18\x04 \x01(\t\x12\x14\n\x0csuggested_bt\x18\x05 \x01(\t\x12\x15\n\rbt_confidence\x18\x06 \x01(\x01\x12\x11\n\tbt_status\x18\x07 \x01(\t\x12\x11\n\tbt_source\x18\x08 \x01(\t\x12\r\n\x05model\x18\t \x01(\t\x12\x10\n\x08\x62t_model\x18\n \x01(\t\x12\x14\n\x0csuggested_gk\x18\x0b \x01(\t\x12\x15\n\rgk_confidence\x18\x0c \x01(\x01\x12\x11\n\tgk_status\x18\r \x01(\t\x12\x18\n\x10suggested_region\x18\x0e \x01(\t\x12\x19\n\x11region_confidence\x18\x0f \x01(\x01\x12\x15\n\rregion_status\x18\x10 \x01(\t\x12\x15\n\rregion_source\x18\x11 \x01(\t\x12\x15\n\rrules_applied\x18\x12 \x01(\t\x12\x17\n\x0fpipeline_source\x18\x13 \x01(\t\x12\x19\n\x11\x65xtracted_flavors\x18\x14 \x03(\t\x12\x18\n\x10\x65xtracted_brands\x18\x15 \x03(\t\x12\x10\n\x08sku_name\x18\x16 \x01(\t"\xbe\x02\n\x11SingleRunResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0c\n\x04task\x18\x02 \x01(\t\x12\x0e\n\x06\x64omain\x18\x03 \x01(\t\x12\r\n\x05total\x18\x04 \x01(\x05\x12\x37\n\x07results\x18\x05 \x03(\x0b\x32&.matchops.engine.v1.PipelineResultItem\x12N\n\rstage_timings\x18\x06 \x03(\x0b\x32\x37.matchops.engine.v1.SingleRunResponse.StageTimingsEntry\x12\x18\n\x10\x64uration_seconds\x18\x07 \x01(\x01\x12\x14\n\x0crule_version\x18\x08 \x01(\t\x1a\x33\n\x11StageTimingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01"n\n\x0eSuggestRequest\x12\x10\n\x08sku_name\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\x12\n\ncurrent_bt\x18\x03 \x01(\t\x12\x12\n\nexclude_bt\x18\x04 \x01(\t\x12\x12\n\nexclude_gk\x18\x05 \x01(\t"\xa2\x01\n\x0fSuggestResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x10\n\x08sku_name\x18\x02 \x01(\t\x12\x14\n\x0csuggested_bt\x18\x03 \x01(\t\x12\x14\n\x0csuggested_gk\x18\x04 \x01(\t\x12\x18\n\x10suggested_region\x18\x05 \x01(\t\x12\x15\n\rtemplate_used\x18\x06 \x01(\t\x12\x10\n\x08is_match\x18\x07 \x01(\x08"\x87\x01\n\x0c\x41uditRequest\x12\x10\n\x08sku_name\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\x0c\n\x04task\x18\x03 \x01(\t\x12\r\n\x05price\x18\x04 \x01(\x01\x12\x13\n\x0b\x64\x65scription\x18\x05 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x06 \x01(\t\x12\x11\n\ttenant_id\x18\x07 \x01(\t"#\n\rAuditResponse\x12\x12\n\naudit_json\x18\x01 \x01(\t"\x82\x02\n\x0f\x42\x61tchJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0c\n\x04task\x18\x02 \x01(\t\x12\x0e\n\x06\x64omain\x18\x03 \x01(\t\x12*\n\x04skus\x18\x04 \x03(\x0b\x32\x1c.matchops.engine.v1.SKUInput\x12\x14\n\x0c\x63\x61llback_url\x18\x05 \x01(\t\x12\x12\n\nsheet_name\x18\x06 \x01(\t\x12\x12\n\ncreated_by\x18\x07 \x01(\t\x12\x11\n\ttenant_id\x18\x08 \x01(\t\x12\x12\n\nrules_json\x18\t \x01(\t\x12\x16\n\x0espreadsheet_id\x18\n \x01(\t\x12\x18\n\x10\x62\x61\x63kend_grpc_url\x18\x0b \x01(\t"}\n\rUploadSkuItem\x12=\n\x06\x66ields\x18\x01 \x03(\x0b\x32-.matchops.engine.v1.UploadSkuItem.FieldsEntry\x1a-\n\x0b\x46ieldsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01"\x82\x02\n\x10UploadJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0c\n\x04task\x18\x02 \x01(\t\x12\x0e\n\x06\x64omain\x18\x03 \x01(\t\x12\x11\n\tfile_path\x18\x04 \x01(\t\x12\x14\n\x0c\x63\x61llback_url\x18\x05 \x01(\t\x12\x12\n\nsheet_name\x18\x06 \x01(\t\x12\x12\n\ncreated_by\x18\x07 \x01(\t\x12\x11\n\ttenant_id\x18\x08 \x01(\t\x12\x11\n\tskus_json\x18\t \x01(\t\x12\x18\n\x10\x62\x61\x63kend_grpc_url\x18\n \x01(\t\x12/\n\x04skus\x18\x0b \x03(\x0b\x32!.matchops.engine.v1.UploadSkuItem"5\n\x13JobDispatchResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0e\n\x06job_id\x18\x02 \x01(\t""\n\x10\x43\x61ncelJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t"4\n\x11\x43\x61ncelJobResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t"c\n\x0eHealthResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07service\x18\x02 \x01(\t\x12\x16\n\x0eloaded_domains\x18\x03 \x03(\t\x12\x18\n\x10\x61ll_models_ready\x18\x04 \x01(\x08"9\n\x11\x44omainModelStatus\x12\x10\n\x08pipeline\x18\x01 \x01(\t\x12\x12\n\nclassifier\x18\x02 \x01(\t"\xc5\x01\n\x14ModelsStatusResponse\x12\x46\n\x07\x64omains\x18\x01 \x03(\x0b\x32\x35.matchops.engine.v1.ModelsStatusResponse.DomainsEntry\x12\x0e\n\x06status\x18\x02 \x01(\t\x1aU\n\x0c\x44omainsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x34\n\x05value\x18\x02 \x01(\x0b\x32%.matchops.engine.v1.DomainModelStatus:\x02\x38\x01"5\n\x13ManageModelsRequest\x12\x0e\n\x06\x61\x63tion\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t"7\n\x14ManageModelsResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t":\n\x13RefreshRulesRequest\x12\x12\n\nrules_json\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t"7\n\x14RefreshRulesResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t"\'\n\x17VectorCollectionRequest\x12\x0c\n\x04name\x18\x01 \x01(\t"\x9b\x01\n\x13VectorSearchRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\r\n\x05query\x18\x02 \x01(\t\x12\r\n\x05limit\x18\x03 \x01(\x05\x12\x17\n\x0fscore_threshold\x18\x04 \x01(\x01\x12\x1b\n\x13has_score_threshold\x18\x05 \x01(\x08\x12\x14\n\x0c\x66ilters_json\x18\x06 \x01(\t\x12\x0c\n\x04mode\x18\x07 \x01(\t"+\n\x13JsonPayloadResponse\x12\x14\n\x0cpayload_json\x18\x01 \x01(\t"\xe3\x01\n\x11RerunRulesRequest\x12\x10\n\x08sku_name\x18\x01 \x01(\t\x12\x0e\n\x06\x64omain\x18\x02 \x01(\t\x12\n\n\x02\x62t\x18\x03 \x01(\t\x12\n\n\x02gk\x18\x04 \x01(\t\x12\x0e\n\x06region\x18\x05 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x06 \x01(\t\x12\r\n\x05price\x18\x07 \x01(\x01\x12\x12\n\nconfidence\x18\x08 \x01(\x01\x12\x14\n\x0cmatch_source\x18\t \x01(\t\x12\x13\n\x0bmatched_sku\x18\n \x01(\t\x12\x11\n\treasoning\x18\x0b \x01(\t\x12\x11\n\ttenant_id\x18\x0c \x01(\t"q\n\x12RerunRulesResponse\x12\x14\n\x0csuggested_bt\x18\x01 \x01(\t\x12\x14\n\x0csuggested_gk\x18\x02 \x01(\t\x12\x18\n\x10suggested_region\x18\x03 \x01(\t\x12\x15\n\rrules_applied\x18\x04 \x01(\t"S\n\x0fTestRuleRequest\x12\x11\n\trule_json\x18\x01 \x01(\t\x12\x1a\n\x12sample_record_json\x18\x02 \x01(\t\x12\x11\n\ttenant_id\x18\x03 \x01(\t"\xa4\x01\n\x10TestRuleResponse\x12\x0f\n\x07rule_id\x18\x01 \x01(\t\x12\r\n\x05\x66ires\x18\x02 \x01(\x08\x12\x1f\n\x17matched_conditions_json\x18\x03 \x01(\t\x12\x1c\n\x14\x61\x63tions_applied_json\x18\x04 \x01(\t\x12\x0f\n\x07\x63hanges\x18\x05 \x01(\t\x12 \n\x18sample_record_after_json\x18\x06 \x01(\t"w\n\x12JobProgressRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x15\n\rcurrent_stage\x18\x02 \x01(\t\x12\x14\n\x0cprogress_pct\x18\x03 \x01(\x01\x12\x13\n\x0b\x65ta_seconds\x18\x04 \x01(\x03\x12\x0f\n\x07has_eta\x18\x05 \x01(\x08"\xb6\x02\n\x12JobCompleteRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0e\n\x06\x64omain\x18\x03 \x01(\t\x12\x0c\n\x04task\x18\x04 \x01(\t\x12\x14\n\x0cresults_json\x18\x05 \x01(\t\x12\x14\n\x0crule_version\x18\x06 \x01(\t\x12\x18\n\x10\x64uration_minutes\x18\x07 \x01(\x01\x12\x11\n\thigh_conf\x18\x08 \x01(\x05\x12\x10\n\x08med_conf\x18\t \x01(\x05\x12\x10\n\x08low_conf\x18\n \x01(\x05\x12\x12\n\nmatch_rate\x18\x0b \x01(\x01\x12\x18\n\x10webhook_log_json\x18\x0c \x01(\t\x12\x37\n\x07results\x18\r \x03(\x0b\x32&.matchops.engine.v1.PipelineResultItem"w\n\x0eJobFailRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x15\n\rerror_message\x18\x03 \x01(\t\x12\x18\n\x10\x64uration_minutes\x18\x04 \x01(\x01\x12\x14\n\x0cis_cancelled\x18\x05 \x01(\x08"%\n\x13JobCallbackResponse\x12\x0e\n\x06status\x18\x01 \x01(\t2\xb4\x0c\n\x16\x45ngineInferenceService\x12L\n\x05Match\x12 .matchops.engine.v1.MatchRequest\x1a!.matchops.engine.v1.MatchResponse\x12U\n\x08\x43lassify\x12#.matchops.engine.v1.ClassifyRequest\x1a$.matchops.engine.v1.ClassifyResponse\x12X\n\tRunSingle\x12$.matchops.engine.v1.SingleRunRequest\x1a%.matchops.engine.v1.SingleRunResponse\x12V\n\x0bSuggestTags\x12".matchops.engine.v1.SuggestRequest\x1a#.matchops.engine.v1.SuggestResponse\x12O\n\x08RunAudit\x12 .matchops.engine.v1.AuditRequest\x1a!.matchops.engine.v1.AuditResponse\x12`\n\x10\x44ispatchBatchJob\x12#.matchops.engine.v1.BatchJobRequest\x1a\'.matchops.engine.v1.JobDispatchResponse\x12\x62\n\x11\x44ispatchUploadJob\x12$.matchops.engine.v1.UploadJobRequest\x1a\'.matchops.engine.v1.JobDispatchResponse\x12X\n\tCancelJob\x12$.matchops.engine.v1.CancelJobRequest\x1a%.matchops.engine.v1.CancelJobResponse\x12J\n\tGetHealth\x12\x19.matchops.engine.v1.Empty\x1a".matchops.engine.v1.HealthResponse\x12V\n\x0fGetModelsStatus\x12\x19.matchops.engine.v1.Empty\x1a(.matchops.engine.v1.ModelsStatusResponse\x12\x61\n\x0cManageModels\x12\'.matchops.engine.v1.ManageModelsRequest\x1a(.matchops.engine.v1.ManageModelsResponse\x12\x61\n\x0cRefreshRules\x12\'.matchops.engine.v1.RefreshRulesRequest\x1a(.matchops.engine.v1.RefreshRulesResponse\x12[\n\x15ListVectorCollections\x12\x19.matchops.engine.v1.Empty\x1a\'.matchops.engine.v1.JsonPayloadResponse\x12k\n\x13GetVectorCollection\x12+.matchops.engine.v1.VectorCollectionRequest\x1a\'.matchops.engine.v1.JsonPayloadResponse\x12j\n\x16SearchVectorCollection\x12\'.matchops.engine.v1.VectorSearchRequest\x1a\'.matchops.engine.v1.JsonPayloadResponse\x12[\n\nRerunRules\x12%.matchops.engine.v1.RerunRulesRequest\x1a&.matchops.engine.v1.RerunRulesResponse\x12U\n\x08TestRule\x12#.matchops.engine.v1.TestRuleRequest\x1a$.matchops.engine.v1.TestRuleResponse2\xb6\x02\n\x16\x42\x61\x63kendCallbackService\x12\x64\n\x11ReportJobProgress\x12&.matchops.engine.v1.JobProgressRequest\x1a\'.matchops.engine.v1.JobCallbackResponse\x12^\n\x0b\x43ompleteJob\x12&.matchops.engine.v1.JobCompleteRequest\x1a\'.matchops.engine.v1.JobCallbackResponse\x12V\n\x07\x46\x61ilJob\x12".matchops.engine.v1.JobFailRequest\x1a\'.matchops.engine.v1.JobCallbackResponseb\x06proto3'
+)
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'engine.protos.engine_service_pb2', _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "engine.protos.engine_service_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
-  _globals['_MATCHRESPONSE_STAGETIMINGSENTRY']._loaded_options = None
-  _globals['_MATCHRESPONSE_STAGETIMINGSENTRY']._serialized_options = b'8\001'
-  _globals['_CLASSIFYRESPONSE_STAGETIMINGSENTRY']._loaded_options = None
-  _globals['_CLASSIFYRESPONSE_STAGETIMINGSENTRY']._serialized_options = b'8\001'
-  _globals['_SINGLERUNRESPONSE_STAGETIMINGSENTRY']._loaded_options = None
-  _globals['_SINGLERUNRESPONSE_STAGETIMINGSENTRY']._serialized_options = b'8\001'
-  _globals['_UPLOADSKUITEM_FIELDSENTRY']._loaded_options = None
-  _globals['_UPLOADSKUITEM_FIELDSENTRY']._serialized_options = b'8\001'
-  _globals['_MODELSSTATUSRESPONSE_DOMAINSENTRY']._loaded_options = None
-  _globals['_MODELSSTATUSRESPONSE_DOMAINSENTRY']._serialized_options = b'8\001'
-  _globals['_EMPTY']._serialized_start=58
-  _globals['_EMPTY']._serialized_end=65
-  _globals['_SKUINPUT']._serialized_start=67
-  _globals['_SKUINPUT']._serialized_end=145
-  _globals['_MATCHREQUEST']._serialized_start=147
-  _globals['_MATCHREQUEST']._serialized_end=260
-  _globals['_MATCHRESULTITEM']._serialized_start=263
-  _globals['_MATCHRESULTITEM']._serialized_end=455
-  _globals['_MATCHRESPONSE']._serialized_start=458
-  _globals['_MATCHRESPONSE']._serialized_end=751
-  _globals['_MATCHRESPONSE_STAGETIMINGSENTRY']._serialized_start=700
-  _globals['_MATCHRESPONSE_STAGETIMINGSENTRY']._serialized_end=751
-  _globals['_CLASSIFYREQUEST']._serialized_start=753
-  _globals['_CLASSIFYREQUEST']._serialized_end=869
-  _globals['_CLASSIFYRESULTITEM']._serialized_start=872
-  _globals['_CLASSIFYRESULTITEM']._serialized_end=1215
-  _globals['_CLASSIFYRESPONSE']._serialized_start=1218
-  _globals['_CLASSIFYRESPONSE']._serialized_end=1520
-  _globals['_CLASSIFYRESPONSE_STAGETIMINGSENTRY']._serialized_start=700
-  _globals['_CLASSIFYRESPONSE_STAGETIMINGSENTRY']._serialized_end=751
-  _globals['_SINGLERUNREQUEST']._serialized_start=1523
-  _globals['_SINGLERUNREQUEST']._serialized_end=1654
-  _globals['_PIPELINERESULTITEM']._serialized_start=1657
-  _globals['_PIPELINERESULTITEM']._serialized_end=2157
-  _globals['_SINGLERUNRESPONSE']._serialized_start=2160
-  _globals['_SINGLERUNRESPONSE']._serialized_end=2478
-  _globals['_SINGLERUNRESPONSE_STAGETIMINGSENTRY']._serialized_start=700
-  _globals['_SINGLERUNRESPONSE_STAGETIMINGSENTRY']._serialized_end=751
-  _globals['_SUGGESTREQUEST']._serialized_start=2480
-  _globals['_SUGGESTREQUEST']._serialized_end=2590
-  _globals['_SUGGESTRESPONSE']._serialized_start=2593
-  _globals['_SUGGESTRESPONSE']._serialized_end=2755
-  _globals['_AUDITREQUEST']._serialized_start=2758
-  _globals['_AUDITREQUEST']._serialized_end=2893
-  _globals['_AUDITRESPONSE']._serialized_start=2895
-  _globals['_AUDITRESPONSE']._serialized_end=2930
-  _globals['_BATCHJOBREQUEST']._serialized_start=2933
-  _globals['_BATCHJOBREQUEST']._serialized_end=3191
-  _globals['_UPLOADSKUITEM']._serialized_start=3193
-  _globals['_UPLOADSKUITEM']._serialized_end=3318
-  _globals['_UPLOADSKUITEM_FIELDSENTRY']._serialized_start=3273
-  _globals['_UPLOADSKUITEM_FIELDSENTRY']._serialized_end=3318
-  _globals['_UPLOADJOBREQUEST']._serialized_start=3321
-  _globals['_UPLOADJOBREQUEST']._serialized_end=3579
-  _globals['_JOBDISPATCHRESPONSE']._serialized_start=3581
-  _globals['_JOBDISPATCHRESPONSE']._serialized_end=3634
-  _globals['_CANCELJOBREQUEST']._serialized_start=3636
-  _globals['_CANCELJOBREQUEST']._serialized_end=3670
-  _globals['_CANCELJOBRESPONSE']._serialized_start=3672
-  _globals['_CANCELJOBRESPONSE']._serialized_end=3724
-  _globals['_HEALTHRESPONSE']._serialized_start=3726
-  _globals['_HEALTHRESPONSE']._serialized_end=3825
-  _globals['_DOMAINMODELSTATUS']._serialized_start=3827
-  _globals['_DOMAINMODELSTATUS']._serialized_end=3884
-  _globals['_MODELSSTATUSRESPONSE']._serialized_start=3887
-  _globals['_MODELSSTATUSRESPONSE']._serialized_end=4084
-  _globals['_MODELSSTATUSRESPONSE_DOMAINSENTRY']._serialized_start=3999
-  _globals['_MODELSSTATUSRESPONSE_DOMAINSENTRY']._serialized_end=4084
-  _globals['_MANAGEMODELSREQUEST']._serialized_start=4086
-  _globals['_MANAGEMODELSREQUEST']._serialized_end=4139
-  _globals['_MANAGEMODELSRESPONSE']._serialized_start=4141
-  _globals['_MANAGEMODELSRESPONSE']._serialized_end=4196
-  _globals['_REFRESHRULESREQUEST']._serialized_start=4198
-  _globals['_REFRESHRULESREQUEST']._serialized_end=4256
-  _globals['_REFRESHRULESRESPONSE']._serialized_start=4258
-  _globals['_REFRESHRULESRESPONSE']._serialized_end=4313
-  _globals['_VECTORCOLLECTIONREQUEST']._serialized_start=4315
-  _globals['_VECTORCOLLECTIONREQUEST']._serialized_end=4354
-  _globals['_VECTORSEARCHREQUEST']._serialized_start=4357
-  _globals['_VECTORSEARCHREQUEST']._serialized_end=4512
-  _globals['_JSONPAYLOADRESPONSE']._serialized_start=4514
-  _globals['_JSONPAYLOADRESPONSE']._serialized_end=4557
-  _globals['_RERUNRULESREQUEST']._serialized_start=4560
-  _globals['_RERUNRULESREQUEST']._serialized_end=4787
-  _globals['_RERUNRULESRESPONSE']._serialized_start=4789
-  _globals['_RERUNRULESRESPONSE']._serialized_end=4902
-  _globals['_TESTRULEREQUEST']._serialized_start=4904
-  _globals['_TESTRULEREQUEST']._serialized_end=4987
-  _globals['_TESTRULERESPONSE']._serialized_start=4990
-  _globals['_TESTRULERESPONSE']._serialized_end=5154
-  _globals['_JOBPROGRESSREQUEST']._serialized_start=5156
-  _globals['_JOBPROGRESSREQUEST']._serialized_end=5275
-  _globals['_JOBCOMPLETEREQUEST']._serialized_start=5278
-  _globals['_JOBCOMPLETEREQUEST']._serialized_end=5588
-  _globals['_JOBFAILREQUEST']._serialized_start=5590
-  _globals['_JOBFAILREQUEST']._serialized_end=5709
-  _globals['_JOBCALLBACKRESPONSE']._serialized_start=5711
-  _globals['_JOBCALLBACKRESPONSE']._serialized_end=5748
-  _globals['_ENGINEINFERENCESERVICE']._serialized_start=5751
-  _globals['_ENGINEINFERENCESERVICE']._serialized_end=7339
-  _globals['_BACKENDCALLBACKSERVICE']._serialized_start=7342
-  _globals['_BACKENDCALLBACKSERVICE']._serialized_end=7652
+    DESCRIPTOR._loaded_options = None
+    _globals["_MATCHRESPONSE_STAGETIMINGSENTRY"]._loaded_options = None
+    _globals["_MATCHRESPONSE_STAGETIMINGSENTRY"]._serialized_options = b"8\001"
+    _globals["_CLASSIFYRESPONSE_STAGETIMINGSENTRY"]._loaded_options = None
+    _globals["_CLASSIFYRESPONSE_STAGETIMINGSENTRY"]._serialized_options = b"8\001"
+    _globals["_SINGLERUNRESPONSE_STAGETIMINGSENTRY"]._loaded_options = None
+    _globals["_SINGLERUNRESPONSE_STAGETIMINGSENTRY"]._serialized_options = b"8\001"
+    _globals["_UPLOADSKUITEM_FIELDSENTRY"]._loaded_options = None
+    _globals["_UPLOADSKUITEM_FIELDSENTRY"]._serialized_options = b"8\001"
+    _globals["_MODELSSTATUSRESPONSE_DOMAINSENTRY"]._loaded_options = None
+    _globals["_MODELSSTATUSRESPONSE_DOMAINSENTRY"]._serialized_options = b"8\001"
+    _globals["_EMPTY"]._serialized_start = 58
+    _globals["_EMPTY"]._serialized_end = 65
+    _globals["_SKUINPUT"]._serialized_start = 67
+    _globals["_SKUINPUT"]._serialized_end = 145
+    _globals["_MATCHREQUEST"]._serialized_start = 147
+    _globals["_MATCHREQUEST"]._serialized_end = 260
+    _globals["_MATCHRESULTITEM"]._serialized_start = 263
+    _globals["_MATCHRESULTITEM"]._serialized_end = 455
+    _globals["_MATCHRESPONSE"]._serialized_start = 458
+    _globals["_MATCHRESPONSE"]._serialized_end = 751
+    _globals["_MATCHRESPONSE_STAGETIMINGSENTRY"]._serialized_start = 700
+    _globals["_MATCHRESPONSE_STAGETIMINGSENTRY"]._serialized_end = 751
+    _globals["_CLASSIFYREQUEST"]._serialized_start = 753
+    _globals["_CLASSIFYREQUEST"]._serialized_end = 869
+    _globals["_CLASSIFYRESULTITEM"]._serialized_start = 872
+    _globals["_CLASSIFYRESULTITEM"]._serialized_end = 1215
+    _globals["_CLASSIFYRESPONSE"]._serialized_start = 1218
+    _globals["_CLASSIFYRESPONSE"]._serialized_end = 1520
+    _globals["_CLASSIFYRESPONSE_STAGETIMINGSENTRY"]._serialized_start = 700
+    _globals["_CLASSIFYRESPONSE_STAGETIMINGSENTRY"]._serialized_end = 751
+    _globals["_SINGLERUNREQUEST"]._serialized_start = 1523
+    _globals["_SINGLERUNREQUEST"]._serialized_end = 1654
+    _globals["_PIPELINERESULTITEM"]._serialized_start = 1657
+    _globals["_PIPELINERESULTITEM"]._serialized_end = 2157
+    _globals["_SINGLERUNRESPONSE"]._serialized_start = 2160
+    _globals["_SINGLERUNRESPONSE"]._serialized_end = 2478
+    _globals["_SINGLERUNRESPONSE_STAGETIMINGSENTRY"]._serialized_start = 700
+    _globals["_SINGLERUNRESPONSE_STAGETIMINGSENTRY"]._serialized_end = 751
+    _globals["_SUGGESTREQUEST"]._serialized_start = 2480
+    _globals["_SUGGESTREQUEST"]._serialized_end = 2590
+    _globals["_SUGGESTRESPONSE"]._serialized_start = 2593
+    _globals["_SUGGESTRESPONSE"]._serialized_end = 2755
+    _globals["_AUDITREQUEST"]._serialized_start = 2758
+    _globals["_AUDITREQUEST"]._serialized_end = 2893
+    _globals["_AUDITRESPONSE"]._serialized_start = 2895
+    _globals["_AUDITRESPONSE"]._serialized_end = 2930
+    _globals["_BATCHJOBREQUEST"]._serialized_start = 2933
+    _globals["_BATCHJOBREQUEST"]._serialized_end = 3191
+    _globals["_UPLOADSKUITEM"]._serialized_start = 3193
+    _globals["_UPLOADSKUITEM"]._serialized_end = 3318
+    _globals["_UPLOADSKUITEM_FIELDSENTRY"]._serialized_start = 3273
+    _globals["_UPLOADSKUITEM_FIELDSENTRY"]._serialized_end = 3318
+    _globals["_UPLOADJOBREQUEST"]._serialized_start = 3321
+    _globals["_UPLOADJOBREQUEST"]._serialized_end = 3579
+    _globals["_JOBDISPATCHRESPONSE"]._serialized_start = 3581
+    _globals["_JOBDISPATCHRESPONSE"]._serialized_end = 3634
+    _globals["_CANCELJOBREQUEST"]._serialized_start = 3636
+    _globals["_CANCELJOBREQUEST"]._serialized_end = 3670
+    _globals["_CANCELJOBRESPONSE"]._serialized_start = 3672
+    _globals["_CANCELJOBRESPONSE"]._serialized_end = 3724
+    _globals["_HEALTHRESPONSE"]._serialized_start = 3726
+    _globals["_HEALTHRESPONSE"]._serialized_end = 3825
+    _globals["_DOMAINMODELSTATUS"]._serialized_start = 3827
+    _globals["_DOMAINMODELSTATUS"]._serialized_end = 3884
+    _globals["_MODELSSTATUSRESPONSE"]._serialized_start = 3887
+    _globals["_MODELSSTATUSRESPONSE"]._serialized_end = 4084
+    _globals["_MODELSSTATUSRESPONSE_DOMAINSENTRY"]._serialized_start = 3999
+    _globals["_MODELSSTATUSRESPONSE_DOMAINSENTRY"]._serialized_end = 4084
+    _globals["_MANAGEMODELSREQUEST"]._serialized_start = 4086
+    _globals["_MANAGEMODELSREQUEST"]._serialized_end = 4139
+    _globals["_MANAGEMODELSRESPONSE"]._serialized_start = 4141
+    _globals["_MANAGEMODELSRESPONSE"]._serialized_end = 4196
+    _globals["_REFRESHRULESREQUEST"]._serialized_start = 4198
+    _globals["_REFRESHRULESREQUEST"]._serialized_end = 4256
+    _globals["_REFRESHRULESRESPONSE"]._serialized_start = 4258
+    _globals["_REFRESHRULESRESPONSE"]._serialized_end = 4313
+    _globals["_VECTORCOLLECTIONREQUEST"]._serialized_start = 4315
+    _globals["_VECTORCOLLECTIONREQUEST"]._serialized_end = 4354
+    _globals["_VECTORSEARCHREQUEST"]._serialized_start = 4357
+    _globals["_VECTORSEARCHREQUEST"]._serialized_end = 4512
+    _globals["_JSONPAYLOADRESPONSE"]._serialized_start = 4514
+    _globals["_JSONPAYLOADRESPONSE"]._serialized_end = 4557
+    _globals["_RERUNRULESREQUEST"]._serialized_start = 4560
+    _globals["_RERUNRULESREQUEST"]._serialized_end = 4787
+    _globals["_RERUNRULESRESPONSE"]._serialized_start = 4789
+    _globals["_RERUNRULESRESPONSE"]._serialized_end = 4902
+    _globals["_TESTRULEREQUEST"]._serialized_start = 4904
+    _globals["_TESTRULEREQUEST"]._serialized_end = 4987
+    _globals["_TESTRULERESPONSE"]._serialized_start = 4990
+    _globals["_TESTRULERESPONSE"]._serialized_end = 5154
+    _globals["_JOBPROGRESSREQUEST"]._serialized_start = 5156
+    _globals["_JOBPROGRESSREQUEST"]._serialized_end = 5275
+    _globals["_JOBCOMPLETEREQUEST"]._serialized_start = 5278
+    _globals["_JOBCOMPLETEREQUEST"]._serialized_end = 5588
+    _globals["_JOBFAILREQUEST"]._serialized_start = 5590
+    _globals["_JOBFAILREQUEST"]._serialized_end = 5709
+    _globals["_JOBCALLBACKRESPONSE"]._serialized_start = 5711
+    _globals["_JOBCALLBACKRESPONSE"]._serialized_end = 5748
+    _globals["_ENGINEINFERENCESERVICE"]._serialized_start = 5751
+    _globals["_ENGINEINFERENCESERVICE"]._serialized_end = 7339
+    _globals["_BACKENDCALLBACKSERVICE"]._serialized_start = 7342
+    _globals["_BACKENDCALLBACKSERVICE"]._serialized_end = 7652
 # @@protoc_insertion_point(module_scope)

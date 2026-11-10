@@ -15,7 +15,13 @@ logger = logging.getLogger("matchops.middleware")
 
 def _insert_api_request(row: dict) -> None:
     with get_engine().begin() as conn:
-        conn.execute(api_requests.insert().values(**row))
+        try:
+            conn.execute(api_requests.insert().values(**row))
+        except Exception:
+            if "tenant_id" in row:
+                row_legacy = dict(row)
+                row_legacy.pop("tenant_id", None)
+                conn.execute(api_requests.insert().values(**row_legacy))
 
 
 SENSITIVE_SUBSTRINGS = ("token", "auth", "bearer", "password", "secret", "key", "x-api-key")
@@ -35,6 +41,23 @@ def _redact_sensitive_data(obj):
         for item in obj:
             if isinstance(item, (dict, list)):
                 _redact_sensitive_data(item)
+
+
+def _format_audit_response(body_bytes: bytes | None, content_length: int | None = None) -> str:
+    """Format and redact response body for audit trail, truncating responses exceeding 64KB."""
+    if content_length is not None and content_length > 65536:
+        return f"<omitted: response body {content_length} bytes > 64KB>"
+    if body_bytes is not None and len(body_bytes) > 65536:
+        return f"<omitted: response body {len(body_bytes)} bytes > 64KB>"
+    if not body_bytes:
+        return ""
+    text = body_bytes.decode("utf-8", errors="replace")
+    try:
+        resp_data = json.loads(text)
+        _redact_sensitive_data(resp_data)
+        return json.dumps(resp_data)
+    except Exception:
+        return text
 
 
 class AuditLoggingMiddleware(BaseHTTPMiddleware):
@@ -109,32 +132,51 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
         duration_ms = int((time.time() - start_time) * 1000)
         status_code = response.status_code
 
-        # 5. Capture response body safely
+        # 5. Capture response body safely (capped at 64KB to avoid memory blowup)
         response_json = ""
         try:
-            if hasattr(response, "body_iterator"):
-                response_body = [section async for section in response.body_iterator]
+            content_length = response.headers.get("content-length")
+            cl_int = int(content_length) if content_length and content_length.isdigit() else None
+            if cl_int and cl_int > 65536:
+                response_json = f"<omitted: response body {cl_int} bytes > 64KB>"
+            elif hasattr(response, "body_iterator"):
+                response_body = []
+                total_bytes = 0
+                too_large = False
+                async for section in response.body_iterator:
+                    response_body.append(section)
+                    total_bytes += len(section)
+                    if total_bytes > 65536:
+                        too_large = True
 
                 async def async_iter():
                     for chunk in response_body:
                         yield chunk
 
                 response.body_iterator = async_iter()
-                body_bytes = b"".join(response_body)
-                response_json = body_bytes.decode("utf-8", errors="replace")
+                if too_large:
+                    response_json = f"<omitted: response body {total_bytes} bytes > 64KB>"
+                else:
+                    response_json = _format_audit_response(b"".join(response_body))
             elif hasattr(response, "body"):
-                response_json = response.body.decode("utf-8", errors="replace")
-
-            # Safely redact response JSON
-            if response_json:
-                try:
-                    resp_data = json.loads(response_json)
-                    _redact_sensitive_data(resp_data)
-                    response_json = json.dumps(resp_data)
-                except Exception:
-                    pass
+                response_json = _format_audit_response(response.body, cl_int)
         except Exception as e:
             logger.error(f"Failed to capture response body: {e}")
+
+        # Determine authenticated tenant_id
+        eff_tenant = getattr(request.state, "tenant_id", None)
+        if not eff_tenant:
+            from backend.app.core.observability import get_tenant_id
+
+            t = get_tenant_id()
+            if t and t != "-":
+                eff_tenant = t
+        if not eff_tenant:
+            eff_tenant = request.headers.get("x-tenant-id") or "default"
+
+        from backend.app.core.observability import TENANT_ID
+
+        TENANT_ID.set(eff_tenant)
 
         # Write to DB (off the event loop: the pooled connection is blocking)
         try:
@@ -151,6 +193,7 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
                     "ip_address": ip_address,
                     "headers_json": headers_json,
                     "query_params_json": query_params_json,
+                    "tenant_id": eff_tenant,
                 },
             )
         except Exception as e:

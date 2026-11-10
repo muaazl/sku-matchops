@@ -316,9 +316,44 @@ def get_dashboard_stats(
     active_jobs = int(job_counts_row[0] or 0) if job_counts_row else 0
     completed_7d = int(job_counts_row[1] or 0) if job_counts_row else 0
     failed_7d = int(job_counts_row[2] or 0) if job_counts_row else 0
-    requests_24h = db.execute(
-        text("SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'")
-    ).scalar()
+    requests_24h = 0
+    try:
+        if principal.is_platform_admin:
+            requests_24h = int(
+                db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'"
+                    )
+                ).scalar()
+                or 0
+            )
+        else:
+            requests_24h = int(
+                db.execute(
+                    text(
+                        "SELECT COUNT(*) FROM api_requests WHERE tenant_id = :tenant_id AND created_at >= now() - interval '24 hours'"
+                    ),
+                    {"tenant_id": principal.tenant_id},
+                ).scalar()
+                or 0
+            )
+    except Exception:
+        # Graceful fallback if tenant_id column is not yet present on api_requests
+        try:
+            requests_24h = (
+                int(
+                    db.execute(
+                        text(
+                            "SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'"
+                        )
+                    ).scalar()
+                    or 0
+                )
+                if principal.is_platform_admin
+                else 0
+            )
+        except Exception:
+            requests_24h = 0
 
     return {
         "stats": {
@@ -438,19 +473,43 @@ def get_tag_stats(
     }
 
 
+_async_redis_pool = None
+
+
+def get_async_redis_pool():
+    global _async_redis_pool
+    if _async_redis_pool is None:
+        import redis.asyncio as aioredis
+
+        _async_redis_pool = aioredis.ConnectionPool.from_url(
+            backend_config.REDIS_URL,
+            max_connections=50,
+            socket_connect_timeout=2.0,
+            decode_responses=True,
+        )
+    return _async_redis_pool
+
+
+async def close_async_redis_pool():
+    global _async_redis_pool
+    if _async_redis_pool is not None:
+        try:
+            await _async_redis_pool.disconnect()
+        except Exception:
+            pass
+        _async_redis_pool = None
+
+
 async def _open_tenant_pubsub(tenant_id: str):
     import redis.asyncio as aioredis
 
-    client = aioredis.from_url(
-        backend_config.REDIS_URL,
-        socket_connect_timeout=1.0,
-        health_check_interval=30,
-        decode_responses=True,
-    )
+    pool = get_async_redis_pool()
+    client = aioredis.Redis(connection_pool=pool)
     pubsub = client.pubsub(ignore_subscribe_messages=True)
     try:
         await pubsub.subscribe(job_events_channel(tenant_id))
     except Exception as e:
+        await pubsub.aclose()
         await client.aclose()
         raise HTTPException(status_code=503, detail=f"Job event stream unavailable: {e}")
     return client, pubsub
@@ -558,17 +617,30 @@ def cancel_job(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    if not _tenant_job(db, id, principal):
-        raise HTTPException(status_code=404, detail="Job not found")
+    res = db.execute(
+        text(
+            "UPDATE jobs SET status = 'cancelled', cancel_requested = 1, completed_at = now() "
+            "WHERE id = :id AND tenant_id = :tenant_id AND status IN ('queued', 'running')"
+        ),
+        {"id": id, "tenant_id": principal.tenant_id},
+    )
+    if res.rowcount == 0:
+        row = _tenant_job(db, id, principal)
+        if not row:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if row["status"] == "cancelled":
+            return {"message": "Job is already cancelled"}
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel job with status '{row['status']}'. Only 'queued' or 'running' jobs can be cancelled.",
+        )
+
     db.execute(
         text(
-            "UPDATE jobs SET status = 'cancelled', cancel_requested = 1, completed_at = now() WHERE id = :id AND status IN ('queued', 'running')"
+            "UPDATE batches SET status = 'cancelled', completed_at = now() "
+            "WHERE id = :id AND tenant_id = :tenant_id"
         ),
-        {"id": id},
-    )
-    db.execute(
-        text("UPDATE batches SET status = 'cancelled', completed_at = now() WHERE id = :id"),
-        {"id": id},
+        {"id": id, "tenant_id": principal.tenant_id},
     )
     db.commit()
     clear_job_progress(id)

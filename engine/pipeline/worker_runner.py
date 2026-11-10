@@ -19,6 +19,7 @@ from urllib3.util.retry import Retry
 from engine import config
 from engine.core.grpc_utils import GRPC_CHANNEL_OPTIONS, grpc_metadata, result_to_pipeline_proto
 from engine.core.observability import SKUS_PROCESSED, trace_context
+from engine.core.security import validate_outbound_url
 from engine.pipeline.processor import process_request
 from engine.pipeline.task_queue import get_task_queue, release_active_tasks, run_worker
 from engine.pipeline.uploader import process_upload
@@ -187,7 +188,10 @@ def _worker_loop():
         if payload is None:
             break
         try:
-            with _exec_lock, trace_context(payload.get("trace_id")):
+            with (
+                _exec_lock,
+                trace_context(payload.get("trace_id"), tenant_id=payload.get("tenant_id")),
+            ):
                 _run_legacy_job(payload)
         finally:
             _batch_queue.task_done()
@@ -220,32 +224,35 @@ def _run_legacy_job(payload: dict[str, Any]) -> None:
 
 def _run_queued_job(payload: dict[str, Any]) -> None:
     """Redis queue job: raising hands the error to the queue, which retries or dead-letters it."""
-    job_id = str(payload.get("job_id", ""))
-    _queue_jobs.add(job_id)
-    try:
-        if _worker_stop.is_set():
-            raise InterruptedError("Worker shutting down")
-        if is_job_cancelled(job_id):
-            logger.info(f"[ENGINE WORKER] Skipped job {job_id} because it was already cancelled.")
-            return
+    with trace_context(payload.get("trace_id"), tenant_id=payload.get("tenant_id")):
+        job_id = str(payload.get("job_id", ""))
+        _queue_jobs.add(job_id)
         try:
-            _execute_job(payload)
-        except InterruptedError:
             if _worker_stop.is_set():
-                raise
-            logger.info(f"[ENGINE WORKER] Job {job_id} cancelled successfully.")
-        except Exception as e:
-            if _worker_stop.is_set():
-                raise
+                raise InterruptedError("Worker shutting down")
             if is_job_cancelled(job_id):
-                logger.info(f"[ENGINE WORKER] Job {job_id} cancelled during exception.")
+                logger.info(
+                    f"[ENGINE WORKER] Skipped job {job_id} because it was already cancelled."
+                )
                 return
-            logger.error(f"[ENGINE WORKER] Job {job_id} attempt failed: {e}", exc_info=True)
-            raise
-    finally:
-        _queue_jobs.discard(job_id)
-        _cancelled_jobs.discard(job_id)
-        _cancel_checked.pop(job_id, None)
+            try:
+                _execute_job(payload)
+            except InterruptedError:
+                if _worker_stop.is_set():
+                    raise
+                logger.info(f"[ENGINE WORKER] Job {job_id} cancelled successfully.")
+            except Exception as e:
+                if _worker_stop.is_set():
+                    raise
+                if is_job_cancelled(job_id):
+                    logger.info(f"[ENGINE WORKER] Job {job_id} cancelled during exception.")
+                    return
+                logger.error(f"[ENGINE WORKER] Job {job_id} attempt failed: {e}", exc_info=True)
+                raise
+        finally:
+            _queue_jobs.discard(job_id)
+            _cancelled_jobs.discard(job_id)
+            _cancel_checked.pop(job_id, None)
 
 
 def _execute_job(payload: dict[str, Any]) -> None:
@@ -310,10 +317,11 @@ def _execute_job(payload: dict[str, Any]) -> None:
 
     send_progress_update("uploading" if task.lower() == "upload" else "embedding", 0.0)
     with _exec_lock:
-        sync_rules_version()
+        tenant_id = payload.get("tenant_id") or "default"
+        sync_rules_version(tenant_id=tenant_id)
         # Pin one (rules, rule_version) pair for every chunk of this job: a reload mid-job
         # must not change which rules evaluate it or the version its results are saved under
-        rule_snapshot = snapshot_rules(payload.get("tenant_id") or "default")
+        rule_snapshot = snapshot_rules(tenant_id)
         rule_version = rule_snapshot.version
         # Execute CPU inference; _exec_lock is released immediately upon exit so slow outbound
         # Google Sheets webhooks never stall CPU execution for the next queued job.
@@ -392,6 +400,7 @@ def _execute_job(payload: dict[str, Any]) -> None:
     if callback_url:
         t0_cb = time.time()
         try:
+            validate_outbound_url(callback_url)
             logger.info(f"[ENGINE WORKER] Delivering Google Sheets callback to {callback_url}...")
             cb_resp = _http_session.post(callback_url, json=result_payload, timeout=45)
             cb_dur = int((time.time() - t0_cb) * 1000)
@@ -467,6 +476,7 @@ def _notify_failure(payload: dict[str, Any], error: str) -> None:
             "task": task,
         }
         try:
+            validate_outbound_url(callback_url)
             _http_session.post(callback_url, json=err_payload, timeout=30)
         except Exception as cb_err:
             logger.error(f"[ENGINE WORKER] Google Sheets callback delivery failed: {cb_err}")

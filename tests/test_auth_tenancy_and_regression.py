@@ -182,7 +182,11 @@ def test_admin_succeeds_on_admin_endpoints(app_client, tenants, auth_on, monkeyp
     from backend.app.api.endpoints import models as models_api
     from backend.app.api.endpoints import queue as queue_api
 
-    fake_queue = SimpleNamespace(dlq_items=lambda limit: [], replay=lambda task_id: None)
+    fake_queue = SimpleNamespace(
+        dlq_items=lambda limit=100, tenant_id=None: [],
+        replay=lambda task_id, tenant_id=None: None,
+        dlq_count=lambda tenant_id="default": 0,
+    )
     monkeypatch.setattr(queue_api, "get_task_queue", lambda: fake_queue)
     monkeypatch.setattr(models_api, "reload_engine_models", lambda: {"status": "ok"})
 
@@ -632,7 +636,7 @@ def test_golden_regression(golden_rules):
 # ---------------------------------------------------------------- gRPC fallback context
 
 
-def test_grpc_fallback_preserves_tenant_and_trace(monkeypatch):
+def test_grpc_fallback_preserves_tenant_and_trace(monkeypatch, loopback):
     """Redis unavailable -> Gateway dispatches via gRPC to the Engine; tenant and trace survive."""
     from backend.app.schemas.models import BaseRequest, SKUItem
     from backend.app.services import engine_client
@@ -672,7 +676,7 @@ def test_grpc_fallback_preserves_tenant_and_trace(monkeypatch):
     assert seen == {"trace": trace, "tenant": "tenant_fb"}
 
 
-def test_grpc_fallback_defaults_when_context_missing(monkeypatch):
+def test_grpc_fallback_defaults_when_context_missing(monkeypatch, loopback):
     import grpc
 
     from engine import grpc_server
@@ -710,7 +714,15 @@ def test_system_status_is_tenant_scoped(app_client, tenants, tenant_data, auth_o
         {"task_id": "t2", "payload": {"tenant_id": tenants.b}},
         {"task_id": "t3", "payload": {"tenant_id": tenants.b}},
     ]
-    fake = SimpleNamespace(stats=lambda: stats, dlq_items=lambda limit: dlq)
+    fake = SimpleNamespace(
+        stats=lambda: stats,
+        dlq_items=lambda limit=100, tenant_id=None: [
+            item for item in dlq if tenant_id is None or item["payload"]["tenant_id"] == tenant_id
+        ][:limit],
+        dlq_count=lambda tenant_id="default": sum(
+            1 for item in dlq if item["payload"]["tenant_id"] == tenant_id
+        ),
+    )
     monkeypatch.setattr(queue_api, "get_task_queue", lambda: fake)
 
     a = app_client.get(

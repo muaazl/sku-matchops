@@ -129,12 +129,15 @@ def test_catalog_snapshot_feather_endpoints():
     mock_brands = pd.DataFrame([{"Brand Name": "Brand X", "Aliases": "bx"}])
     mock_dicts = {"gk": ["dairy"], "bt": ["milk"], "category": ["groceries"]}
 
-    with patch(
-        "backend.app.api.endpoints.catalog.get_catalog_and_brands",
-        return_value=(mock_cat, mock_brands),
-    ), patch(
-        "backend.app.api.endpoints.catalog.get_classifier_dicts",
-        return_value=mock_dicts,
+    with (
+        patch(
+            "backend.app.api.endpoints.catalog.get_catalog_and_brands",
+            return_value=(mock_cat, mock_brands),
+        ),
+        patch(
+            "backend.app.api.endpoints.catalog.get_classifier_dicts",
+            return_value=mock_dicts,
+        ),
     ):
         # 1. Catalog Feather snapshot
         resp_cat = get_catalog_feather_snapshot("market")
@@ -209,4 +212,3 @@ def test_engine_fetches_snapshot_from_backend(tmp_path):
             assert read_cat.iloc[0]["Name"] == "Food Item 1"
     finally:
         config.CACHE_DIR = orig_cache
-

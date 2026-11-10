@@ -1,4 +1,5 @@
 import hmac
+import logging
 import os
 from collections import deque
 
@@ -21,7 +22,8 @@ from backend.app.api.endpoints.rules_api import router as rules_router
 from backend.app.api.endpoints.upload import router as upload_router
 from backend.app.core import config
 from backend.app.core.observability import metrics_payload
-from backend.app.core.security import get_principal, require_platform_admin
+from backend.app.core.rate_limit import RateLimiter
+from backend.app.core.security import Principal, get_principal, require_platform_admin
 from backend.app.db.session import get_engine
 from backend.app.schemas.models import (
     ClassifyRequest,
@@ -31,6 +33,8 @@ from backend.app.schemas.models import (
 )
 from backend.app.services.engine_client import get_engine_health
 from backend.app.services.worker import enqueue_job
+
+logger = logging.getLogger("matchops.api.routes")
 
 api_router = APIRouter()
 
@@ -84,63 +88,104 @@ def health():
 
 @api_router.get("/ready")
 def ready(response: Response):
+    """Deep readiness probe checking database, Redis broker, and ML Engine health."""
     try:
         with get_engine().connect() as conn:
             conn.execute(text("SELECT 1"))
         db_ok = True
     except Exception:
         db_ok = False
+
+    redis_ok = True
+    try:
+        import redis
+
+        from backend.app.core import config as backend_config
+
+        if backend_config.REDIS_URL:
+            r = redis.Redis.from_url(backend_config.REDIS_URL, socket_timeout=1.0)
+            redis_ok = bool(r.ping())
+    except Exception:
+        redis_ok = False
+
     engine_status = get_engine_health()
-    is_ready = db_ok and bool(engine_status.get("all_models_ready"))
+    engine_ok = bool(engine_status.get("all_models_ready"))
+
+    is_ready = db_ok and redis_ok and engine_ok
     if not is_ready:
         response.status_code = 503
     return {
         "status": "ready" if is_ready else "not_ready",
         "db": db_ok,
+        "redis": redis_ok,
         "engine": engine_status,
     }
 
 
-@api_router.post("/match", response_model=EnqueueJobResponse)
-def match(request: MatchRequest, api_key: str = Depends(get_api_key)):
+_expensive_rate_limiter = RateLimiter(max_requests=120, window_seconds=60)
+
+
+@api_router.post(
+    "/match",
+    response_model=EnqueueJobResponse,
+    dependencies=[Depends(_expensive_rate_limiter)],
+)
+def match(request: MatchRequest, principal: Principal = Depends(get_principal)):
     """
     Match a batch of SKUs — fully async.
     Dispatched to the ML Engine microservice.
     """
     try:
-        return enqueue_job(request, "matcher")
+        return enqueue_job(request, "matcher", tenant_id=principal.tenant_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"Unexpected error enqueuing matcher job: {e}")
+        raise HTTPException(
+            status_code=500, detail="Internal server error occurred while processing request."
+        )
 
 
-@api_router.post("/classify", response_model=EnqueueJobResponse)
-def classify(request: ClassifyRequest, api_key: str = Depends(get_api_key)):
+@api_router.post(
+    "/classify",
+    response_model=EnqueueJobResponse,
+    dependencies=[Depends(_expensive_rate_limiter)],
+)
+def classify(request: ClassifyRequest, principal: Principal = Depends(get_principal)):
     """
     Classify a batch of SKUs — fully async.
     Dispatched to the ML Engine microservice.
     """
     try:
-        return enqueue_job(request, "classifier")
+        return enqueue_job(request, "classifier", tenant_id=principal.tenant_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"Unexpected error enqueuing classifier job: {e}")
+        raise HTTPException(
+            status_code=500, detail="Internal server error occurred while processing request."
+        )
 
 
-@api_router.post("/pipeline", response_model=EnqueueJobResponse)
-def pipeline(request: PipelineRequest, api_key: str = Depends(get_api_key)):
+@api_router.post(
+    "/pipeline",
+    response_model=EnqueueJobResponse,
+    dependencies=[Depends(_expensive_rate_limiter)],
+)
+def pipeline(request: PipelineRequest, principal: Principal = Depends(get_principal)):
     """
     Run pipeline (Match + Classify fallback) on a batch of SKUs — fully async.
     Dispatched to the ML Engine microservice.
     """
     try:
-        return enqueue_job(request, "pipeline")
+        return enqueue_job(request, "pipeline", tenant_id=principal.tenant_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"Unexpected error enqueuing pipeline job: {e}")
+        raise HTTPException(
+            status_code=500, detail="Internal server error occurred while processing request."
+        )
 
 
 @api_router.get("/logs", dependencies=[Depends(require_platform_admin)])

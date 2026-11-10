@@ -147,9 +147,11 @@ services:
       - INTERNAL_GRPC_SECRET=${INTERNAL_GRPC_SECRET:-}
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@pgbouncer:6432/${POSTGRES_DB:-matchops}
+      - POSTGRES_HOST=pgbouncer
+      - POSTGRES_PORT=6432
+      - USE_PGBOUNCER=true
+      - PGBOUNCER_PORT=6432
       - UVICORN_RELOAD=false
     env_file:
       - path: .env
@@ -159,8 +161,8 @@ services:
       - ./scripts:/app/scripts
       - ./docker/docker-entrypoint-backend.py:/app/docker-entrypoint-backend.py
     depends_on:
-      postgres:
-        condition: service_healthy
+      pgbouncer:
+        condition: service_started
       engine:
         condition: service_started
       redis:

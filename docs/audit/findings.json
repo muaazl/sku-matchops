@@ -1,0 +1,232 @@
+[
+  {
+    "id": "SEC-01",
+    "severity": "CRITICAL",
+    "vector": "F",
+    "file": "backend/app/core/config.py",
+    "lines": "9",
+    "title": "Default Static API Key Grants Instant Platform Admin Privilege",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "SEC-02",
+    "severity": "CRITICAL",
+    "vector": "F",
+    "file": "backend/app/services/portal_service.py",
+    "lines": "78-98",
+    "title": "Unrestricted Server-Side Request Forgery (SSRF) and Bearer Token Exfiltration in Merchant Fetch",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "SEC-03",
+    "severity": "CRITICAL",
+    "vector": "F",
+    "file": "engine/pipeline/worker_runner.py",
+    "lines": "391-422",
+    "title": "Unrestricted Outbound Webhook SSRF and Worker Thread Exhaustion",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "SEC-04",
+    "severity": "CRITICAL",
+    "vector": "F",
+    "file": "backend/app/core/grpc_utils.py",
+    "lines": "55-66",
+    "title": "Unauthenticated gRPC Control Plane Exposes Internal RPCs by Default",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "TEN-01",
+    "severity": "CRITICAL",
+    "vector": "A",
+    "file": "backend/app/api/routes.py",
+    "lines": "104-144",
+    "title": "Core Async Processing Endpoints Bypass Authentication and Default to Shared Tenant",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "TEN-02",
+    "severity": "CRITICAL",
+    "vector": "A",
+    "file": "backend/app/services/rules_service.py",
+    "lines": "14-17",
+    "title": "Global Unpartitioned Redis Rules Cache Enables Cross-Tenant Rule Leakage",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "TEN-03",
+    "severity": "CRITICAL",
+    "vector": "A",
+    "file": "backend/app/api/endpoints/queue.py",
+    "lines": "20-26",
+    "title": "Unpartitioned Redis DLQ Causes Complete Cross-Tenant Dead-Letter Starvation",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "DAT-01",
+    "severity": "CRITICAL",
+    "vector": "C",
+    "file": "backend/main.py",
+    "lines": "104-109",
+    "title": "Entity Identifier Mismatch Fails Valid Batches on Backend Restart",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "DAT-02",
+    "severity": "CRITICAL",
+    "vector": "C",
+    "file": "backend/app/api/endpoints/history.py",
+    "lines": "112-172",
+    "title": "Premature Database Connection Termination in Streaming CSV Export Generator",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "INF-01",
+    "severity": "MEDIUM",
+    "vector": "C",
+    "file": "docker-compose.yml",
+    "lines": "150-153",
+    "title": "Gateway Connects Directly to PostgreSQL Bypassing Configured PgBouncer Pooler",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "DAT-03",
+    "severity": "MEDIUM",
+    "vector": "C",
+    "file": "backend/app/db/schema.py",
+    "lines": "178-180",
+    "title": "Processed SKUs Idempotency Constraint Lacks Tenant Scope",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "DAT-04",
+    "severity": "MEDIUM",
+    "vector": "C",
+    "file": "backend/app/db/schema.py",
+    "lines": "116-125",
+    "title": "Missing Composite Query Indexes on High-Traffic Jobs and History Endpoints",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "PER-01",
+    "severity": "MEDIUM",
+    "vector": "B",
+    "file": "backend/app/services/worker.py",
+    "lines": "42-61",
+    "title": "Monolithic JSON Array Storage in Single PostgreSQL Row Column Causes TOAST and Memory Bloat",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "PER-02",
+    "severity": "MEDIUM",
+    "vector": "B",
+    "file": "backend/app/services/catalog_service.py",
+    "lines": "108-112",
+    "title": "Full-Table Python Memory Ingestion in Catalog Synchronization Check",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "PER-03",
+    "severity": "MEDIUM",
+    "vector": "B",
+    "file": "backend/app/api/endpoints/jobs.py",
+    "lines": "441-456",
+    "title": "Ephemeral Unpooled Redis Connections per SSE Client Stream",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "PER-04",
+    "severity": "MEDIUM",
+    "vector": "B",
+    "file": "backend/app/middleware/audit_logging.py",
+    "lines": "115-125",
+    "title": "Full Response Body Buffering and In-Memory Re-serialization in Audit Middleware",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "DIS-01",
+    "severity": "MEDIUM",
+    "vector": "D",
+    "file": "backend/app/services/catalog_service.py",
+    "lines": "23-25",
+    "title": "Process-Local Mutex Fails to Prevent Concurrent Catalog Rebuilds Across Workers",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "TEN-04",
+    "severity": "MEDIUM",
+    "vector": "A",
+    "file": "backend/app/api/endpoints/jobs.py",
+    "lines": "319-321",
+    "title": "Cross-Tenant Metrics Leakage in Tenant Dashboard API",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "SEC-05",
+    "severity": "MEDIUM",
+    "vector": "F",
+    "file": "backend/app/db/schema.py",
+    "lines": "36",
+    "title": "Global Unique Username Constraint Enables Cross-Tenant Account Enumeration and Denial of Service",
+    "confidence": "CONFIRMED",
+    "effort": "M"
+  },
+  {
+    "id": "SEC-06",
+    "severity": "MEDIUM",
+    "vector": "F",
+    "file": "backend/app/api/endpoints/qdrant_proxy.py",
+    "lines": "34-36",
+    "title": "Unrestricted Vector Search Proxy Exposes Raw Embeddings Without Role Authorization",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "OBS-01",
+    "severity": "LOW",
+    "vector": "H",
+    "file": "backend/app/core/observability.py",
+    "lines": "95-105",
+    "title": "Prometheus HTTP Latency and Throughput Metrics Declared but Never Recorded",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "OBS-02",
+    "severity": "LOW",
+    "vector": "H",
+    "file": "backend/app/core/observability.py",
+    "lines": "38-41",
+    "title": "Structured Log Formats Omit Tenant Correlation Context",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  },
+  {
+    "id": "ERR-01",
+    "severity": "LOW",
+    "vector": "E",
+    "file": "backend/app/services/worker.py",
+    "lines": "112-113",
+    "title": "Silently Swallowed Database Exceptions During Job Failure Recovery",
+    "confidence": "CONFIRMED",
+    "effort": "S"
+  }
+]
