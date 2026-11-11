@@ -50,17 +50,9 @@ export default function SkuSidebar() {
       </DrawerHeader>
       <Divider />
       <StyledList>
-        {NAV_ITEMS.map(
-          ({ title, icon: Icon, to }) => (
-            <SidebarItem
-              key={to}
-              title={title}
-              icon={<Icon sx={{ fontSize: 18 }} />}
-              linkTo={to}
-              active={isActive(to)}
-            />
-          )
-        )}
+        {NAV_ITEMS.map(({ title, icon: Icon, to }) => (
+          <SidebarItem key={to} title={title} icon={<Icon sx={{ fontSize: 18 }} />} linkTo={to} active={isActive(to)} />
+        ))}
       </StyledList>
       <StyledSidebarFooterList>
         <StyledSidebarFooterListItem>

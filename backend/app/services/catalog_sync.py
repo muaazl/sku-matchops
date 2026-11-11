@@ -5,6 +5,7 @@ import math
 import os
 import time
 from collections import Counter, defaultdict
+from typing import Any
 
 import pandas as pd
 import polars as pl
@@ -77,7 +78,12 @@ def _download_sheet_with_retries(
     ) from last_exception
 
 
-def _fetch_sheet_as_csv(sheet_id: str, sheet_name: str, header: int | None = 0) -> pd.DataFrame:
+def _fetch_sheet_as_csv(
+    sheet_id: str,
+    sheet_name: str,
+    header: int | None = 0,
+    dtype: Any = None,
+) -> pd.DataFrame:
     staged_path = _get_staged_path(sheet_name)
     if os.path.exists(staged_path) and os.path.getsize(staged_path) > 0:
         with open(staged_path, "rb") as f:
@@ -94,12 +100,12 @@ def _fetch_sheet_as_csv(sheet_id: str, sheet_name: str, header: int | None = 0) 
     df = df.select([c for c in df.columns if not c.startswith("Unnamed")])
     pd_df = df.to_pandas()
 
-    if "dtype" in kwargs and kwargs["dtype"] is str:
+    if dtype is str:
         pd_df = pd_df.astype(str)
-    elif "dtype" in kwargs and isinstance(kwargs["dtype"], dict):
-        for col, dtype in kwargs["dtype"].items():
+    elif isinstance(dtype, dict):
+        for col, d_type in dtype.items():
             if col in pd_df.columns:
-                pd_df[col] = pd_df[col].astype(dtype)
+                pd_df[col] = pd_df[col].astype(d_type)
     return pd_df
 
 
