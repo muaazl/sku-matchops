@@ -22,7 +22,7 @@ def get_rules(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    return rules_service.get_rules_list(db, domain=domain, tenant_id=principal.tenant_id)
+    return rules_service.get_rules_list(db, domain=domain)
 
 
 @router.post("/rules", response_model=RuleOperationResponse)
@@ -32,7 +32,7 @@ def create_rule(
     principal: Principal = Depends(require_rule_editor),
 ):
     try:
-        new_id = rules_service.create_rule_entry(db, rule, tenant_id=principal.tenant_id)
+        new_id = rules_service.create_rule_entry(db, rule)
         return RuleOperationResponse(message=f"Rule {new_id} created successfully.", rule_id=new_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create rule: {str(e)}")
@@ -49,7 +49,7 @@ def reorder_rules(
         return RuleOperationResponse(message="No order specified.")
 
     try:
-        rules_service.reorder_rules_entries(db, ordered_ids, tenant_id=principal.tenant_id)
+        rules_service.reorder_rules_entries(db, ordered_ids)
         return RuleOperationResponse(message="Rules reordered successfully.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reorder rules: {str(e)}")
@@ -77,7 +77,7 @@ def update_rule(
     principal: Principal = Depends(require_rule_editor),
 ):
     try:
-        updated = rules_service.update_rule_entry(db, rule_id, rule, tenant_id=principal.tenant_id)
+        updated = rules_service.update_rule_entry(db, rule_id, rule)
         if not updated:
             raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found.")
         return RuleOperationResponse(
@@ -96,7 +96,7 @@ def delete_rule(
     principal: Principal = Depends(require_rule_editor),
 ):
     try:
-        deleted = rules_service.delete_rule_entry(db, rule_id, tenant_id=principal.tenant_id)
+        deleted = rules_service.delete_rule_entry(db, rule_id)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found.")
         return RuleOperationResponse(
@@ -115,10 +115,8 @@ def test_rule(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    rule_dict = rules_service.get_rule_by_id(db, rule_id, tenant_id=principal.tenant_id)
+    rule_dict = rules_service.get_rule_by_id(db, rule_id)
     if not rule_dict:
         raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found.")
 
-    return test_rule_via_engine(
-        rule_dict, dict(request.sample_record), tenant_id=principal.tenant_id
-    )
+    return test_rule_via_engine(rule_dict, dict(request.sample_record))

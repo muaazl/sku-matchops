@@ -15,13 +15,7 @@ logger = logging.getLogger("matchops.middleware")
 
 def _insert_api_request(row: dict) -> None:
     with get_engine().begin() as conn:
-        try:
-            conn.execute(api_requests.insert().values(**row))
-        except Exception:
-            if "tenant_id" in row:
-                row_legacy = dict(row)
-                row_legacy.pop("tenant_id", None)
-                conn.execute(api_requests.insert().values(**row_legacy))
+        conn.execute(api_requests.insert().values(**row))
 
 
 SENSITIVE_SUBSTRINGS = ("token", "auth", "bearer", "password", "secret", "key", "x-api-key")
@@ -163,21 +157,6 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             logger.error(f"Failed to capture response body: {e}")
 
-        # Determine authenticated tenant_id
-        eff_tenant = getattr(request.state, "tenant_id", None)
-        if not eff_tenant:
-            from backend.app.core.observability import get_tenant_id
-
-            t = get_tenant_id()
-            if t and t != "-":
-                eff_tenant = t
-        if not eff_tenant:
-            eff_tenant = request.headers.get("x-tenant-id") or "default"
-
-        from backend.app.core.observability import TENANT_ID
-
-        TENANT_ID.set(eff_tenant)
-
         # Write to DB (off the event loop: the pooled connection is blocking)
         try:
             await run_in_threadpool(
@@ -193,7 +172,6 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
                     "ip_address": ip_address,
                     "headers_json": headers_json,
                     "query_params_json": query_params_json,
-                    "tenant_id": eff_tenant,
                 },
             )
         except Exception as e:

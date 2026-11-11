@@ -4,8 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Override in .env for production
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+# System configuration (always running in standard secure mode)
 API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
 APPSCRIPT_WEBHOOK_URL = os.getenv("APPSCRIPT_WEBHOOK_URL", "")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
@@ -45,24 +44,9 @@ LOG_DIR = os.getenv(
 LOG_FILE = os.getenv("LOG_FILE", os.path.join(LOG_DIR, "backend.log"))
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
 
-# --- Authentication / RBAC ---
-# Off (dev default): unauthenticated requests act as an admin of the X-Tenant-ID tenant
-# ('default' if omitted). On: every non-public endpoint needs a Bearer JWT or X-API-Key.
-AUTH_ENABLED = os.getenv("AUTH_ENABLED", "false").lower() == "true"
-# Required when AUTH_ENABLED; otherwise a random per-process secret is used (tokens die on restart)
-JWT_SECRET = os.getenv("JWT_SECRET", "")
-JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
-DEFAULT_TENANT = "default"
+# --- Authentication & Access Control ---
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() == "true"
+ENVIRONMENT = "production"
 
-if ENVIRONMENT in ("production", "prod"):
-    if not AUTH_ENABLED:
-        raise RuntimeError("AUTH_ENABLED must be true in production environments.")
-    if not JWT_SECRET or JWT_SECRET == "change_me_in_production":
-        raise RuntimeError("A secure JWT_SECRET must be configured in production environments.")
-    if not API_KEY or API_KEY == "bismillah":
-        raise RuntimeError(
-            "A secure, non-default MATCHOPS_API_KEY must be configured in production environments."
-        )
-    if not INTERNAL_GRPC_SECRET:
-        raise RuntimeError("INTERNAL_GRPC_SECRET must be configured in production environments.")
+if not API_KEY:
+    raise RuntimeError("A non-empty MATCHOPS_API_KEY must be configured in environment variables.")

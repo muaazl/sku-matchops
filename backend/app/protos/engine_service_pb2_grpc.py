@@ -2,6 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 
 import grpc
+import warnings
 
 from backend.app.protos import engine_service_pb2 as engine_dot_protos_dot_engine__service__pb2
 

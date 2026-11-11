@@ -89,7 +89,7 @@ def test_build_processed_sku_rows_pipeline_task_inferred():
 def test_jobs_source_query_syntax():
     from sqlalchemy import text
 
-    where_str = "tenant_id = :tenant_id"
+    where_str = "domain = :domain"
     source_query = f"""
         SELECT
             CASE
@@ -112,7 +112,7 @@ def test_jobs_source_query_syntax():
 def test_history_where_clause_syntax():
     from sqlalchemy import text
 
-    where = "WHERE tenant_id = :tenant_id"
+    where = "WHERE domain = :domain"
     m_where = (
         where
         + """ AND (

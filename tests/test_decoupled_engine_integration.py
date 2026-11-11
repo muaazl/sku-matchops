@@ -583,13 +583,11 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
                 fake_hash.pop(k, None)
 
         with patch.object(be_grpc, "_progress_redis", return_value=_FakeSyncRedis()):
-            be_grpc.set_job_progress(
-                "j_redis_1", pct=42.5, eta=9, stage="reranking", tenant_id="acme"
-            )
+            be_grpc.set_job_progress("j_redis_1", pct=42.5, eta=9, stage="reranking")
             self.assertEqual(be_grpc.get_job_progress_state("j_redis_1"), (42.5, 9))
-            be_grpc.publish_job_event("acme", {"id": "j_redis_1", "status": "running"})
+            be_grpc.publish_job_event({"id": "j_redis_1", "status": "running"})
             self.assertEqual(
-                published, [("matchops:jobs:events:acme", {"id": "j_redis_1", "status": "running"})]
+                published, [("matchops:jobs:events", {"id": "j_redis_1", "status": "running"})]
             )
             be_grpc.clear_job_progress("j_redis_1")
             self.assertEqual(be_grpc.get_job_progress_state("j_redis_1"), (0.0, None))
@@ -625,7 +623,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             self.assertEqual(r_ready.status_code, 200)
             self.assertEqual(r_ready.json()["status"], "ready")
 
-        with patch("backend.app.api.endpoints.jobs._single_tenant_job", return_value=None):
+        with patch("backend.app.api.endpoints.jobs._single_job", return_value=None):
             self.assertEqual(client.get("/jobs/nonexistent_sse_job/stream").status_code, 404)
 
         job_snapshot = {
@@ -654,8 +652,11 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
                 return None
 
         with (
-            patch("backend.app.api.endpoints.jobs._single_tenant_job", return_value=job_snapshot),
-            patch("redis.asyncio.from_url", return_value=_FakeAsyncRedis()),
+            patch("backend.app.api.endpoints.jobs._single_job", return_value=job_snapshot),
+            patch(
+                "backend.app.api.endpoints.jobs._open_job_pubsub",
+                return_value=(_FakeAsyncRedis(), _FakePubSub()),
+            ),
         ):
             resp = client.get("/jobs/test_sse_job_202/stream")
             self.assertEqual(resp.status_code, 200)

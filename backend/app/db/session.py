@@ -12,7 +12,7 @@ logger = logging.getLogger("matchops.db")
 
 _engine: Engine | None = None
 
-_PROCESSED_SKU_KEY = ("tenant_id", "batch_id", "sku_index", "rule_version")
+_PROCESSED_SKU_KEY = ("batch_id", "sku_index", "rule_version")
 _PG_MAX_BIND_PARAMS = 65535
 
 
@@ -88,15 +88,12 @@ def get_next_job_id(conn: Connection) -> str:
 def upsert_processed_skus(conn: Connection, rows: list[dict], chunk_size: int | None = None) -> int:
     """
     Bulk-writes per-SKU results in multi-row INSERT chunks. Rows sharing
-    (tenant_id, batch_id, sku_index, rule_version) with an existing row update it in place
+    (batch_id, sku_index, rule_version) with an existing row update it in place
     (ON CONFLICT DO UPDATE), so re-delivering a job batch never duplicates records.
     Runs inside the caller's transaction.
     """
     if not rows:
         return 0
-    if "tenant_id" not in rows[0]:
-        for r in rows:
-            r.setdefault("tenant_id", "default")
     cols = list(rows[0].keys())
     chunk_size = min(chunk_size or config.DB_BULK_CHUNK_SIZE, _PG_MAX_BIND_PARAMS // len(cols))
     update_cols = [c for c in cols if c != "id" and c not in _PROCESSED_SKU_KEY]
@@ -104,7 +101,7 @@ def upsert_processed_skus(conn: Connection, rows: list[dict], chunk_size: int | 
     for start in range(0, len(rows), chunk_size):
         stmt = pg_insert(processed_skus).values(rows[start : start + chunk_size])
         stmt = stmt.on_conflict_do_update(
-            constraint="uq_processed_skus_tenant_job_sku_rule",
+            constraint="uq_processed_skus_job_sku_rule",
             set_={c: stmt.excluded[c] for c in update_cols},
         )
         conn.execute(stmt)
@@ -119,15 +116,9 @@ def log_outbound_request(
     response_text: str,
     duration_ms: int,
     path: str = "/doPost",
-    tenant_id: str | None = None,
 ) -> None:
     """Logs outbound HTTP requests (e.g. Google Sheets webhooks) to api_requests."""
     try:
-        from backend.app.core.observability import get_tenant_id
-
-        effective_tenant = tenant_id or get_tenant_id()
-        if not effective_tenant or effective_tenant == "-":
-            effective_tenant = "default"
         payload_str = json.dumps(payload) if isinstance(payload, (dict, list)) else str(payload)
         resp_str = str(response_text) if response_text is not None else ""
 
@@ -144,7 +135,6 @@ def log_outbound_request(
                     ip_address="outbound",
                     headers_json=json.dumps({"Content-Type": "application/json"}),
                     query_params_json=json.dumps({"callback_url": url}),
-                    tenant_id=effective_tenant,
                 )
             )
         logger.info(

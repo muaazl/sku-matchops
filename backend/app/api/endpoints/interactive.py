@@ -37,7 +37,6 @@ class RerunRulesRequest(BaseModel):
 def run_single(request: RunSingleRequest, principal: Principal = Depends(get_principal)):
     try:
         res = engine_run_single(
-            tenant_id=principal.tenant_id,
             sku_name=request.sku_name,
             domain=request.domain,
             task=request.task,
@@ -69,7 +68,6 @@ def rerun_rules(request: RerunRulesRequest, principal: Principal = Depends(get_p
             match_source=request.match_source or "Classifier",
             matched_sku=request.matched_sku or "",
             reasoning=request.reasoning or "",
-            tenant_id=principal.tenant_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -109,7 +107,6 @@ def suggest_tags(request: SuggestRequest):
 def run_audit(request: RunSingleRequest, principal: Principal = Depends(get_principal)):
     try:
         return engine_run_sku_audit(
-            tenant_id=principal.tenant_id,
             sku_name=request.sku_name,
             domain=request.domain,
             task=request.task,

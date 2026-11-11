@@ -144,13 +144,13 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
                 "CREATE TABLE jobs ("
                 "id TEXT PRIMARY KEY, status TEXT, current_stage TEXT, "
                 "cancel_requested INTEGER DEFAULT 0, domain TEXT, "
-                "input_skus_json TEXT, tenant_id TEXT, updated_at TEXT)"
+                "input_skus_json TEXT, updated_at TEXT)"
             )
         )
         conn.execute(
             text(
                 "INSERT INTO jobs VALUES "
-                "('77', 'queued', 'queued', 0, 'food', '[{\"Name\":\"Burger\"}]', 'default', '')"
+                "('77', 'queued', 'queued', 0, 'food', '[{\"Name\":\"Burger\"}]', '')"
             )
         )
 
@@ -171,7 +171,7 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
     monkeypatch.setattr(upload_ep, "publish_job_event", lambda *a, **kw: None)
     monkeypatch.setattr(upload_ep, "record_job_completion", lambda **kw: completions.append(kw))
 
-    principal = Principal(username="ops", role="admin", tenant_id="default")
+    principal = Principal(username="ops", role="admin")
 
     created = upload_ep.trigger_upload(
         UploadRequest(

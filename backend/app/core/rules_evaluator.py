@@ -7,8 +7,6 @@ when the remote ML Engine gRPC server is offline, unreachable, or in unit test m
 import logging
 from typing import Any
 
-from backend.app.core.config import DEFAULT_TENANT
-
 logger = logging.getLogger("matchops.backend.rules_evaluator")
 
 
@@ -173,7 +171,6 @@ def rerun_rules_locally(
     match_source: str | None = "Classifier",
     matched_sku: str | None = "",
     reasoning: str | None = "",
-    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
     from backend.app.services.rules_service import load_active_rules_from_db
 
@@ -189,9 +186,7 @@ def rerun_rules_locally(
         "matched_sku": matched_sku,
         "reasoning": reasoning,
     }
-    rules = [
-        r for r in load_active_rules_from_db() if r.get("tenant_id", DEFAULT_TENANT) == tenant_id
-    ]
+    rules = load_active_rules_from_db()
     applied_rules = []
     for r in sorted(rules, key=lambda x: x.get("priority", 100)):
         if evaluate_rule_conditions(r, record):

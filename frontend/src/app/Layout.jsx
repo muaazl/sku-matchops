@@ -4,7 +4,6 @@ import { Box, Toolbar, CssBaseline, AppBar, Typography, Button, CircularProgress
 import { Outlet, useLocation, Link } from 'react-router-dom';
 import ColorModeToggle from '../components/Common/ColorModeToggle';
 import SkuSidebar from './SkuSidebar';
-import SessionControl from './components/SessionControl';
 import { DrawerHeader } from '../components/Sidebar/SidebarStyled';
 import { Logo } from '../components/Logo';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -184,7 +183,6 @@ export default function Layout() {
               </Button>
             )}
             <ColorModeToggle />
-            <SessionControl />
           </Box>
         </Toolbar>
       </AppBar>

@@ -59,17 +59,17 @@ logger = logging.getLogger("matchops.server")
 
 
 def startup_event():
-    """Startup sequence: Run schema migrations, start callback gRPC server, and sync rules."""
+    """Startup sequence: Initialize database tables, start callback gRPC server, and sync rules."""
     logger.info("Executing Startup Sequence for Backend Gateway...")
 
     ensure_backend_grpc_server()
 
-    # Auto-run schema migrations on startup
+    # Verify and initialize database tables on startup
     try:
         init_db()
-        logger.info("Database schemas verified/migrated.")
+        logger.info("Database schemas and tables verified.")
     except Exception as e:
-        logger.error(f"Failed to execute database migrations on startup: {e}")
+        logger.error(f"Failed to initialize database tables on startup: {e}")
 
     try:
         sync_rules_everywhere()
@@ -161,7 +161,6 @@ app.add_middleware(
         "If-None-Match",
         "X-API-Key",
         "Authorization",
-        "X-Tenant-ID",
         "X-Request-ID",
     ],
     expose_headers=["X-Total-Count", "X-Request-ID"],

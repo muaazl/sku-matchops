@@ -18,7 +18,6 @@ from engine import config
 
 # --- Trace ids ------------------------------------------------------------------------------
 TRACE_ID: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="-")
-TENANT_ID: contextvars.ContextVar[str] = contextvars.ContextVar("tenant_id", default="-")
 
 
 def new_trace_id() -> str:
@@ -26,35 +25,25 @@ def new_trace_id() -> str:
 
 
 @contextmanager
-def trace_context(trace_id: str | None, tenant_id: str | None = None) -> Iterator[str]:
-    """Binds a trace id and optional tenant id to the current thread/context so every log line carries it."""
+def trace_context(trace_id: str | None = None) -> Iterator[str]:
+    """Binds a trace id to the current thread/context so every log line carries it."""
     token = TRACE_ID.set(trace_id if trace_id and trace_id != "-" else new_trace_id())
-    tenant_token = (
-        TENANT_ID.set(tenant_id if tenant_id and tenant_id != "-" else "-") if tenant_id else None
-    )
     try:
         yield TRACE_ID.get()
     finally:
         TRACE_ID.reset(token)
-        if tenant_token:
-            TENANT_ID.reset(tenant_token)
 
 
 # --- Logging --------------------------------------------------------------------------------
 TEXT_LOG_FORMAT = (
-    "%(asctime)s - [%(levelname)s] - %(name)s - [trace=%(trace_id)s] [tenant=%(tenant_id)s] - "
+    "%(asctime)s - [%(levelname)s] - %(name)s - [trace=%(trace_id)s] - "
     "[%(filename)s:%(lineno)d] - %(message)s"
 )
-
-
-def get_tenant_id() -> str:
-    return TENANT_ID.get()
 
 
 class TraceIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.trace_id = TRACE_ID.get()
-        record.tenant_id = TENANT_ID.get()
         return True
 
 
@@ -66,7 +55,6 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
             "trace_id": getattr(record, "trace_id", TRACE_ID.get()),
-            "tenant_id": getattr(record, "tenant_id", TENANT_ID.get()),
             "module": f"{record.filename}:{record.lineno}",
         }
         if record.exc_info:
@@ -91,7 +79,7 @@ def configure_logging(logger: logging.Logger | None = None) -> None:
 SKUS_PROCESSED = Counter(
     "matchops_skus_processed_total",
     "SKUs processed by batch jobs",
-    ["domain", "status", "tenant_id"],
+    ["domain", "status"],
 )
 MATCH_CONFIDENCE = Histogram(
     "matchops_match_confidence",

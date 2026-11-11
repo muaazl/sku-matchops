@@ -18,7 +18,6 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 TRACE_ID: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="-")
-TENANT_ID: contextvars.ContextVar[str] = contextvars.ContextVar("tenant_id", default="-")
 _VALID_TRACE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -27,22 +26,17 @@ def new_trace_id() -> str:
 
 
 @contextmanager
-def trace_context(trace_id: str | None, tenant_id: str | None = None) -> Iterator[str]:
-    """Binds a trace id and optional tenant id to the current thread/context so every log line carries it."""
+def trace_context(trace_id: str | None = None) -> Iterator[str]:
+    """Binds a trace id to the current thread/context so every log line carries it."""
     token = TRACE_ID.set(trace_id if trace_id and trace_id != "-" else new_trace_id())
-    tenant_token = (
-        TENANT_ID.set(tenant_id if tenant_id and tenant_id != "-" else "-") if tenant_id else None
-    )
     try:
         yield TRACE_ID.get()
     finally:
         TRACE_ID.reset(token)
-        if tenant_token:
-            TENANT_ID.reset(tenant_token)
 
 
 TEXT_LOG_FORMAT = (
-    "%(asctime)s - [%(levelname)s] - %(name)s - [trace=%(trace_id)s] [tenant=%(tenant_id)s] - "
+    "%(asctime)s - [%(levelname)s] - %(name)s - [trace=%(trace_id)s] - "
     "[%(filename)s:%(lineno)d] - %(message)s"
 )
 
@@ -62,32 +56,12 @@ def get_trace_id() -> str:
     return tid
 
 
-def get_tenant_id() -> str:
-    tid = TENANT_ID.get()
-    if tid == "-":
-        import sys
-
-        if "engine.core.observability" in sys.modules:
-            try:
-                engine_tid = sys.modules["engine.core.observability"].TENANT_ID.get()
-                if engine_tid and engine_tid != "-":
-                    return engine_tid
-            except Exception:
-                pass
-    return tid
-
-
 class TraceIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         tid = get_trace_id()
         existing = getattr(record, "trace_id", None)
         if tid != "-" or not existing or existing == "-":
             record.trace_id = tid
-
-        tenant = get_tenant_id()
-        existing_tenant = getattr(record, "tenant_id", None)
-        if tenant != "-" or not existing_tenant or existing_tenant == "-":
-            record.tenant_id = tenant
         return True
 
 
@@ -99,7 +73,6 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
             "trace_id": getattr(record, "trace_id", get_trace_id()),
-            "tenant_id": getattr(record, "tenant_id", get_tenant_id()),
             "module": f"{record.filename}:{record.lineno}",
         }
         if record.exc_info:
@@ -153,15 +126,12 @@ def metrics_payload() -> tuple[bytes, str]:
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
     """FastAPI/Starlette middleware that binds inbound X-Request-ID or mints a new trace_id,
-    propagates X-Tenant-ID, and records HTTP metrics for Prometheus."""
+    and records HTTP metrics for Prometheus."""
 
     async def dispatch(self, request: Request, call_next):
         header_val = (request.headers.get("x-request-id") or "").strip()
         trace_id = header_val if _VALID_TRACE.match(header_val) else new_trace_id()
         token_trace = TRACE_ID.set(trace_id)
-
-        tenant_val = (request.headers.get("x-tenant-id") or "-").strip()
-        token_tenant = TENANT_ID.set(tenant_val if tenant_val else "-")
 
         import time
 
@@ -193,4 +163,3 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
             except Exception:
                 pass
             TRACE_ID.reset(token_trace)
-            TENANT_ID.reset(token_tenant)

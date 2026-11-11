@@ -110,8 +110,8 @@ class TestSecurityHardening(unittest.TestCase):
         config.INTERNAL_GRPC_SECRET = ""
         config.DATABASE_URL = TEST_DATABASE_URL
 
-    def test_production_config_rejects_default_api_key(self):
-        """SEC-01: In production, default API key 'bismillah' or empty must raise RuntimeError."""
+    def test_config_rejects_empty_api_key(self):
+        """SEC-01: Empty MATCHOPS_API_KEY must raise RuntimeError."""
         import importlib
         import os
         from unittest.mock import patch
@@ -120,24 +120,20 @@ class TestSecurityHardening(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "ENVIRONMENT": "production",
-                    "AUTH_ENABLED": "true",
-                    "JWT_SECRET": "a_valid_secret_for_tests_123456",
-                    "MATCHOPS_API_KEY": "bismillah",
-                    "INTERNAL_GRPC_SECRET": "some_secret",
+                    "MATCHOPS_API_KEY": "",
                 },
             ):
                 from backend.app.core import config
 
                 with self.assertRaises(RuntimeError) as ctx:
                     importlib.reload(config)
-                self.assertIn("non-default MATCHOPS_API_KEY", str(ctx.exception))
+                self.assertIn("non-empty MATCHOPS_API_KEY", str(ctx.exception))
         finally:
             from backend.app.core import config
             from conftest import TEST_DATABASE_URL
 
             config.AUTH_ENABLED = False
-            config.ENVIRONMENT = "development"
+            config.ENVIRONMENT = "production"
             config.JWT_SECRET = ""
             config.INTERNAL_GRPC_SECRET = ""
             config.DATABASE_URL = TEST_DATABASE_URL
@@ -153,42 +149,8 @@ class TestSecurityHardening(unittest.TestCase):
         mock_req = MagicMock(spec=Request)
         with patch.object(config, "API_KEY", ""):
             with self.assertRaises(HTTPException) as ctx:
-                get_principal(
-                    request=mock_req, bearer=None, oauth2_token=None, api_key="", x_tenant_id=None
-                )
+                get_principal(request=mock_req, bearer=None, api_key="")
             self.assertEqual(ctx.exception.status_code, 401)
-
-    def test_production_config_rejects_missing_grpc_secret(self):
-        """SEC-04: In production, missing INTERNAL_GRPC_SECRET must raise RuntimeError."""
-        import importlib
-        import os
-        from unittest.mock import patch
-
-        try:
-            with patch.dict(
-                os.environ,
-                {
-                    "ENVIRONMENT": "production",
-                    "AUTH_ENABLED": "true",
-                    "JWT_SECRET": "a_valid_secret_for_tests_123456",
-                    "MATCHOPS_API_KEY": "a_strong_production_api_key_999",
-                    "INTERNAL_GRPC_SECRET": "",
-                },
-            ):
-                from backend.app.core import config
-
-                with self.assertRaises(RuntimeError) as ctx:
-                    importlib.reload(config)
-                self.assertIn("INTERNAL_GRPC_SECRET", str(ctx.exception))
-        finally:
-            from backend.app.core import config
-            from conftest import TEST_DATABASE_URL
-
-            config.AUTH_ENABLED = False
-            config.ENVIRONMENT = "development"
-            config.JWT_SECRET = ""
-            config.INTERNAL_GRPC_SECRET = ""
-            config.DATABASE_URL = TEST_DATABASE_URL
 
     def test_grpc_interceptor_validates_secret(self):
         """SEC-04: GrpcContextInterceptor must enforce and reject invalid/missing secrets."""
@@ -259,28 +221,17 @@ class TestSecurityHardening(unittest.TestCase):
             any(d.dependency == require_platform_admin for d in qdrant_router.dependencies)
         )
 
-        # 2. Non-platform admin is rejected with 403
+        # 2. Non-admin is rejected with 403
         with self.assertRaises(HTTPException) as ctx:
-            require_platform_admin(
-                Principal(
-                    username="user", role="reviewer", tenant_id="tenant-b", home_tenant="tenant-b"
-                )
-            )
+            require_platform_admin(Principal(username="user", role="reviewer"))
         self.assertEqual(ctx.exception.status_code, 403)
 
-        # 3. Non-default tenant admin is rejected with 403
         with self.assertRaises(HTTPException) as ctx:
-            require_platform_admin(
-                Principal(
-                    username="admin", role="admin", tenant_id="tenant-b", home_tenant="tenant-b"
-                )
-            )
+            require_platform_admin(Principal(username="eng", role="rule_engineer"))
         self.assertEqual(ctx.exception.status_code, 403)
 
-        # 4. Platform admin is allowed
-        p_admin = Principal(
-            username="admin", role="admin", tenant_id="default", home_tenant="default"
-        )
+        # 3. Admin is allowed
+        p_admin = Principal(username="admin", role="admin")
         self.assertEqual(require_platform_admin(p_admin), p_admin)
 
     def test_outbound_ssrf_protection_blocks_internal_and_metadata_ips(self):

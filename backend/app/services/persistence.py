@@ -31,7 +31,6 @@ def build_processed_sku_rows(
     input_skus: list[dict],
     results: list[dict[str, Any]],
     rule_version: str,
-    tenant_id: str = "default",
 ) -> list[dict[str, Any]]:
     """Maps engine results onto processed_skus rows, keyed by (job, input position, rule version)."""
     task_lower = (task or "pipeline").lower()
@@ -111,7 +110,6 @@ def build_processed_sku_rows(
                 "batch_id": job_id,
                 "sku_index": i,
                 "rule_version": rule_version,
-                "tenant_id": tenant_id,
                 "sku_name": sku_name,
                 "domain": domain,
                 "bt": res.get("suggested_bt", ""),
@@ -159,7 +157,7 @@ def record_job_completion(
     """Bulk-upserts the job's per-SKU results and marks the job completed, in one transaction."""
     with get_engine().begin() as conn:
         input_row = conn.execute(
-            text("SELECT input_skus_json, tenant_id FROM jobs WHERE id = :id"), {"id": job_id}
+            text("SELECT input_skus_json FROM jobs WHERE id = :id"), {"id": job_id}
         ).fetchone()
         input_skus = []
         if input_row and input_row[0]:
@@ -168,10 +166,7 @@ def record_job_completion(
             except Exception:
                 pass
 
-        tenant_id = input_row[1] if input_row else "default"
-        rows = build_processed_sku_rows(
-            job_id, domain, task, input_skus, results, rule_version, tenant_id
-        )
+        rows = build_processed_sku_rows(job_id, domain, task, input_skus, results, rule_version)
         upsert_processed_skus(conn, rows)
 
         conn.execute(

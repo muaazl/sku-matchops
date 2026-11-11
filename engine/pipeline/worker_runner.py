@@ -190,7 +190,7 @@ def _worker_loop():
         try:
             with (
                 _exec_lock,
-                trace_context(payload.get("trace_id"), tenant_id=payload.get("tenant_id")),
+                trace_context(payload.get("trace_id")),
             ):
                 _run_legacy_job(payload)
         finally:
@@ -224,7 +224,7 @@ def _run_legacy_job(payload: dict[str, Any]) -> None:
 
 def _run_queued_job(payload: dict[str, Any]) -> None:
     """Redis queue job: raising hands the error to the queue, which retries or dead-letters it."""
-    with trace_context(payload.get("trace_id"), tenant_id=payload.get("tenant_id")):
+    with trace_context(payload.get("trace_id")):
         job_id = str(payload.get("job_id", ""))
         _queue_jobs.add(job_id)
         try:
@@ -317,11 +317,10 @@ def _execute_job(payload: dict[str, Any]) -> None:
 
     send_progress_update("uploading" if task.lower() == "upload" else "embedding", 0.0)
     with _exec_lock:
-        tenant_id = payload.get("tenant_id") or "default"
-        sync_rules_version(tenant_id=tenant_id)
+        sync_rules_version()
         # Pin one (rules, rule_version) pair for every chunk of this job: a reload mid-job
         # must not change which rules evaluate it or the version its results are saved under
-        rule_snapshot = snapshot_rules(tenant_id)
+        rule_snapshot = snapshot_rules()
         rule_version = rule_snapshot.version
         # Execute CPU inference; _exec_lock is released immediately upon exit so slow outbound
         # Google Sheets webhooks never stall CPU execution for the next queued job.
@@ -384,10 +383,9 @@ def _execute_job(payload: dict[str, Any]) -> None:
                 low += 1
 
     match_rate = round((high / max(1, len(res_list))) * 100, 2)
-    tenant_id = payload.get("tenant_id") or "default"
     for status, count in (("high", high), ("medium", med), ("low", low)):
         if count:
-            SKUS_PROCESSED.labels(domain=domain, status=status, tenant_id=tenant_id).inc(count)
+            SKUS_PROCESSED.labels(domain=domain, status=status).inc(count)
 
     # Enrich result payload for external callback
     result_payload["job_id"] = job_id

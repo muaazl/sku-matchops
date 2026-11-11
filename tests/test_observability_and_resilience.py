@@ -1,6 +1,6 @@
 """Tests for Remediation Step 7:
 - OBS-01: Prometheus HTTP metrics recorded on requests
-- OBS-02: Structured log formats and context propagation with tenant_id
+- OBS-02: Structured log formats and context propagation with trace_id
 - Deep readiness probe (/ready) checking DB, Redis, and Engine
 - Distributed Redis rate limiter with graceful fail-open
 """
@@ -27,18 +27,16 @@ from backend.app.core.rate_limit import RateLimiter
 from backend.app.core.security import Principal
 
 
-def test_trace_context_and_tenant_id_propagation():
-    """Verify trace_context sets and restores both trace_id and tenant_id."""
-    with trace_context("trace-abc-123", tenant_id="tenant-xyz-999"):
+def test_trace_context_propagation():
+    """Verify trace_context sets and restores trace_id."""
+    with trace_context("trace-abc-123"):
         assert b_obs.get_trace_id() == "trace-abc-123"
-        assert b_obs.get_tenant_id() == "tenant-xyz-999"
 
     assert b_obs.get_trace_id() == "-"
-    assert b_obs.get_tenant_id() == "-"
 
 
-def test_log_filter_and_json_formatter_include_tenant():
-    """Verify TraceIdFilter and JsonFormatter attach trace_id and tenant_id."""
+def test_log_filter_and_json_formatter():
+    """Verify TraceIdFilter and JsonFormatter attach trace_id."""
     logger = logging.getLogger("test_logger")
     record = logger.makeRecord(
         name="test_logger",
@@ -50,25 +48,22 @@ def test_log_filter_and_json_formatter_include_tenant():
         exc_info=None,
     )
 
-    with trace_context("trace-fixed-1", tenant_id="tenant-acme"):
+    with trace_context("trace-fixed-1"):
         f = TraceIdFilter()
         f.filter(record)
         assert record.trace_id == "trace-fixed-1"
-        assert record.tenant_id == "tenant-acme"
 
         formatter = JsonFormatter()
         formatted_json = formatter.format(record)
         entry = json.loads(formatted_json)
         assert entry["trace_id"] == "trace-fixed-1"
-        assert entry["tenant_id"] == "tenant-acme"
         assert entry["message"] == "Test audit log message"
 
 
-def test_engine_observability_tenant_context():
-    """Verify engine.core.observability sets and formats tenant_id."""
-    with e_obs.trace_context("eng-trace-1", tenant_id="eng-tenant-2"):
+def test_engine_observability_context():
+    """Verify engine.core.observability sets and formats trace_id."""
+    with e_obs.trace_context("eng-trace-1"):
         assert e_obs.TRACE_ID.get() == "eng-trace-1"
-        assert e_obs.TENANT_ID.get() == "eng-tenant-2"
 
         logger = logging.getLogger("engine_test")
         record = logger.makeRecord(
@@ -83,7 +78,6 @@ def test_engine_observability_tenant_context():
         filt = e_obs.TraceIdFilter()
         filt.filter(record)
         assert record.trace_id == "eng-trace-1"
-        assert record.tenant_id == "eng-tenant-2"
 
 
 def test_prometheus_http_metrics_recorded():
@@ -93,7 +87,7 @@ def test_prometheus_http_metrics_recorded():
     async def _test():
         middleware = TraceIdMiddleware(app=MagicMock())
         req = MagicMock(spec=Request)
-        req.headers = {"x-request-id": "req-999", "x-tenant-id": "tenant-corp"}
+        req.headers = {"x-request-id": "req-999"}
         req.url.path = "/api/v1/jobs/12345/cancel"
         req.method = "POST"
 
@@ -102,7 +96,6 @@ def test_prometheus_http_metrics_recorded():
         async def mock_call_next(r):
             # Verify context vars inside request pipeline
             assert b_obs.get_trace_id() == "req-999"
-            assert b_obs.get_tenant_id() == "tenant-corp"
             return resp
 
         before_count = HTTP_REQUESTS_TOTAL.labels(
@@ -198,9 +191,7 @@ def test_rate_limiter_allows_and_blocks():
 
     req = MagicMock(spec=Request)
     req.url.path = "/match"
-    principal = Principal(
-        username="alice", role="reviewer", tenant_id="tenant-abc", home_tenant="tenant-abc"
-    )
+    principal = Principal(username="alice", role="reviewer")
 
     mock_redis = MagicMock()
     pipe = MagicMock()
@@ -225,9 +216,7 @@ def test_rate_limiter_fails_open_on_redis_error():
     limiter = RateLimiter(max_requests=5, window_seconds=60)
     req = MagicMock(spec=Request)
     req.url.path = "/match"
-    principal = Principal(
-        username="alice", role="reviewer", tenant_id="tenant-abc", home_tenant="tenant-abc"
-    )
+    principal = Principal(username="alice", role="reviewer")
 
     # Redis client is None (disconnected)
     with patch("backend.app.core.rate_limit._get_rate_limit_redis", return_value=None):

@@ -68,9 +68,7 @@ class TestDatabaseIntegrityAndReliability(unittest.TestCase):
         mock_conn.execute.return_value = mock_result
         mock_conn.execution_options.return_value = mock_conn
 
-        principal = Principal(
-            username="test", role="admin", tenant_id="tenant-x", home_tenant="tenant-x"
-        )
+        principal = Principal(username="test", role="admin")
 
         with patch("backend.app.api.endpoints.history.get_engine", return_value=mock_engine):
             # Test generator directly
@@ -92,9 +90,7 @@ class TestDatabaseIntegrityAndReliability(unittest.TestCase):
         from backend.app.api.endpoints.jobs import cancel_job
 
         mock_db = MagicMock()
-        principal = Principal(
-            username="admin", role="admin", tenant_id="tenant-x", home_tenant="tenant-x"
-        )
+        principal = Principal(username="admin", role="admin")
 
         with (
             patch("backend.app.api.endpoints.jobs.cancel_engine_job"),
@@ -150,8 +146,8 @@ class TestDatabaseIntegrityAndReliability(unittest.TestCase):
             out_idem = cancel_job(id="job_canc", db=mock_db, principal=principal)
             self.assertEqual(out_idem["message"], "Job is already cancelled")
 
-    def test_upsert_processed_skus_uses_tenant_scoped_constraint(self):
-        """DAT-03: upsert_processed_skus targets uq_processed_skus_tenant_job_sku_rule."""
+    def test_upsert_processed_skus_uses_scoped_constraint(self):
+        """DAT-03: upsert_processed_skus targets uq_processed_skus_job_sku_rule."""
         from backend.app.db.session import upsert_processed_skus
 
         mock_conn = MagicMock()
@@ -160,6 +156,5 @@ class TestDatabaseIntegrityAndReliability(unittest.TestCase):
         mock_conn.execute.assert_called_once()
         stmt = mock_conn.execute.call_args[0][0]
         self.assertEqual(
-            stmt._post_values_clause.constraint_target, "uq_processed_skus_tenant_job_sku_rule"
+            stmt._post_values_clause.constraint_target, "uq_processed_skus_job_sku_rule"
         )
-        self.assertEqual(rows[0]["tenant_id"], "default")

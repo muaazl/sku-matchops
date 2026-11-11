@@ -24,25 +24,6 @@ def _ts(name: str, default: bool = False) -> Column:
     return Column(name, DateTime(timezone=True), server_default=func.now() if default else None)
 
 
-def _tenant() -> Column:
-    return Column("tenant_id", Text, nullable=False, server_default="default")
-
-
-# 0. Users (JWT login); role is admin | rule_engineer | reviewer
-users = Table(
-    "users",
-    metadata,
-    Column("id", Integer, primary_key=True),
-    Column("username", Text, nullable=False),
-    Column("password_hash", Text, nullable=False),
-    Column("role", Text, nullable=False),
-    _tenant(),
-    Column("is_active", Integer, nullable=False, server_default="1"),
-    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
-    UniqueConstraint("tenant_id", "username", name="uq_users_tenant_username"),
-    CheckConstraint("role IN ('admin', 'rule_engineer', 'reviewer')", name="ck_users_role"),
-)
-
 # 1. Rules Engine
 rules = Table(
     "rules",
@@ -57,9 +38,7 @@ rules = Table(
     Column("is_active", Integer, nullable=False, server_default="1"),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
-    _tenant(),
     Index("idx_rules_domain_priority", "domain", "priority"),
-    Index("idx_rules_tenant_domain", "tenant_id", "domain"),
 )
 
 conditions = Table(
@@ -113,11 +92,8 @@ jobs = Table(
     Column("low_conf", Integer, server_default="0"),
     Column("match_rate", Float, server_default="0"),
     Column("input_skus_json", Text),
-    _tenant(),
     Index("idx_jobs_started_at", "started_at"),
-    Index("idx_jobs_tenant_started", "tenant_id", "started_at"),
     Index("idx_jobs_status_started", "status", "started_at"),
-    Index("idx_jobs_tenant_status_started", "tenant_id", "status", "started_at"),
     Index(
         "idx_jobs_sheet_trgm",
         "sheet_name",
@@ -140,8 +116,6 @@ batches = Table(
     Column("created_by", Text),
     _ts("created_at", default=True),
     _ts("completed_at"),
-    _tenant(),
-    Index("idx_batches_tenant", "tenant_id"),
 )
 
 # 3. Per-SKU Audit Trail (match results). batch_id holds the job id.
@@ -175,23 +149,19 @@ processed_skus = Table(
     Column("upload_job_id", Text),
     Column("upload_status", Text),
     _ts("created_at", default=True),
-    _tenant(),
     # Idempotency key: re-delivering the same job batch updates rows instead of duplicating them
     UniqueConstraint(
-        "tenant_id",
         "batch_id",
         "sku_index",
         "rule_version",
-        name="uq_processed_skus_tenant_job_sku_rule",
+        name="uq_processed_skus_job_sku_rule",
     ),
     Index("idx_processed_skus_created_at", "created_at"),
     Index("idx_processed_skus_batch_id", "batch_id"),
-    Index("idx_processed_skus_tenant_batch", "tenant_id", "batch_id", "created_at"),
+    Index("idx_processed_skus_batch_created", "batch_id", "created_at"),
     Index("idx_processed_skus_domain_created", "domain", "created_at"),
-    # Covering: the tenant-scoped dashboard aggregates are answered from the index alone
     Index(
-        "idx_processed_skus_tenant_stats",
-        "tenant_id",
+        "idx_processed_skus_stats",
         "created_at",
         postgresql_include=[
             "domain",
@@ -230,10 +200,8 @@ api_requests = Table(
     Column("ip_address", Text),
     Column("headers_json", Text),
     Column("query_params_json", Text),
-    Column("tenant_id", Text, nullable=True, server_default="default"),
     _ts("created_at", default=True),
     Index("idx_api_requests_created_at", "created_at"),
-    Index("idx_api_requests_tenant_created", "tenant_id", "created_at"),
 )
 
 # 5. Catalog Items Reference

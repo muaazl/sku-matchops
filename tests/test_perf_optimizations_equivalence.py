@@ -562,7 +562,7 @@ def test_streaming_csv_export_matches_buffered_csv_and_sanitizes_formulas():
     mock_conn.execution_options.return_value = mock_conn
     mock_conn.execute.return_value = mock_result
 
-    principal = Principal(username="tester", role="admin", tenant_id="default")
+    principal = Principal(username="tester", role="admin")
 
     with pytest.raises(HTTPException) as exc_info:
         export_history(ids=None, format="xlsx", db=mock_conn, principal=principal)

@@ -103,28 +103,28 @@ def _enrich_job_rows(rows) -> list[dict]:
 _TIMEFRAME_INTERVALS = {"24h": "24 hours", "7d": "7 days", "30d": "30 days"}
 
 
-def _stats_filter(domain: str | None, timeframe: str | None, tenant_id: str) -> tuple[str, dict]:
-    """WHERE clause + params shared by the processed_skus dashboard aggregates."""
-    where_clauses = ["tenant_id = :tenant_id"]
-    params = {"tenant_id": tenant_id}
+def _stats_filter(domain: str | None, timeframe: str | None) -> tuple[list[str], dict]:
+    """WHERE clauses + params shared by the processed_skus dashboard aggregates."""
+    clauses: list[str] = []
+    params: dict = {}
 
     if domain and domain.lower() != "all":
-        where_clauses.append("domain = :domain")
+        clauses.append("domain = :domain")
         params["domain"] = domain.lower()
 
     if timeframe in _TIMEFRAME_INTERVALS:
-        where_clauses.append("created_at >= now() - CAST(:window AS interval)")
+        clauses.append("created_at >= now() - CAST(:window AS interval)")
         params["window"] = _TIMEFRAME_INTERVALS[timeframe]
 
-    return " AND ".join(where_clauses), params
+    return clauses, params
 
 
-def _tenant_job(db: Connection, job_id: str, principal: Principal):
-    """The job row if it belongs to the caller's tenant (other tenants' jobs look like 404s)."""
+def _get_job(db: Connection, job_id: str):
+    """The job row."""
     return (
         db.execute(
-            text("SELECT * FROM jobs WHERE id = :id AND tenant_id = :tenant_id"),
-            {"id": job_id, "tenant_id": principal.tenant_id},
+            text("SELECT * FROM jobs WHERE id = :id"),
+            {"id": job_id},
         )
         .mappings()
         .fetchone()
@@ -150,31 +150,32 @@ def get_jobs(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    where = "WHERE tenant_id = :tenant_id"
-    params = {"tenant_id": principal.tenant_id}
+    clauses: list[str] = []
+    params: dict = {}
 
     if status:
-        where += " AND status = :status"
+        clauses.append("status = :status")
         params["status"] = status
     if type:
-        where += " AND type = :type"
+        clauses.append("type = :type")
         params["type"] = type
     if created_by:
-        where += " AND created_by = :created_by"
+        clauses.append("created_by = :created_by")
         params["created_by"] = created_by
     if date_from:
-        where += " AND started_at >= CAST(:date_from AS timestamptz)"
+        clauses.append("started_at >= CAST(:date_from AS timestamptz)")
         params["date_from"] = date_from
     if date_to:
-        where += " AND started_at <= CAST(:date_to AS timestamptz)"
+        clauses.append("started_at <= CAST(:date_to AS timestamptz)")
         params["date_to"] = date_to
     if domain:
-        where += " AND domain = :domain"
+        clauses.append("domain = :domain")
         params["domain"] = domain
     if sheet_name:
-        where += " AND (sheet_name ILIKE :sheet_name OR target_sheet ILIKE :sheet_name)"
+        clauses.append("(sheet_name ILIKE :sheet_name OR target_sheet ILIKE :sheet_name)")
         params["sheet_name"] = f"%{sheet_name}%"
 
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     total_count = db.execute(text(f"SELECT COUNT(*) FROM jobs {where}"), params).scalar()
     response.headers["X-Total-Count"] = str(total_count)
 
@@ -198,8 +199,8 @@ def get_dashboard_stats(
     Computes aggregate metrics from processed_skus for dashboard cards and charts.
     Fast indexed queries (< 10ms).
     """
-    where_str, params = _stats_filter(domain, timeframe, principal.tenant_id)
-    tenant = {"tenant_id": principal.tenant_id}
+    clauses, params = _stats_filter(domain, timeframe)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     # 1 & 2. Single-pass processed_skus summary + match-source breakdown (answered via covering index)
     summary_source_query = f"""
@@ -218,7 +219,7 @@ def get_dashboard_stats(
             COALESCE(SUM(CASE WHEN confidence >= 0.60 AND confidence < 0.85 THEN 1 ELSE 0 END), 0) as med_count,
             COALESCE(SUM(CASE WHEN confidence < 0.60 THEN 1 ELSE 0 END), 0) as low_count
         FROM processed_skus
-        WHERE {where_str}
+        {where_sql}
         GROUP BY normalized_source
         ORDER BY cnt DESC
     """
@@ -250,10 +251,9 @@ def get_dashboard_stats(
     dom_query = """
         SELECT domain, COUNT(*) as count
         FROM processed_skus
-        WHERE tenant_id = :tenant_id
         GROUP BY domain
     """
-    dom_rows = db.execute(text(dom_query), tenant).fetchall()
+    dom_rows = db.execute(text(dom_query)).fetchall()
     domain_breakdown = [{"domain": r[0] or "Unknown", "count": r[1]} for r in dom_rows]
 
     # 4. Volume Trend (by hour or date)
@@ -263,7 +263,7 @@ def get_dashboard_stats(
         trend_query = f"""
             SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:00') as hr, COUNT(*) as cnt, AVG(confidence) as avg_c
             FROM processed_skus
-            WHERE {where_str}
+            {where_sql}
             GROUP BY hr
             ORDER BY hr ASC
         """
@@ -282,7 +282,7 @@ def get_dashboard_stats(
         trend_query = f"""
             SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') as dt, COUNT(*) as cnt, AVG(confidence) as avg_c
             FROM processed_skus
-            WHERE {where_str}
+            {where_sql}
             GROUP BY dt
             ORDER BY dt ASC
         """
@@ -308,52 +308,24 @@ def get_dashboard_stats(
                 COUNT(*) FILTER (WHERE status = 'completed' AND started_at >= now() - interval '7 days') AS completed_7d,
                 COUNT(*) FILTER (WHERE status = 'failed' AND started_at >= now() - interval '7 days') AS failed_7d
             FROM jobs
-            WHERE tenant_id = :tenant_id
             """
-        ),
-        tenant,
+        )
     ).fetchone()
     active_jobs = int(job_counts_row[0] or 0) if job_counts_row else 0
     completed_7d = int(job_counts_row[1] or 0) if job_counts_row else 0
     failed_7d = int(job_counts_row[2] or 0) if job_counts_row else 0
     requests_24h = 0
     try:
-        if principal.is_platform_admin:
-            requests_24h = int(
-                db.execute(
-                    text(
-                        "SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'"
-                    )
-                ).scalar()
-                or 0
-            )
-        else:
-            requests_24h = int(
-                db.execute(
-                    text(
-                        "SELECT COUNT(*) FROM api_requests WHERE tenant_id = :tenant_id AND created_at >= now() - interval '24 hours'"
-                    ),
-                    {"tenant_id": principal.tenant_id},
-                ).scalar()
-                or 0
-            )
-    except Exception:
-        # Graceful fallback if tenant_id column is not yet present on api_requests
-        try:
-            requests_24h = (
-                int(
-                    db.execute(
-                        text(
-                            "SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'"
-                        )
-                    ).scalar()
-                    or 0
+        requests_24h = int(
+            db.execute(
+                text(
+                    "SELECT COUNT(*) FROM api_requests WHERE created_at >= now() - interval '24 hours'"
                 )
-                if principal.is_platform_admin
-                else 0
-            )
-        except Exception:
-            requests_24h = 0
+            ).scalar()
+            or 0
+        )
+    except Exception:
+        requests_24h = 0
 
     return {
         "stats": {
@@ -407,13 +379,18 @@ def get_tag_stats(
     Computes Basic Type / Region-Category / tag-status breakdowns from processed_skus,
     for the tagging-strategy charts on the Dashboard and Guide pages.
     """
-    where_str, params = _stats_filter(domain, timeframe, principal.tenant_id)
+    clauses, params = _stats_filter(domain, timeframe)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    bt_clauses = clauses + ["bt IS NOT NULL", "bt != ''"]
+    where_bt = f"WHERE {' AND '.join(bt_clauses)}"
+    tag_clauses = clauses + ["COALESCE(NULLIF(region, ''), NULLIF(category, '')) IS NOT NULL"]
+    where_tag = f"WHERE {' AND '.join(tag_clauses)}"
 
     # 1. Basic Type distribution (top 10)
     bt_query = f"""
         SELECT bt, COUNT(*) as count
         FROM processed_skus
-        WHERE {where_str} AND bt IS NOT NULL AND bt != ''
+        {where_bt}
         GROUP BY bt
         ORDER BY count DESC
         LIMIT 10
@@ -425,7 +402,7 @@ def get_tag_stats(
     tag_query = f"""
         SELECT COALESCE(NULLIF(region, ''), NULLIF(category, '')) as tag, COUNT(*) as count
         FROM processed_skus
-        WHERE {where_str} AND COALESCE(NULLIF(region, ''), NULLIF(category, '')) IS NOT NULL
+        {where_tag}
         GROUP BY tag
         ORDER BY count DESC
         LIMIT 10
@@ -452,7 +429,7 @@ def get_tag_stats(
             COALESCE(SUM(CASE WHEN region_confidence >= :review_t AND region_confidence < :auto_t THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN region_confidence < :review_t THEN 1 ELSE 0 END), 0)
         FROM processed_skus
-        WHERE {where_str}
+        {where_sql}
     """
     s_row = db.execute(
         text(status_q), {"auto_t": auto_t, "review_t": review_t, **params}
@@ -500,14 +477,14 @@ async def close_async_redis_pool():
         _async_redis_pool = None
 
 
-async def _open_tenant_pubsub(tenant_id: str):
+async def _open_job_pubsub():
     import redis.asyncio as aioredis
 
     pool = get_async_redis_pool()
     client = aioredis.Redis(connection_pool=pool)
     pubsub = client.pubsub(ignore_subscribe_messages=True)
     try:
-        await pubsub.subscribe(job_events_channel(tenant_id))
+        await pubsub.subscribe(job_events_channel())
     except Exception as e:
         await pubsub.aclose()
         await client.aclose()
@@ -515,15 +492,11 @@ async def _open_tenant_pubsub(tenant_id: str):
     return client, pubsub
 
 
-def _recent_tenant_jobs(tenant_id: str) -> list[dict]:
+def _recent_jobs() -> list[dict]:
     with get_engine().connect() as conn:
         rows = (
             conn.execute(
-                text(
-                    f"SELECT {_JOB_LIST_COLUMNS} FROM jobs "
-                    "WHERE tenant_id = :t ORDER BY started_at DESC LIMIT 25"
-                ),
-                {"t": tenant_id},
+                text(f"SELECT {_JOB_LIST_COLUMNS} FROM jobs ORDER BY started_at DESC LIMIT 25")
             )
             .mappings()
             .fetchall()
@@ -531,9 +504,9 @@ def _recent_tenant_jobs(tenant_id: str) -> list[dict]:
     return [JobResponse(**d).model_dump(mode="json") for d in _enrich_job_rows(rows)]
 
 
-def _single_tenant_job(job_id: str, principal: Principal) -> dict | None:
+def _single_job(job_id: str) -> dict | None:
     with get_engine().connect() as conn:
-        row = _tenant_job(conn, job_id, principal)
+        row = _get_job(conn, job_id)
     if not row:
         return None
     return JobResponse(**_enrich_job_dict(dict(row))).model_dump(mode="json")
@@ -541,12 +514,12 @@ def _single_tenant_job(job_id: str, principal: Principal) -> dict | None:
 
 @router.get("/jobs/stream")
 async def stream_jobs(request: Request, principal: Principal = Depends(get_principal)):
-    """SSE stream of live job state changes for the caller's tenant."""
-    client, pubsub = await _open_tenant_pubsub(principal.tenant_id)
+    """SSE stream of live job state changes."""
+    client, pubsub = await _open_job_pubsub()
 
     async def _gen():
         try:
-            initial = await run_in_threadpool(_recent_tenant_jobs, principal.tenant_id)
+            initial = await run_in_threadpool(_recent_jobs)
             yield f"data: {json.dumps({'type': 'snapshot', 'jobs': initial})}\n\n"
             while not await request.is_disconnected():
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
@@ -569,7 +542,7 @@ def get_job(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    row = _tenant_job(db, id, principal)
+    row = _get_job(db, id)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -580,13 +553,13 @@ def get_job(
 @router.get("/jobs/{id}/stream")
 async def stream_job(id: str, request: Request, principal: Principal = Depends(get_principal)):
     """SSE stream of live progress, stage, and terminal outcome for a single job."""
-    if await run_in_threadpool(_single_tenant_job, id, principal) is None:
+    if await run_in_threadpool(_single_job, id) is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    client, pubsub = await _open_tenant_pubsub(principal.tenant_id)
+    client, pubsub = await _open_job_pubsub()
 
     async def _gen():
         try:
-            initial = await run_in_threadpool(_single_tenant_job, id, principal)
+            initial = await run_in_threadpool(_single_job, id)
             if initial is None:
                 return
             yield f"data: {json.dumps(initial)}\n\n"
@@ -620,12 +593,12 @@ def cancel_job(
     res = db.execute(
         text(
             "UPDATE jobs SET status = 'cancelled', cancel_requested = 1, completed_at = now() "
-            "WHERE id = :id AND tenant_id = :tenant_id AND status IN ('queued', 'running')"
+            "WHERE id = :id AND status IN ('queued', 'running')"
         ),
-        {"id": id, "tenant_id": principal.tenant_id},
+        {"id": id},
     )
     if res.rowcount == 0:
-        row = _tenant_job(db, id, principal)
+        row = _get_job(db, id)
         if not row:
             raise HTTPException(status_code=404, detail="Job not found")
         if row["status"] == "cancelled":
@@ -636,16 +609,12 @@ def cancel_job(
         )
 
     db.execute(
-        text(
-            "UPDATE batches SET status = 'cancelled', completed_at = now() "
-            "WHERE id = :id AND tenant_id = :tenant_id"
-        ),
-        {"id": id, "tenant_id": principal.tenant_id},
+        text("UPDATE batches SET status = 'cancelled', completed_at = now() WHERE id = :id"),
+        {"id": id},
     )
     db.commit()
     clear_job_progress(id)
     publish_job_event(
-        principal.tenant_id,
         {
             "id": str(id),
             "status": "cancelled",
@@ -665,7 +634,7 @@ def retry_job(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    row = _tenant_job(db, id, principal)
+    row = _get_job(db, id)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -687,7 +656,5 @@ def retry_job(
         sheet_name=job_dict.get("sheet_name"),
     )
 
-    result = enqueue_job(
-        request, task=job_dict.get("type") or "pipeline", tenant_id=principal.tenant_id
-    )
+    result = enqueue_job(request, task=job_dict.get("type") or "pipeline")
     return {"message": "Retry initiated", "new_job_id": result["job_id"]}

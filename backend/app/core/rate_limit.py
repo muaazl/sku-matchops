@@ -37,7 +37,7 @@ def _get_rate_limit_redis():
 
 class RateLimiter:
     """
-    Fixed-window counter rate limiter per tenant (or IP if unauthenticated).
+    Fixed-window counter rate limiter per caller (or IP if unauthenticated).
     Fails open gracefully if Redis is temporarily unavailable.
     """
 
@@ -54,8 +54,12 @@ class RateLimiter:
         if client is None:
             return  # Fail open if Redis unavailable
 
-        # Identify subject: tenant ID, or client host
-        subject = principal.tenant_id if principal and principal.tenant_id else "anonymous"
+        # Identify subject: authenticated username/role, or client host
+        subject = (
+            principal.username
+            if principal and principal.username
+            else (request.client.host if request.client else "anonymous")
+        )
         endpoint = request.url.path
 
         # Current time bucket
@@ -72,7 +76,7 @@ class RateLimiter:
             if count > self.max_requests:
                 retry_after = self.window_seconds - (int(time.time()) % self.window_seconds)
                 logger.warning(
-                    f"Rate limit exceeded for tenant={subject} on {endpoint}: {count} > {self.max_requests}"
+                    f"Rate limit exceeded for subject={subject} on {endpoint}: {count} > {self.max_requests}"
                 )
                 raise HTTPException(
                     status_code=429,

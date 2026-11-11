@@ -59,36 +59,24 @@ async function resolveBaseUrl() {
 // Eagerly resolve on load (non-blocking)
 resolveBaseUrl();
 
+const DEFAULT_API_KEY = import.meta.env.VITE_API_KEY || 'bismillah';
+
 const api = axios.create({
   baseURL: LOCAL_BACKEND, // initial default, overridden by interceptor
 });
 
-// Request interceptor: ensures every request uses the resolved tunnel URL and carries the
-// active session (Bearer JWT, else API key). No X-Tenant-ID: the server uses the account's tenant.
+// Request interceptor: ensures every request carries the API key
 api.interceptors.request.use(async (config) => {
   const base = await resolveBaseUrl();
   config.baseURL = base;
-  const { authToken, apiKey } = useStore.getState();
-  if (authToken) {
-    config.headers.Authorization = `Bearer ${authToken}`;
-  } else if (apiKey) {
-    config.headers['X-API-Key'] = apiKey;
-  }
+  const { apiKey } = useStore.getState();
+  config.headers['X-API-Key'] = apiKey || DEFAULT_API_KEY;
   return config;
 });
 
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response && error.response.status === 401) {
-      const url = error.config?.url || '';
-      const state = useStore.getState();
-      if (url.includes('/merchant-fetch')) {
-        state.clearToken(); // rejected merchant-portal token
-      } else if (!url.includes('/auth/token')) {
-        state.promptLoginOn401(); // open Sign in modal when logged out or session expired
-      }
-    }
     return Promise.reject(error);
   }
 );
@@ -109,17 +97,12 @@ export function subscribeJobStream(path, { onMessage, onError } = {}) {
   (async () => {
     try {
       const base = await resolveBaseUrl();
-      const headers = { Accept: 'text/event-stream' };
-      const { authToken, apiKey } = useStore.getState();
-      if (authToken) {
-        headers.Authorization = `Bearer ${authToken}`;
-      } else if (apiKey) {
-        headers['X-API-Key'] = apiKey;
-      }
+      const { apiKey } = useStore.getState();
+      const headers = {
+        Accept: 'text/event-stream',
+        'X-API-Key': apiKey || DEFAULT_API_KEY,
+      };
       const resp = await fetch(`${base}${path}`, { headers, signal: controller.signal });
-      if (resp.status === 401) {
-        useStore.getState().promptLoginOn401();
-      }
       if (!resp.ok || !resp.body) {
         throw new Error(`SSE stream failed (${resp.status})`);
       }
@@ -218,14 +201,6 @@ export const getLogs = async (lines) => (await api.get('/logs', { params: { line
 export const checkHealth = async () => (await api.get('/health', { timeout: 4000 })).data;
 
 // Auth (OAuth2 password form -> JWT) and the server-confirmed identity
-export const login = async ({ username, password }) =>
-  (
-    await api.post('/auth/token', new URLSearchParams({ username, password }), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    })
-  ).data;
-export const getMe = async () => (await api.get('/auth/me')).data;
-
 // Queue & DLQ, system status strip
 export const getDeadLetters = async () => (await api.get('/queue/dlq')).data;
 export const replayDeadLetter = async (taskId) => (await api.post(`/queue/dlq/${taskId}/replay`)).data;

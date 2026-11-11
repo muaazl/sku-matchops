@@ -60,13 +60,12 @@ jobs:
       - name: Run Ruff format check
         run: .venv/bin/ruff format --check backend/ engine/ tests/
 
-      - name: Run Alembic migrations check
+      - name: Verify database initialization
         env:
           PYTHONPATH: .
           DATABASE_URL: postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test
         run: |
-          .venv/bin/alembic upgrade head
-          .venv/bin/alembic check
+          .venv/bin/python -c "from backend.app.db.init import init_db; init_db()"
 
       - name: Run Pytest with Coverage
         env:

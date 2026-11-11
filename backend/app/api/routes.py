@@ -7,8 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, Security
 from fastapi.security.api_key import APIKeyHeader
 from sqlalchemy import text
 
-from backend.app.api.endpoints.auth import router as auth_router
-from backend.app.api.endpoints.auth import users_router
 from backend.app.api.endpoints.batches import router as batches_router
 from backend.app.api.endpoints.catalog import router as catalog_router
 from backend.app.api.endpoints.history import router as history_router
@@ -53,10 +51,8 @@ for _router, _tag in (
     (models_router, "models"),
     (upload_router, "upload"),
     (queue_router, "queue"),
-    (users_router, "auth"),
 ):
     api_router.include_router(_router, tags=[_tag], dependencies=_authenticated)
-api_router.include_router(auth_router, tags=["auth"])  # public: login
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -136,7 +132,7 @@ def match(request: MatchRequest, principal: Principal = Depends(get_principal)):
     Dispatched to the ML Engine microservice.
     """
     try:
-        return enqueue_job(request, "matcher", tenant_id=principal.tenant_id)
+        return enqueue_job(request, "matcher")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -157,7 +153,7 @@ def classify(request: ClassifyRequest, principal: Principal = Depends(get_princi
     Dispatched to the ML Engine microservice.
     """
     try:
-        return enqueue_job(request, "classifier", tenant_id=principal.tenant_id)
+        return enqueue_job(request, "classifier")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -178,7 +174,7 @@ def pipeline(request: PipelineRequest, principal: Principal = Depends(get_princi
     Dispatched to the ML Engine microservice.
     """
     try:
-        return enqueue_job(request, "pipeline", tenant_id=principal.tenant_id)
+        return enqueue_job(request, "pipeline")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

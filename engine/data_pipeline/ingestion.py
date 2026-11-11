@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import time
+from typing import Any
 
 import pandas as pd
 import polars as pl
@@ -317,7 +318,12 @@ class DataIngestion:
             logger.warning(f"[STAGE] Error while cleaning up staging directory: {e}")
 
     @staticmethod
-    def _fetch_sheet_as_csv(sheet_id: str, sheet_name: str, **kwargs) -> pd.DataFrame:
+    def _fetch_sheet_as_csv(
+        sheet_id: str,
+        sheet_name: str,
+        header: int | None = 0,
+        dtype: Any = None,
+    ) -> pd.DataFrame:
         """Helper to fetch a specific Google Sheet tab as a CSV, reading from staged cache if available."""
         staged_path = DataIngestion._get_staged_path(sheet_name)
         if os.path.exists(staged_path) and os.path.getsize(staged_path) > 0:
@@ -328,19 +334,19 @@ class DataIngestion:
             content_bytes = text.encode("utf-8")
 
         pl_kwargs = {"ignore_errors": True}
-        if "header" in kwargs and kwargs["header"] is None:
+        if header is None:
             pl_kwargs["has_header"] = False
 
         df = pl.read_csv(content_bytes, **pl_kwargs)
         df = df.select([c for c in df.columns if not c.startswith("Unnamed")])
         pd_df = df.to_pandas()
 
-        if "dtype" in kwargs and kwargs["dtype"] is str:
+        if dtype is str:
             pd_df = pd_df.astype(str)
-        elif "dtype" in kwargs and isinstance(kwargs["dtype"], dict):
-            for col, dtype in kwargs["dtype"].items():
+        elif isinstance(dtype, dict):
+            for col, d_type in dtype.items():
                 if col in pd_df.columns:
-                    pd_df[col] = pd_df[col].astype(dtype)
+                    pd_df[col] = pd_df[col].astype(d_type)
         return pd_df
 
     @staticmethod

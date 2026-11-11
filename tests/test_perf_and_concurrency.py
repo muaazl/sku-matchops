@@ -2,7 +2,7 @@
 - PER-03: Pooled async Redis connections for SSE pubsub
 - DIS-01: Distributed Redis lock for catalog cache builds
 - PER-04: Memory protection against large response bodies in audit logging
-- Schema: Tenant-scoped uniqueness constraints and composite performance indexes
+- Schema: Uniqueness constraints and composite performance indexes
 """
 
 import json
@@ -12,7 +12,6 @@ import backend.app.services.catalog_service as cat_svc
 from backend.app.api.endpoints.jobs import get_async_redis_pool
 from backend.app.db.schema import jobs as jobs_table
 from backend.app.db.schema import processed_skus as processed_skus_table
-from backend.app.db.schema import users as users_table
 
 
 def test_async_redis_pool_singleton():
@@ -105,35 +104,27 @@ def test_audit_logging_omits_large_response_bodies():
 
 
 def test_schema_constraints_and_composite_indexes():
-    """Verify schema defines tenant-scoped uniqueness constraints and composite performance indexes."""
-    # 1. users: unique constraint on (tenant_id, username)
-    user_uq_names = [c.name for c in users_table.constraints if hasattr(c, "columns")]
-    assert "uq_users_tenant_username" in user_uq_names
-    for c in users_table.constraints:
-        if c.name == "uq_users_tenant_username":
-            col_names = [col.name for col in c.columns]
-            assert col_names == ["tenant_id", "username"]
-
-    # 2. processed_skus: unique constraint on (tenant_id, batch_id, sku_index, rule_version)
+    """Verify schema defines uniqueness constraints and composite performance indexes."""
+    # 1. processed_skus: unique constraint on (batch_id, sku_index, rule_version)
     sku_uq_names = [c.name for c in processed_skus_table.constraints if hasattr(c, "columns")]
-    assert "uq_processed_skus_tenant_job_sku_rule" in sku_uq_names
+    assert "uq_processed_skus_job_sku_rule" in sku_uq_names
     for c in processed_skus_table.constraints:
-        if c.name == "uq_processed_skus_tenant_job_sku_rule":
+        if c.name == "uq_processed_skus_job_sku_rule":
             col_names = [col.name for col in c.columns]
-            assert col_names == ["tenant_id", "batch_id", "sku_index", "rule_version"]
+            assert col_names == ["batch_id", "sku_index", "rule_version"]
 
-    # 3. jobs: composite index on (tenant_id, status, started_at)
+    # 2. jobs: composite index on (status, started_at)
     job_idx_names = [idx.name for idx in jobs_table.indexes]
-    assert "idx_jobs_tenant_status_started" in job_idx_names
+    assert "idx_jobs_status_started" in job_idx_names
     for idx in jobs_table.indexes:
-        if idx.name == "idx_jobs_tenant_status_started":
+        if idx.name == "idx_jobs_status_started":
             col_names = [col.name for col in idx.columns]
-            assert col_names == ["tenant_id", "status", "started_at"]
+            assert col_names == ["status", "started_at"]
 
-    # 4. processed_skus: composite index on (tenant_id, batch_id, created_at)
+    # 3. processed_skus: composite index on (batch_id, created_at)
     sku_idx_names = [idx.name for idx in processed_skus_table.indexes]
-    assert "idx_processed_skus_tenant_batch" in sku_idx_names
+    assert "idx_processed_skus_batch_created" in sku_idx_names
     for idx in processed_skus_table.indexes:
-        if idx.name == "idx_processed_skus_tenant_batch":
+        if idx.name == "idx_processed_skus_batch_created":
             col_names = [col.name for col in idx.columns]
-            assert col_names == ["tenant_id", "batch_id", "created_at"]
+            assert col_names == ["batch_id", "created_at"]

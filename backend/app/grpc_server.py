@@ -34,7 +34,6 @@ JOB_PROGRESS_TTL = 3600
 _job_progress: dict[str, float] = {}
 _job_eta: dict[str, int | None] = {}
 _job_stage: dict[str, str] = {}
-_job_tenant: dict[str, str] = {}
 
 _redis_lock = threading.Lock()
 _redis_client = None
@@ -45,8 +44,8 @@ _server_lock = threading.Lock()
 _active_server: grpc.Server | None = None
 
 
-def job_events_channel(tenant_id: str) -> str:
-    return f"matchops:jobs:events:{tenant_id or 'default'}"
+def job_events_channel() -> str:
+    return "matchops:jobs:events"
 
 
 def _mark_redis_down() -> None:
@@ -80,15 +79,12 @@ def set_job_progress(
     pct: float,
     eta: int | None = None,
     stage: str | None = None,
-    tenant_id: str | None = None,
 ) -> None:
     jid = str(job_id)
     _job_progress[jid] = float(pct)
     _job_eta[jid] = eta
     if stage is not None:
         _job_stage[jid] = stage
-    if tenant_id:
-        _job_tenant[jid] = tenant_id
 
     r = _progress_redis()
     if r is None:
@@ -96,8 +92,6 @@ def set_job_progress(
     fields: dict[str, str] = {"pct": str(float(pct)), "eta": "" if eta is None else str(int(eta))}
     if stage is not None:
         fields["stage"] = stage
-    if tenant_id:
-        fields["tenant_id"] = tenant_id
     try:
         key = f"{JOB_PROGRESS_PREFIX}{jid}"
         pipe = r.pipeline()
@@ -149,43 +143,18 @@ def get_bulk_job_progress_states(job_ids: list[str]) -> dict[str, tuple[float, i
     return out
 
 
-def publish_job_event(tenant_id: str | None, event: dict[str, Any]) -> None:
-    """Broadcasts a live job state update on the tenant's Redis Pub/Sub channel."""
+def publish_job_event(event: dict[str, Any]) -> None:
+    """Broadcasts a live job state update on the Redis Pub/Sub channel."""
+    if not event:
+        return
     r = _progress_redis()
     if r is None:
         return
     try:
-        r.publish(job_events_channel(tenant_id or "default"), json.dumps(event, default=str))
+        r.publish(job_events_channel(), json.dumps(event, default=str))
     except Exception as e:
         logger.debug(f"Redis event publish skipped for job {event.get('id')}: {e}")
         _mark_redis_down()
-
-
-def _resolve_job_tenant(job_id: str) -> str:
-    jid = str(job_id)
-    cached = _job_tenant.get(jid)
-    if cached:
-        return cached
-    r = _progress_redis()
-    if r is not None:
-        try:
-            val = r.hget(f"{JOB_PROGRESS_PREFIX}{jid}", "tenant_id")
-            if val:
-                _job_tenant[jid] = str(val)
-                return _job_tenant[jid]
-        except Exception:
-            _mark_redis_down()
-    try:
-        with get_engine().connect() as conn:
-            row = conn.execute(
-                text("SELECT tenant_id FROM jobs WHERE id = :id"), {"id": jid}
-            ).fetchone()
-            if row and row[0]:
-                _job_tenant[jid] = str(row[0])
-                return _job_tenant[jid]
-    except Exception:
-        pass
-    return "default"
 
 
 def clear_job_progress(job_id: str) -> None:
@@ -194,7 +163,6 @@ def clear_job_progress(job_id: str) -> None:
     _job_progress.pop(jid, None)
     _job_eta.pop(jid, None)
     _job_stage.pop(jid, None)
-    _job_tenant.pop(jid, None)
     r = _progress_redis()
     if r is not None:
         try:
@@ -218,7 +186,6 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
                 except Exception:
                     _mark_redis_down()
 
-        tenant_id = _job_tenant.get(j_id)
         # Only perform a DB write when the stage changes or when first observed
         if last_stage != request.current_stage or _job_stage.get(j_id) is None:
             try:
@@ -227,23 +194,18 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
                     row = conn.execute(
                         text(
                             "UPDATE jobs SET status = 'running', current_stage = :stage, updated_at = now() "
-                            "WHERE id = :id AND status IN ('queued', 'running') RETURNING tenant_id"
+                            "WHERE id = :id AND status IN ('queued', 'running')"
                         ),
                         {"stage": request.current_stage, "id": j_id},
-                    ).fetchone()
-                    if row is None:
+                    ).rowcount
+                    if row == 0:
                         clear_job_progress(j_id)
                         return pb2.JobCallbackResponse(status="ok")
-                    tenant_id = str(row[0] or "default")
             except Exception as e:
                 logger.error(f"Failed to update progress for job {j_id} in DB: {e}")
 
-        if not tenant_id:
-            tenant_id = _resolve_job_tenant(j_id)
-
-        set_job_progress(j_id, pct=pct, eta=eta, stage=request.current_stage, tenant_id=tenant_id)
+        set_job_progress(j_id, pct=pct, eta=eta, stage=request.current_stage)
         publish_job_event(
-            tenant_id,
             {
                 "id": j_id,
                 "status": "running",
@@ -256,7 +218,6 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
 
     def CompleteJob(self, request, context):
         j_id = str(request.job_id)
-        tenant_id = _resolve_job_tenant(j_id)
         try:
             if request.results:
                 results = [
@@ -284,7 +245,6 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
 
         clear_job_progress(j_id)
         publish_job_event(
-            tenant_id,
             {
                 "id": j_id,
                 "status": "completed",
@@ -311,7 +271,6 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
 
     def FailJob(self, request, context):
         j_id = str(request.job_id)
-        tenant_id = _resolve_job_tenant(j_id)
         is_cancelled = bool(request.is_cancelled)
         err_msg = request.error_message or "Job execution failed"
         try:
@@ -327,7 +286,6 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
 
         clear_job_progress(j_id)
         publish_job_event(
-            tenant_id,
             {
                 "id": j_id,
                 "status": "cancelled" if is_cancelled else "failed",

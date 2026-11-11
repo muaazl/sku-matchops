@@ -77,7 +77,7 @@ def _download_sheet_with_retries(
     ) from last_exception
 
 
-def _fetch_sheet_as_csv(sheet_id: str, sheet_name: str, **kwargs) -> pd.DataFrame:
+def _fetch_sheet_as_csv(sheet_id: str, sheet_name: str, header: int | None = 0) -> pd.DataFrame:
     staged_path = _get_staged_path(sheet_name)
     if os.path.exists(staged_path) and os.path.getsize(staged_path) > 0:
         with open(staged_path, "rb") as f:
@@ -87,7 +87,7 @@ def _fetch_sheet_as_csv(sheet_id: str, sheet_name: str, **kwargs) -> pd.DataFram
         content_bytes = text_data.encode("utf-8")
 
     pl_kwargs = {"ignore_errors": True}
-    if "header" in kwargs and kwargs["header"] is None:
+    if header is None:
         pl_kwargs["has_header"] = False
 
     df = pl.read_csv(content_bytes, **pl_kwargs)

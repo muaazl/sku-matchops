@@ -23,16 +23,13 @@ def trigger_upload(request: UploadRequest, principal: Principal = Depends(get_pr
         dispatch_fn = (
             (lambda _job_id: None)
             if request.host_managed
-            else lambda job_id: dispatch_upload_job(
-                job_id=job_id, request=request, task="upload", tenant_id=principal.tenant_id
-            )
+            else lambda job_id: dispatch_upload_job(job_id=job_id, request=request, task="upload")
         )
         return register_and_dispatch_job(
             job_type="upload",
             domain=request.domain or "market",
             total_items=len(request.skus),
             input_skus_json=json.dumps(request.skus),
-            tenant_id=principal.tenant_id,
             sheet_name=request.sheet_name,
             target_sheet=request.outlet_id_or_name,
             dispatch_fn=dispatch_fn,
@@ -53,9 +50,9 @@ def update_host_upload_job(
             conn.execute(
                 text(
                     "SELECT id, status, cancel_requested, domain, input_skus_json "
-                    "FROM jobs WHERE id = :id AND tenant_id = :tenant_id"
+                    "FROM jobs WHERE id = :id"
                 ),
-                {"id": job_id, "tenant_id": principal.tenant_id},
+                {"id": job_id},
             )
             .mappings()
             .fetchone()
@@ -81,9 +78,8 @@ def update_host_upload_job(
             return {"status": row["status"], "cancel_requested": cancel_requested}
 
         pct = float(body.progress_pct or 0.0)
-        set_job_progress(job_id, pct=pct, stage=body.stage, tenant_id=principal.tenant_id)
+        set_job_progress(job_id, pct=pct, stage=body.stage)
         publish_job_event(
-            principal.tenant_id,
             {
                 "id": job_id,
                 "status": "running",
@@ -119,7 +115,6 @@ def update_host_upload_job(
         )
         clear_job_progress(job_id)
         publish_job_event(
-            principal.tenant_id,
             {
                 "id": job_id,
                 "status": "completed",
@@ -145,7 +140,6 @@ def update_host_upload_job(
     )
     clear_job_progress(job_id)
     publish_job_event(
-        principal.tenant_id,
         {
             "id": job_id,
             "status": "cancelled" if is_cancelled else "failed",

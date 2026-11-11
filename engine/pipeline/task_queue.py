@@ -28,7 +28,6 @@ logger = logging.getLogger("matchops.task_queue")
 REALTIME = "matchops:queue:realtime"
 BULK = "matchops:queue:bulk"
 DLQ = "matchops:queue:dlq"
-DLQ_TENANTS = "matchops:queue:dlq_tenants"  # HASH tenant_id -> count
 INFLIGHT = "matchops:queue:inflight"  # ZSET task_id -> lease deadline (epoch seconds)
 TASKS = "matchops:queue:tasks"  # HASH task_id -> task JSON
 TASK_JOBS = "matchops:queue:task_jobs"  # HASH task_id -> job_id (lightweight index)
@@ -205,14 +204,11 @@ class TaskQueue:
             "failed_at": datetime.now(UTC).isoformat(),
             "payload": task["payload"],
         }
-        tenant_id = str(task["payload"].get("tenant_id") or "default")
         entry_raw = json.dumps(entry)
         pipe = self.r.pipeline()
         pipe.rpush(DLQ, entry_raw)
-        pipe.rpush(f"matchops:queue:dlq:{tenant_id}", entry_raw)
         pipe.hdel(TASKS, task["task_id"])
         pipe.hdel(TASK_JOBS, task["task_id"])
-        pipe.hincrby(DLQ_TENANTS, tenant_id, 1)
         pipe.execute()
         logger.error(
             f"[QUEUE] Job {task['job_id']} moved to DLQ after {task['attempts']} attempts: {error}"
@@ -233,88 +229,27 @@ class TaskQueue:
 
     # -- dead-letter queue ----------------------------------------------------------------------
 
-    def dlq_items(self, limit: int = 100, tenant_id: str | None = None) -> list[dict]:
-        if tenant_id:
-            t_dlq = f"matchops:queue:dlq:{tenant_id}"
-            raws = self.r.lrange(t_dlq, 0, limit - 1)
-            if raws:
-                return [json.loads(raw) for raw in raws]
-            # Fallback for un-partitioned legacy DLQ entries
-            items = []
-            for raw in self.r.lrange(DLQ, 0, -1):
-                entry = json.loads(raw)
-                if str(entry.get("payload", {}).get("tenant_id") or "default") == tenant_id:
-                    items.append(entry)
-                    if len(items) >= limit:
-                        break
-            return items
+    def dlq_items(self, limit: int = 100) -> list[dict]:
         return [json.loads(raw) for raw in self.r.lrange(DLQ, 0, limit - 1)]
 
-    def dlq_count(self, tenant_id: str = "default") -> int:
-        """O(1) per-tenant dead-letter count (backfills once if pre-existing DLQ entries exist)."""
-        pipe = self.r.pipeline()
-        pipe.llen(DLQ)
-        pipe.hlen(DLQ_TENANTS)
-        pipe.hget(DLQ_TENANTS, tenant_id)
-        total_dlq, tracked_tenants, val = pipe.execute()
-        if total_dlq == 0:
-            if tracked_tenants:
-                self.r.delete(DLQ_TENANTS)
-            return 0
-        if tracked_tenants > 0:
-            return max(0, int(val or 0))
-        counts: dict[str, int] = {}
-        for raw in self.r.lrange(DLQ, 0, -1):
-            t = str(json.loads(raw).get("payload", {}).get("tenant_id") or "default")
-            counts[t] = counts.get(t, 0) + 1
-        if counts:
-            self.r.hset(DLQ_TENANTS, mapping=counts)
-        return counts.get(tenant_id, 0)
+    def dlq_count(self) -> int:
+        return int(self.r.llen(DLQ) or 0)
 
-    def replay(self, task_id: str, tenant_id: str | None = None) -> str | None:
+    def replay(self, task_id: str) -> str | None:
         """Moves a DLQ entry back onto its queue with a fresh attempt budget. Returns the new
         task id, or None if no such entry."""
-        target_keys = [f"matchops:queue:dlq:{tenant_id}"] if tenant_id else []
-        if DLQ not in target_keys:
-            target_keys.append(DLQ)
-
-        for q_key in target_keys:
-            for raw in self.r.lrange(q_key, 0, -1):
-                entry = json.loads(raw)
-                if entry["task_id"] == task_id:
-                    entry_tenant = str(entry.get("payload", {}).get("tenant_id") or "default")
-                    if tenant_id and entry_tenant != tenant_id:
-                        continue
-                    if self.r.lrem(q_key, 1, raw):
-                        if q_key != DLQ:
-                            self.r.lrem(DLQ, 1, raw)
-                        else:
-                            self.r.lrem(f"matchops:queue:dlq:{entry_tenant}", 1, raw)
-                        if self.r.hincrby(DLQ_TENANTS, entry_tenant, -1) <= 0:
-                            self.r.hdel(DLQ_TENANTS, entry_tenant)
-                        return self.enqueue(entry["payload"], queue=entry["queue"])
+        for raw in self.r.lrange(DLQ, 0, -1):
+            entry = json.loads(raw)
+            if entry["task_id"] == task_id:
+                if self.r.lrem(DLQ, 1, raw):
+                    return self.enqueue(entry["payload"], queue=entry["queue"])
         return None
 
-    def drop_dlq(self, task_id: str, tenant_id: str | None = None) -> bool:
-        target_keys = [f"matchops:queue:dlq:{tenant_id}"] if tenant_id else []
-        if DLQ not in target_keys:
-            target_keys.append(DLQ)
-
-        for q_key in target_keys:
-            for raw in self.r.lrange(q_key, 0, -1):
-                entry = json.loads(raw)
-                if entry["task_id"] == task_id:
-                    entry_tenant = str(entry.get("payload", {}).get("tenant_id") or "default")
-                    if tenant_id and entry_tenant != tenant_id:
-                        continue
-                    if self.r.lrem(q_key, 1, raw):
-                        if q_key != DLQ:
-                            self.r.lrem(DLQ, 1, raw)
-                        else:
-                            self.r.lrem(f"matchops:queue:dlq:{entry_tenant}", 1, raw)
-                        if self.r.hincrby(DLQ_TENANTS, entry_tenant, -1) <= 0:
-                            self.r.hdel(DLQ_TENANTS, entry_tenant)
-                        return True
+    def drop_dlq(self, task_id: str) -> bool:
+        for raw in self.r.lrange(DLQ, 0, -1):
+            entry = json.loads(raw)
+            if entry["task_id"] == task_id:
+                return bool(self.r.lrem(DLQ, 1, raw))
         return False
 
     # -- bookkeeping ----------------------------------------------------------------------------

@@ -12,7 +12,6 @@ from typing import Any
 import grpc
 
 from backend.app.core import config as backend_config
-from backend.app.core.config import DEFAULT_TENANT
 from backend.app.core.grpc_utils import (
     GRPC_CHANNEL_OPTIONS,
     dict_to_sku_proto,
@@ -194,9 +193,7 @@ def _try_enqueue_redis(job_id: str, payload: dict[str, Any], label: str) -> dict
     return None
 
 
-def dispatch_batch_job(
-    job_id: str, request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT
-) -> dict[str, Any]:
+def dispatch_batch_job(job_id: str, request: BaseRequest, task: str) -> dict[str, Any]:
     """Dispatches a batch job via Redis queue, falling back to direct gRPC DispatchBatchJob."""
     skus_payload = [
         {
@@ -217,7 +214,6 @@ def dispatch_batch_job(
         "callback_url": request.callback_url,
         "sheet_name": request.sheet_name,
         "spreadsheet_id": request.spreadsheet_id,
-        "tenant_id": tenant_id,
         "trace_id": get_trace_id(),
     }
     queued = _try_enqueue_redis(job_id, payload, "job")
@@ -235,7 +231,6 @@ def dispatch_batch_job(
             sheet_name=request.sheet_name or "",
             spreadsheet_id=request.spreadsheet_id or "",
             backend_grpc_url=BACKEND_GRPC_URL,
-            tenant_id=tenant_id,
         )
         resp = stub.DispatchBatchJob(req, metadata=grpc_metadata(), timeout=30.0)
         return {"status": resp.status, "job_id": resp.job_id}
@@ -247,9 +242,7 @@ def dispatch_batch_job(
         raise RuntimeError(error_msg)
 
 
-def dispatch_upload_job(
-    job_id: str, request: Any, task: str, tenant_id: str = DEFAULT_TENANT
-) -> dict[str, Any]:
+def dispatch_upload_job(job_id: str, request: Any, task: str) -> dict[str, Any]:
     """Dispatches an upload job via Redis queue, falling back to direct gRPC DispatchUploadJob."""
     allowed_columns = [
         "Name",
@@ -283,7 +276,6 @@ def dispatch_upload_job(
         "sheet_name": request.outlet_id_or_name,
         "callback_url": None,
         "spreadsheet_id": None,
-        "tenant_id": tenant_id,
         "trace_id": get_trace_id(),
     }
     queued = _try_enqueue_redis(job_id, payload, "upload job")
@@ -297,7 +289,6 @@ def dispatch_upload_job(
             task=task,
             domain=request.domain or "market",
             sheet_name=request.outlet_id_or_name or "",
-            tenant_id=tenant_id,
             backend_grpc_url=BACKEND_GRPC_URL,
             skus=[
                 pb2.UploadSkuItem(fields={k: "" if v is None else str(v) for k, v in s.items()})
@@ -317,7 +308,6 @@ def dispatch_upload_job(
 def match_skus(
     skus: list[dict[str, Any]],
     domain: str = "market",
-    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
     """Runs synchronous SKU matching via gRPC with typed Protobuf messages."""
     try:
@@ -326,7 +316,6 @@ def match_skus(
             skus=[dict_to_sku_proto(s) for s in skus],
             domain=domain,
             rules_json="",
-            tenant_id=tenant_id,
         )
         resp = stub.Match(req, metadata=grpc_metadata(), timeout=60.0)
         results = [
@@ -358,7 +347,6 @@ def match_skus(
 def classify_skus(
     skus: list[dict[str, Any]],
     domain: str = "market",
-    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
     """Runs synchronous SKU classification via gRPC with typed Protobuf messages."""
     try:
@@ -367,7 +355,6 @@ def classify_skus(
             skus=[dict_to_sku_proto(s) for s in skus],
             domain=domain,
             rules_json="",
-            tenant_id=tenant_id,
         )
         resp = stub.Classify(req, metadata=grpc_metadata(), timeout=60.0)
         results = [
@@ -410,7 +397,6 @@ def run_single(
     price: float = 0.0,
     description: str = "",
     category: str = "",
-    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
     """Runs synchronous single-SKU inference on the ML Engine via gRPC."""
     try:
@@ -427,7 +413,6 @@ def run_single(
                 )
             ],
             rules_json="",
-            tenant_id=tenant_id,
         )
         resp = stub.RunSingle(req, metadata=grpc_metadata(), timeout=60.0)
         return {
@@ -545,7 +530,6 @@ def run_sku_audit(
     price: float = 0.0,
     description: str = "",
     category: str = "",
-    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
     """Runs single-SKU diagnostic audit on the ML Engine via gRPC."""
     try:
@@ -557,7 +541,6 @@ def run_sku_audit(
             price=float(price or 0.0),
             description=description or "",
             category=category or "",
-            tenant_id=tenant_id,
         )
         resp = stub.RunAudit(req, metadata=grpc_metadata(), timeout=60.0)
         return json.loads(resp.audit_json)
@@ -577,7 +560,6 @@ def rerun_rules_via_engine(
     match_source: str = "Classifier",
     matched_sku: str = "",
     reasoning: str = "",
-    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
     """Evaluates business rules for a single SKU prediction on the ML Engine via gRPC."""
     stub = get_stub()
@@ -593,7 +575,6 @@ def rerun_rules_via_engine(
         match_source=match_source or "Classifier",
         matched_sku=matched_sku or "",
         reasoning=reasoning or "",
-        tenant_id=tenant_id or DEFAULT_TENANT,
     )
     try:
         resp = stub.RerunRules(req, metadata=grpc_metadata(), timeout=10.0)
@@ -619,7 +600,6 @@ def rerun_rules_via_engine(
                 match_source=match_source,
                 matched_sku=matched_sku,
                 reasoning=reasoning,
-                tenant_id=tenant_id,
             )
         except Exception:
             unwrap_rpc_error(e, ENGINE_GRPC_URL)
@@ -629,14 +609,12 @@ def rerun_rules_via_engine(
 def test_rule_via_engine(
     rule_dict: dict[str, Any],
     sample_record: dict[str, Any],
-    tenant_id: str = DEFAULT_TENANT,
 ) -> dict[str, Any]:
     """Tests a rule against a sample record on the ML Engine via gRPC."""
     stub = get_stub()
     req = pb2.TestRuleRequest(
         rule_json=json.dumps(rule_dict, default=str),
         sample_record_json=json.dumps(sample_record, default=str),
-        tenant_id=tenant_id or DEFAULT_TENANT,
     )
     try:
         resp = stub.TestRule(req, metadata=grpc_metadata(), timeout=10.0)

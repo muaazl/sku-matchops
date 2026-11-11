@@ -79,9 +79,8 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
     def Match(self, request, context):
         t0 = time.time()
         skus = [sku_proto_to_dict(s) for s in request.skus]
-        tenant = request.tenant_id or "default"
         try:
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 res = process_request(skus=skus, task="matcher", domain=request.domain)
             items = [
                 pb2.MatchResultItem(
@@ -111,9 +110,8 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
     def Classify(self, request, context):
         t0 = time.time()
         skus = [sku_proto_to_dict(s) for s in request.skus]
-        tenant = request.tenant_id or "default"
         try:
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 res = process_request(skus=skus, task="classifier", domain=request.domain)
             items = [
                 pb2.ClassifyResultItem(
@@ -150,9 +148,8 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
     def RunSingle(self, request, context):
         t0 = time.time()
         skus = [sku_proto_to_dict(s) for s in request.skus]
-        tenant = request.tenant_id or "default"
         try:
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 res = process_request(skus=skus, task=request.task, domain=request.domain)
             items = [result_to_pipeline_proto(item) for item in res.get("results", [])]
             return pb2.SingleRunResponse(
@@ -190,9 +187,8 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             abort_rpc_error(context, logger, "SuggestTags", e)
 
     def RunAudit(self, request, context):
-        tenant = request.tenant_id or "default"
         try:
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 res = run_sku_audit(
                     sku_name=request.sku_name,
                     domain=request.domain,
@@ -218,7 +214,6 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             "spreadsheet_id": request.spreadsheet_id or None,
             "backend_grpc_url": config.BACKEND_GRPC_URL,
             "created_by": request.created_by,
-            "tenant_id": request.tenant_id or "default",
             "trace_id": TRACE_ID.get(),
         }
         try:
@@ -246,7 +241,6 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             "spreadsheet_id": None,
             "backend_grpc_url": config.BACKEND_GRPC_URL,
             "created_by": request.created_by,
-            "tenant_id": request.tenant_id or "default",
             "trace_id": TRACE_ID.get(),
         }
         try:
@@ -472,7 +466,6 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             abort_rpc_error(context, logger, "SearchVectorCollection", e)
 
     def RerunRules(self, request, context):
-        tenant = request.tenant_id or "default"
         try:
             gk_list = [x.strip() for x in request.gk.split(",") if x.strip()]
             record = {
@@ -489,7 +482,7 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 "reasoning": request.reasoning,
                 "rules_applied": [],
             }
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 aug_record = run_rules_engine(record)
 
             rules_applied = aug_record.get("rules_applied", [])

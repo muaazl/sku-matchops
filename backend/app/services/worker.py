@@ -10,7 +10,6 @@ from collections.abc import Callable
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.core.config import DEFAULT_TENANT
 from backend.app.db.session import get_engine, get_next_job_id
 from backend.app.grpc_server import clear_job_progress, publish_job_event, set_job_progress
 from backend.app.schemas.models import BaseRequest
@@ -25,7 +24,6 @@ def register_and_dispatch_job(
     domain: str,
     total_items: int,
     input_skus_json: str,
-    tenant_id: str,
     sheet_name: str | None,
     target_sheet: str | None,
     dispatch_fn: Callable[[str], object],
@@ -42,10 +40,10 @@ def register_and_dispatch_job(
                 INSERT INTO jobs (
                     id, batch_id, type, status, current_stage,
                     total_items, completed_items, created_by,
-                    started_at, domain, sheet_name, target_sheet, input_skus_json, tenant_id
+                    started_at, domain, sheet_name, target_sheet, input_skus_json
                 ) VALUES (
                     :id, :id, :type, 'queued', 'queued', :total_items, 0, 'system',
-                    now(), :domain, :sheet_name, :target_sheet, :input_skus_json, :tenant_id
+                    now(), :domain, :sheet_name, :target_sheet, :input_skus_json
                 )
                 """),
                 {
@@ -56,7 +54,6 @@ def register_and_dispatch_job(
                     "sheet_name": sheet_name,
                     "target_sheet": target_sheet,
                     "input_skus_json": input_skus_json,
-                    "tenant_id": tenant_id,
                 },
             )
             conn.commit()
@@ -83,9 +80,8 @@ def register_and_dispatch_job(
 
     assert job_id is not None
     initial_eta = max(3, int(total_items * 0.04))
-    set_job_progress(job_id, pct=0.0, eta=initial_eta, stage="queued", tenant_id=tenant_id)
+    set_job_progress(job_id, pct=0.0, eta=initial_eta, stage="queued")
     publish_job_event(
-        tenant_id,
         {
             "id": job_id,
             "status": "queued",
@@ -112,7 +108,6 @@ def register_and_dispatch_job(
         except Exception as db_err:
             logger.error(f"[JOB {job_id}] Failed to record failure state in database: {db_err}")
         publish_job_event(
-            tenant_id,
             {
                 "id": job_id,
                 "status": "failed",
@@ -126,7 +121,7 @@ def register_and_dispatch_job(
     return {"job_id": job_id, "status": "queued", "total_skus": total_items}
 
 
-def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT) -> dict:
+def enqueue_job(request: BaseRequest, task: str) -> dict:
     """Registers a matching/classification/pipeline job and dispatches it to the ML Engine."""
     if not request.skus:
         raise ValueError("'skus' list is empty.")
@@ -136,10 +131,7 @@ def enqueue_job(request: BaseRequest, task: str, tenant_id: str = DEFAULT_TENANT
         domain=request.domain or "market",
         total_items=len(request.skus),
         input_skus_json=json.dumps([sku.model_dump() for sku in request.skus]),
-        tenant_id=tenant_id,
         sheet_name=request.sheet_name,
         target_sheet=request.sheet_name or "N/A",
-        dispatch_fn=lambda job_id: dispatch_batch_job(
-            job_id=job_id, request=request, task=task, tenant_id=tenant_id
-        ),
+        dispatch_fn=lambda job_id: dispatch_batch_job(job_id=job_id, request=request, task=task),
     )

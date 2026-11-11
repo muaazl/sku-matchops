@@ -15,7 +15,6 @@ message MatchRequest {
   repeated SKUInput skus = 1;
   string domain = 2;
   string rules_json = 3;
-  string tenant_id = 4;
 }
 
 message MatchResultItem {
@@ -43,7 +42,6 @@ message ClassifyRequest {
   repeated SKUInput skus = 1;
   string domain = 2;
   string rules_json = 3;
-  string tenant_id = 4;
 }
 
 message ClassifyResultItem {
@@ -79,7 +77,6 @@ message SingleRunRequest {
   string domain = 2;
   repeated SKUInput skus = 3;
   string rules_json = 4;
-  string tenant_id = 5;
 }
 
 message PipelineResultItem {
@@ -143,7 +140,6 @@ message AuditRequest {
   double price = 4;
   string description = 5;
   string category = 6;
-  string tenant_id = 7;
 }
 
 message AuditResponse {
@@ -158,7 +154,6 @@ message BatchJobRequest {
   string callback_url = 5;
   string sheet_name = 6;
   string created_by = 7;
-  string tenant_id = 8;
   string rules_json = 9;
   string spreadsheet_id = 10;
   string backend_grpc_url = 11;
@@ -176,7 +171,6 @@ message UploadJobRequest {
   string callback_url = 5;
   string sheet_name = 6;
   string created_by = 7;
-  string tenant_id = 8;
   string skus_json = 9;
   string backend_grpc_url = 10;
   repeated UploadSkuItem skus = 11;
@@ -263,7 +257,6 @@ message RerunRulesRequest {
   string match_source = 9;
   string matched_sku = 10;
   string reasoning = 11;
-  string tenant_id = 12;
 }
 
 message RerunRulesResponse {
@@ -276,7 +269,6 @@ message RerunRulesResponse {
 message TestRuleRequest {
   string rule_json = 1;
   string sample_record_json = 2;
-  string tenant_id = 3;
 }
 
 message TestRuleResponse {
