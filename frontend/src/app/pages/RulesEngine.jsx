@@ -281,9 +281,6 @@ export default function RulesEngine() {
         subtitle="Domain-scoped rules. Edit conditions/actions and test against a sample."
         actions={
           <>
-            {!canEditRules && role && (
-              <Chip size="small" color="warning" variant="outlined" label={`Read-only · ${role.replace('_', ' ')}`} />
-            )}
             <Tooltip title={lockedHint}>
               <span>
                 <Button

@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.app.core import config as backend_config
-from backend.app.services.rules_service import sync_rules_everywhere
 from engine.core import observability
 from engine.rules_engine import loader
 

@@ -3,7 +3,6 @@ PostgreSQL schema metadata and Table definitions for SKU MatchOps API Gateway.
 """
 
 from sqlalchemy import (
-    CheckConstraint,
     Column,
     DateTime,
     Float,

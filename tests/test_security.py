@@ -141,8 +141,10 @@ class TestSecurityHardening(unittest.TestCase):
     def test_api_key_empty_rejected(self):
         """SEC-01: Empty or unset config.API_KEY must reject incoming API key even if empty."""
         from unittest.mock import MagicMock, patch
+
         from fastapi import HTTPException
         from starlette.requests import Request
+
         from backend.app.core import config
         from backend.app.core.security import get_principal
 
