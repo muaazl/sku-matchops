@@ -53,7 +53,10 @@ def sync_host_directory(host_dir: str, target_dir: str, label: str):
 
     if synced > 0:
         elapsed = time.time() - start
-        print(f"[SYNC] Synced {synced} {label} files from host to fast volume in {elapsed:.2f}s", flush=True)
+        print(
+            f"[SYNC] Synced {synced} {label} files from host to fast volume in {elapsed:.2f}s",
+            flush=True,
+        )
 
 
 def main():
@@ -77,8 +80,8 @@ def main():
         print(f"Could not parse or connect to QDRANT_URL={qdrant_url}: {e}", flush=True)
 
     # Sync from host bind-mounts to fast Docker volumes if present
-    sync_host_directory("/host_models", "/app/models", "model")
-    sync_host_directory("/host_cache", "/app/data/cache", "cache")
+    sync_host_directory("/host_models", "/app/engine/models", "model")
+    sync_host_directory("/host_cache", "/app/engine/data/cache", "cache")
 
     # Check and prepare ONNX & INT8 models (Idempotent)
     sys.path.insert(0, "/app")

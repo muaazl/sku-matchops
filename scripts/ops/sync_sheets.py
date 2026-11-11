@@ -18,7 +18,10 @@ import argparse
 import csv
 import io
 import os
+import queue
+import re
 import sys
+import threading
 import time
 import urllib.parse
 from typing import Any
@@ -27,6 +30,10 @@ import requests
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 load_dotenv()
 
@@ -52,6 +59,27 @@ DEFAULT_BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 # CLI task name -> Gateway route (same mapping as the Apps Script)
 TASK_ENDPOINTS = {"pipeline": "pipeline", "matcher": "match", "classifier": "classify"}
 DEFAULT_API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
+
+ALLOWED_UPLOAD_COLUMNS = (
+    "Name",
+    "RefID",
+    "Description",
+    "Price",
+    "Category",
+    "Individually Sellable",
+    "Brands",
+    "Categories",
+    "Generic keywords",
+    "Promotions",
+    "Special Properties and Ingredients",
+    "Uncategrized",
+    "basictype",
+    "dietarypreference",
+    "foodstate",
+    "mealtime",
+    "other",
+    "region",
+)
 
 
 def fetch_sheet_csv_gviz(sheet_id: str, sheet_name: str, timeout: int = 15) -> str:
@@ -149,6 +177,51 @@ def parse_csv_to_skus(csv_text: str) -> list[dict[str, Any]]:
     return skus
 
 
+def normalize_upload_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Filters sheet rows to the 18 PickMe bulk-upload columns and cleans comma-spaces."""
+    cleaned: list[dict[str, str]] = []
+    for row in rows:
+        name_val = str(row.get("Name", "") or "").strip()
+        if not name_val:
+            continue
+        item = {
+            col: ("" if row.get(col) is None else str(row.get(col)))
+            for col in ALLOWED_UPLOAD_COLUMNS
+        }
+        item["Generic keywords"] = re.sub(r",\s+", ",", item["Generic keywords"])
+        cleaned.append(item)
+    return cleaned
+
+
+def parse_csv_to_upload_skus(csv_text: str) -> list[dict[str, str]]:
+    """Parses raw Uploading Sheet CSV into 18-column PickMe bulk-upload dicts."""
+    reader = csv.DictReader(io.StringIO(csv_text))
+    fieldnames = [f.strip() for f in (reader.fieldnames or [])]
+    if "Name" not in fieldnames or "RefID" not in fieldnames:
+        raise ValueError(
+            f"Uploading sheet missing required 'Name'/'RefID' headers. Found: {fieldnames}"
+        )
+    return normalize_upload_rows(list(reader))
+
+
+def fetch_upload_skus(sheet_id: str, sheet_name: str, apps_script_url: str) -> list[dict[str, str]]:
+    """Fetches full upload rows via gviz CSV export, falling back to Apps Script doGet."""
+    try:
+        csv_text = fetch_sheet_csv_gviz(sheet_id, sheet_name)
+        return parse_csv_to_upload_skus(csv_text)
+    except Exception as gviz_err:
+        print(
+            f"      [INFO] Direct CSV export unavailable ({gviz_err}). Fetching via Apps Script...",
+            flush=True,
+        )
+        raw_rows = fetch_sheet_data_apps_script(apps_script_url, sheet_id, sheet_name)
+        if raw_rows and ("Name" not in raw_rows[0] or "RefID" not in raw_rows[0]):
+            raise ValueError(
+                f"Uploading sheet missing required 'Name'/'RefID' headers. Found: {list(raw_rows[0].keys())}"
+            )
+        return normalize_upload_rows(raw_rows)
+
+
 def list_available_tabs(apps_script_url: str, sheet_id: str) -> list[str]:
     """Queries Apps Script Web App for available non-internal tabs."""
     try:
@@ -175,14 +248,18 @@ def fetch_queue_gviz(catalog_sheet_id: str) -> list[dict[str, Any]]:
         for r_idx, row in enumerate(reader, start=2):
             status = str(row.get("Status", "")).strip().upper()
             if status == "PENDING":
+                task_val = str(row.get("Task", "pipeline") or "pipeline").strip()
+                raw_type = str(row.get("Type", "") or "").strip().lower()
+                type_val = raw_type or ("uploading" if task_val.lower() == "upload" else "tagging")
                 pending.append(
                     {
                         "row_index": r_idx,
                         "job_id": row.get("Job ID", ""),
                         "spreadsheet_id": row.get("Spreadsheet ID", ""),
                         "sheet_name": row.get("Sheet Name", ""),
-                        "domain": row.get("Domain", "food"),
-                        "task": row.get("Task", "pipeline"),
+                        "type": type_val,
+                        "domain": row.get("Domain", "food") or "food",
+                        "task": task_val,
                         "status": "PENDING",
                         "created_at": row.get("Created At", ""),
                     }
@@ -324,6 +401,181 @@ def run_single_job(
         return False
 
 
+def run_upload_job(
+    sheet_name: str,
+    domain: str = "food",
+    sheet_id: str = DEFAULT_SHEET_ID,
+    catalog_sheet_id: str = DEFAULT_SHEET_ID,
+    apps_script_url: str = DEFAULT_APPS_SCRIPT_URL,
+    backend_url: str = DEFAULT_BACKEND_URL,
+    api_key: str = DEFAULT_API_KEY,
+    job_id: str | None = None,
+    has_more_jobs: bool = False,
+) -> bool:
+    """Pulls full upload rows from Google Sheets and runs Playwright Chrome upload on the host."""
+    outlet_id = (sheet_name or "").split("_", 1)[0].strip()
+    print(f"\n{'=' * 65}", flush=True)
+    print(f"  SKU MatchOps — Uploading Tab: '{sheet_name}' (Outlet: {outlet_id})", flush=True)
+    print(f"{'=' * 65}", flush=True)
+
+    if not outlet_id.isdigit():
+        print(
+            f"[ERROR] Cannot extract numeric Outlet ID from tab '{sheet_name}'. Expected '<id>_<name>'.",
+            flush=True,
+        )
+        if job_id:
+            update_queue_status(
+                apps_script_url, catalog_sheet_id, job_id, "FAILED (Invalid Outlet ID)"
+            )
+        return False
+
+    if job_id:
+        update_queue_status(apps_script_url, catalog_sheet_id, job_id, "UPLOADING")
+
+    print(f"[1/3] Reading upload rows from tab '{sheet_name}'...", flush=True)
+    try:
+        skus = fetch_upload_skus(sheet_id, sheet_name, apps_script_url)
+    except Exception as read_err:
+        print(f"[ERROR] Failed to read upload tab '{sheet_name}': {read_err}", flush=True)
+        if job_id:
+            update_queue_status(apps_script_url, catalog_sheet_id, job_id, "FAILED (Read Error)")
+        return False
+
+    if not skus:
+        print(f"[ERROR] No SKUs found to upload in tab '{sheet_name}'.", flush=True)
+        if job_id:
+            update_queue_status(apps_script_url, catalog_sheet_id, job_id, "FAILED (No SKUs)")
+        return False
+
+    print(f"      Loaded {len(skus)} SKUs for Outlet {outlet_id}.", flush=True)
+
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+    base_api = backend_url.rstrip("/")
+    backend_job_id = ""
+    if check_backend_health(backend_url):
+        try:
+            reg_resp = _session.post(
+                f"{base_api}/upload",
+                json={
+                    "outlet_id_or_name": outlet_id,
+                    "sheet_name": sheet_name,
+                    "skus": skus,
+                    "domain": domain.lower(),
+                    "host_managed": True,
+                },
+                headers=headers,
+                timeout=15,
+            )
+            if reg_resp.ok:
+                backend_job_id = str(reg_resp.json().get("job_id", ""))
+                print(
+                    f"[2/3] Registered upload job in MatchOps Backend (Job ID: {backend_job_id}).",
+                    flush=True,
+                )
+        except Exception as reg_err:
+            print(f"      [WARN] Could not register upload job in Backend: {reg_err}", flush=True)
+
+    cancelled = False
+    last_cancel_poll = 0.0
+    last_pct = 0.0
+
+    def _patch_backend(payload: dict[str, Any]) -> dict[str, Any]:
+        if not backend_job_id:
+            return {}
+        try:
+            r = _session.patch(
+                f"{base_api}/upload/{backend_job_id}",
+                json=payload,
+                headers=headers,
+                timeout=5,
+            )
+            if r.ok:
+                return r.json()
+        except Exception:
+            pass
+        return {}
+
+    def progress_cb(stage: str, pct: float) -> None:
+        nonlocal cancelled, last_pct, last_cancel_poll
+        last_pct = float(pct)
+        last_cancel_poll = time.monotonic()
+        res = _patch_backend({"status": "running", "stage": stage, "progress_pct": last_pct})
+        if res.get("cancel_requested"):
+            cancelled = True
+
+    def is_cancelled_cb() -> bool:
+        nonlocal cancelled, last_cancel_poll
+        if cancelled or not backend_job_id:
+            return cancelled
+        now = time.monotonic()
+        if now - last_cancel_poll >= 2.0:
+            last_cancel_poll = now
+            res = _patch_backend(
+                {"status": "running", "stage": "uploading", "progress_pct": last_pct}
+            )
+            if res.get("cancel_requested"):
+                cancelled = True
+        return cancelled
+
+    t0 = time.time()
+    print("[3/3] Running Chrome bulk-upload automation on port 9222...", flush=True)
+    try:
+        from engine.pipeline.uploader import process_upload
+
+        process_upload(
+            skus=skus,
+            outlet_id=outlet_id,
+            job_id=backend_job_id or job_id or outlet_id,
+            progress_callback=progress_cb,
+            is_cancelled=is_cancelled_cb,
+            has_more_jobs=has_more_jobs,
+        )
+    except Exception as up_err:
+        duration_min = round((time.time() - t0) / 60, 4)
+        err_str = str(up_err)
+        print(f"[ERROR] Upload failed for '{sheet_name}': {err_str}", flush=True)
+        if "9222" in err_str:
+            print(
+                "        -> Please start Chrome via start_chrome.bat before running uploads.",
+                flush=True,
+            )
+        _patch_backend(
+            {
+                "status": "failed",
+                "duration_minutes": duration_min,
+                "error_message": err_str[:500],
+            }
+        )
+        if job_id:
+            short_reason = "Chrome 9222 Offline" if "9222" in err_str else "Upload Error"
+            update_queue_status(
+                apps_script_url, catalog_sheet_id, job_id, f"FAILED ({short_reason})"
+            )
+        return False
+
+    duration_min = round((time.time() - t0) / 60, 4)
+    if cancelled:
+        print(f"[INFO] Upload cancelled for '{sheet_name}'.\n", flush=True)
+        _patch_backend(
+            {
+                "status": "cancelled",
+                "duration_minutes": duration_min,
+                "error_message": "Cancelled by user",
+            }
+        )
+        if job_id:
+            update_queue_status(apps_script_url, catalog_sheet_id, job_id, "CANCELLED")
+        return False
+
+    _patch_backend({"status": "completed", "duration_minutes": duration_min})
+    if job_id:
+        update_queue_status(apps_script_url, catalog_sheet_id, job_id, "DONE")
+    print(
+        f"      Upload completed successfully for '{sheet_name}' ({len(skus)} SKUs)!\n", flush=True
+    )
+    return True
+
+
 def watch_queue(
     sheet_id: str = DEFAULT_SHEET_ID,
     apps_script_url: str = DEFAULT_APPS_SCRIPT_URL,
@@ -331,7 +583,7 @@ def watch_queue(
     api_key: str = DEFAULT_API_KEY,
     interval: float = 5.0,
 ):
-    """Continuously polls Google Sheets '_queue' tab and immediately pushes pending jobs to backend."""
+    """Continuously polls Google Sheets '_queue' tab for both tagging and uploading jobs."""
     print("=" * 65, flush=True)
     print("  SKU MatchOps — Google Sheets Queue Watcher (Zero-Tunnel)", flush=True)
     print("=" * 65, flush=True)
@@ -341,11 +593,34 @@ def watch_queue(
     print(f"  Poll Interval   : {interval}s", flush=True)
     print("=" * 65, flush=True)
     print(
-        "[WATCHER] Listening for jobs queued from Google Sheets... (Press Ctrl+C to stop)\n",
+        "[WATCHER] Listening for tagging & uploading jobs from Google Sheets... (Press Ctrl+C to stop)\n",
         flush=True,
     )
 
     processed_job_ids = set()
+    upload_q: queue.Queue[dict[str, Any]] = queue.Queue()
+
+    def _upload_worker() -> None:
+        while True:
+            u_job = upload_q.get()
+            try:
+                run_upload_job(
+                    sheet_name=u_job["sheet_name"],
+                    domain=u_job["domain"],
+                    sheet_id=u_job["target_spreadsheet_id"],
+                    catalog_sheet_id=sheet_id,
+                    apps_script_url=apps_script_url,
+                    backend_url=backend_url,
+                    api_key=api_key,
+                    job_id=u_job["job_id"],
+                    has_more_jobs=not upload_q.empty(),
+                )
+            except Exception as worker_err:
+                print(f"[UPLOAD WORKER] Unexpected error: {worker_err}", flush=True)
+            finally:
+                upload_q.task_done()
+
+    threading.Thread(target=_upload_worker, name="host-upload-worker", daemon=True).start()
 
     while True:
         try:
@@ -374,25 +649,40 @@ def watch_queue(
                 target_spreadsheet_id = job.get("spreadsheet_id") or sheet_id
                 sheet_name = job.get("sheet_name")
                 domain = job.get("domain", "food")
-                task = job.get("task", "pipeline")
+                task = str(job.get("task", "pipeline") or "pipeline")
+                job_type = str(job.get("type") or "").strip().lower() or (
+                    "uploading" if task.lower() == "upload" else "tagging"
+                )
 
                 print(
-                    f"[WATCHER] Found queued job '{jid}' on tab '{sheet_name}' (task: {task}, domain: {domain}). Dispatching...",
+                    f"[WATCHER] Found queued {job_type.upper()} job '{jid}' on tab '{sheet_name}' (task: {task}, domain: {domain}).",
                     flush=True,
                 )
                 processed_job_ids.add(jid)
 
-                # Immediately enqueue to backend without blocking the watcher
-                run_single_job(
-                    sheet_name=sheet_name,
-                    domain=domain,
-                    task=task,
-                    sheet_id=target_spreadsheet_id,
-                    apps_script_url=apps_script_url,
-                    backend_url=backend_url,
-                    api_key=api_key,
-                    job_id=jid,
-                )
+                if job_type == "uploading" or task.lower() == "upload":
+                    if jid:
+                        update_queue_status(apps_script_url, sheet_id, jid, "QUEUED")
+                    upload_q.put(
+                        {
+                            "job_id": jid,
+                            "target_spreadsheet_id": target_spreadsheet_id,
+                            "sheet_name": sheet_name,
+                            "domain": domain,
+                        }
+                    )
+                else:
+                    # Immediately enqueue tagging job to backend without blocking the watcher
+                    run_single_job(
+                        sheet_name=sheet_name,
+                        domain=domain,
+                        task=task,
+                        sheet_id=target_spreadsheet_id,
+                        apps_script_url=apps_script_url,
+                        backend_url=backend_url,
+                        api_key=api_key,
+                        job_id=jid,
+                    )
 
         except KeyboardInterrupt:
             print("\n[WATCHER] Watcher stopped by user.", flush=True)

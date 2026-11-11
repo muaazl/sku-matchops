@@ -33,6 +33,52 @@ def get_status(confidence: float, has_tags: bool, source: str = "") -> str:
     return "LOW"
 
 
+def compute_weighted_confidence(
+    bt_conf: float | None = None,
+    gk_conf: float | None = None,
+    region_conf: float | None = None,
+    has_bt: bool = True,
+    has_gk: bool = True,
+    has_region: bool = True,
+    w_bt: float = 0.5,
+    w_gk: float = 0.3,
+    w_reg: float = 0.2,
+) -> float:
+    """
+    Computes dynamically normalized weighted confidence across available tags.
+    Default weighting: 50% Basic Type, 30% Generic Keyword, 20% Region/Category.
+    """
+    weights = []
+    confs = []
+    if has_bt and bt_conf is not None:
+        try:
+            confs.append(float(bt_conf))
+            weights.append(w_bt)
+        except (ValueError, TypeError):
+            pass
+    if has_gk and gk_conf is not None:
+        try:
+            confs.append(float(gk_conf))
+            weights.append(w_gk)
+        except (ValueError, TypeError):
+            pass
+    if has_region and region_conf is not None:
+        try:
+            confs.append(float(region_conf))
+            weights.append(w_reg)
+        except (ValueError, TypeError):
+            pass
+
+    if not confs or sum(weights) == 0:
+        try:
+            return float(bt_conf or 0.0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    total_w = sum(weights)
+    return round(sum(c * (w / total_w) for c, w in zip(confs, weights)), 4)
+
+
 def _rrf_fusion(dense_results, sparse_results, k=RRF_K) -> list:
     """Reciprocal Rank Fusion"""
     scores = {}

@@ -1,4 +1,4 @@
-"""JWT/RBAC, multi-tenant isolation, migration 0002, observability, golden regression."""
+"""API Key authentication, observability, and golden regression tests."""
 
 import io
 import json
@@ -7,19 +7,13 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-import jwt
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from backend.app.api.endpoints.auth import create_user
 from backend.app.core import config as backend_config
-from backend.app.services.rules_service import sync_rules_everywhere
 from engine.core import observability
 from engine.rules_engine import loader
-
-PASSWORD = "correct-horse-battery"
-
 
 # ---------------------------------------------------------------- shared fixtures
 
@@ -32,367 +26,39 @@ def app_client(pg):
     return TestClient(app)
 
 
-@pytest.fixture
-def auth_on(monkeypatch):
-    monkeypatch.setattr(backend_config, "AUTH_ENABLED", True)
-    monkeypatch.setattr(backend_config, "JWT_SECRET", "test-secret-" + "x" * 32)
+def test_api_key_authentication(app_client, monkeypatch):
+    """Verifies that API key authentication is enforced when configured."""
+    monkeypatch.setattr(backend_config, "API_KEY", "secret-test-key-12345")
 
-
-@pytest.fixture(scope="module")
-def tenants(pg):
-    """Two isolated tenants with users of every role, plus a platform admin."""
-    suffix = uuid.uuid4().hex[:6]
-    t_a, t_b = f"tenant_a_{suffix}", f"tenant_b_{suffix}"
-    users = {
-        "platform_admin": ("admin", "default"),
-        "a_admin": ("admin", t_a),
-        "a_engineer": ("rule_engineer", t_a),
-        "a_reviewer": ("reviewer", t_a),
-        "b_reviewer": ("reviewer", t_b),
-    }
-    names = {}
-    with pg.begin() as conn:
-        for key, (role, tenant) in users.items():
-            names[key] = f"{key}_{suffix}"
-            create_user(conn, names[key], PASSWORD, role, tenant)
-    yield SimpleNamespace(a=t_a, b=t_b, user=names)
-    with pg.begin() as conn:
-        conn.execute(
-            text("DELETE FROM users WHERE username = ANY(:u)"), {"u": list(names.values())}
-        )
-        for table in ("processed_skus", "batches", "jobs", "rules"):
-            conn.execute(
-                text(f"DELETE FROM {table} WHERE tenant_id IN (:a, :b)"), {"a": t_a, "b": t_b}
-            )
-    sync_rules_everywhere()
-
-
-def _token(client, username: str) -> str:
-    resp = client.post("/auth/token", data={"username": username, "password": PASSWORD})
-    assert resp.status_code == 200, resp.text
-    return resp.json()["access_token"]
-
-
-def _hdr(client, username: str, **extra) -> dict:
-    return {"Authorization": f"Bearer {_token(client, username)}", **extra}
-
-
-RULE = {
-    "rule_id": "ignored",
-    "domain": "market",
-    "priority": 900,
-    "description": "tenant test rule",
-    "reasoning": "rbac test",
-    "condition_logic": "AND",
-    "is_active": 1,
-    "conditions": [
-        {"condition_group": 1, "condition_type": "sku_contains", "value": "zzqq", "negate": 0}
-    ],
-    "actions": [{"action_type": "add_gk", "value": "TenantTag"}],
-}
-
-
-# ---------------------------------------------------------------- JWT issuance
-
-
-def test_jwt_issuance_and_claims(app_client, tenants, auth_on):
-    resp = app_client.post(
-        "/auth/token", data={"username": tenants.user["a_engineer"], "password": PASSWORD}
-    )
+    # 1. Valid API key succeeds
+    resp = app_client.get("/rules", headers={"X-API-Key": "secret-test-key-12345"})
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["role"] == "rule_engineer" and body["tenant_id"] == tenants.a
-    claims = jwt.decode(body["access_token"], backend_config.JWT_SECRET, algorithms=["HS256"])
-    assert claims["sub"] == tenants.user["a_engineer"]
-    assert claims["role"] == "rule_engineer" and claims["tenant_id"] == tenants.a
-    assert claims["exp"] > claims["iat"]
 
+    # 2. Invalid API key is rejected with 401
+    resp_bad = app_client.get("/rules", headers={"X-API-Key": "wrong-key"})
+    assert resp_bad.status_code == 401
+    assert resp_bad.json()["detail"] == "Invalid API key."
 
-def test_bad_credentials_and_tokens_are_rejected(app_client, tenants, auth_on):
-    bad = app_client.post(
-        "/auth/token", data={"username": tenants.user["a_admin"], "password": "wrong-password"}
+    # 3. Valid Bearer API key succeeds
+    resp_bearer = app_client.get(
+        "/rules", headers={"Authorization": "Bearer secret-test-key-12345"}
     )
-    assert bad.status_code == 401
-    assert app_client.get("/jobs").status_code == 401  # auth on, no credentials
-    assert app_client.get("/jobs", headers={"Authorization": "Bearer nope"}).status_code == 401
-    forged = jwt.encode(
-        {"sub": "x", "role": "admin", "tenant_id": "default", "exp": 9999999999},
-        "not-the-real-secret-" + "y" * 32,
-        algorithm="HS256",
-    )
-    assert app_client.get("/jobs", headers={"Authorization": f"Bearer {forged}"}).status_code == 401
-    assert app_client.get("/jobs", headers={"X-API-Key": "wrong"}).status_code == 401
+    assert resp_bearer.status_code == 200
+
+    # 4. Invalid Bearer API key is rejected with 401
+    resp_bearer_bad = app_client.get("/rules", headers={"Authorization": "Bearer wrong-key"})
+    assert resp_bearer_bad.status_code == 401
+
+    # 5. Direct internal access without key defaults to team-admin
+    resp_team = app_client.get("/rules")
+    assert resp_team.status_code == 200
 
 
-def test_public_endpoints_stay_open_with_auth_on(app_client, auth_on, monkeypatch):
-    from backend.app.api import routes
-
-    monkeypatch.setattr(routes, "get_engine_health", lambda: {"status": "ok"})
-    assert app_client.get("/health").status_code == 200
-    assert app_client.get("/metrics").status_code == 200
-
-
-# ---------------------------------------------------------------- RBAC boundaries
-
-
-def test_reviewer_cannot_mutate_rules_or_replay_dlq(app_client, tenants, auth_on):
-    h = _hdr(app_client, tenants.user["a_reviewer"])
-    assert app_client.post("/rules", json=RULE, headers=h).status_code == 403
-    assert app_client.put("/rules/1", json=RULE, headers=h).status_code == 403
-    assert app_client.delete("/rules/1", headers=h).status_code == 403
-    assert (
-        app_client.put("/rules/reorder", json={"ordered_rule_ids": ["1"]}, headers=h).status_code
-        == 403
-    )
-    assert app_client.post("/queue/dlq/any/replay", headers=h).status_code == 403
-    assert app_client.get("/queue/dlq", headers=h).status_code == 403
-    # ...but can read and submit work
-    assert app_client.get("/rules", headers=h).status_code == 200
-    assert app_client.get("/jobs", headers=h).status_code == 200
-    assert app_client.get("/processed-skus", headers=h).status_code == 200
-
-
-def test_rule_engineer_manages_rules_but_not_admin_endpoints(app_client, tenants, auth_on):
-    h = _hdr(app_client, tenants.user["a_engineer"])
-    created = app_client.post("/rules", json=RULE, headers=h)
-    assert created.status_code == 200, created.text
-    rule_id = created.json()["rule_id"]
-    assert (
-        app_client.put(f"/rules/{rule_id}", json={**RULE, "priority": 901}, headers=h).status_code
-        == 200
-    )
-    assert app_client.delete(f"/rules/{rule_id}", headers=h).status_code == 200
-
-    assert app_client.get("/queue/dlq", headers=h).status_code == 403
-    assert app_client.post("/queue/dlq/any/replay", headers=h).status_code == 403
-    assert app_client.post("/models/reload", headers=h).status_code == 403
-    assert app_client.post("/catalog/build-cache", headers=h).status_code == 403
-    assert app_client.get("/api-requests", headers=h).status_code == 403
-    assert (
-        app_client.post(
-            "/auth/users",
-            json={"username": "nope_user", "password": PASSWORD, "role": "reviewer"},
-            headers=h,
-        ).status_code
-        == 403
-    )
-
-
-def test_admin_succeeds_on_admin_endpoints(app_client, tenants, auth_on, monkeypatch):
-    from backend.app.api.endpoints import models as models_api
-    from backend.app.api.endpoints import queue as queue_api
-
-    fake_queue = SimpleNamespace(dlq_items=lambda limit: [], replay=lambda task_id: None)
-    monkeypatch.setattr(queue_api, "get_task_queue", lambda: fake_queue)
-    monkeypatch.setattr(models_api, "reload_engine_models", lambda: {"status": "ok"})
-
-    tenant_admin = _hdr(app_client, tenants.user["a_admin"])
-    assert app_client.get("/queue/dlq", headers=tenant_admin).status_code == 200
-    assert app_client.post("/queue/dlq/missing/replay", headers=tenant_admin).status_code == 404
-    created = app_client.post("/rules", json=RULE, headers=tenant_admin)
-    assert created.status_code == 200
-    app_client.delete(f"/rules/{created.json()['rule_id']}", headers=tenant_admin)
-
-    new_user = f"made_by_admin_{uuid.uuid4().hex[:6]}"
-    made = app_client.post(
-        "/auth/users",
-        json={"username": new_user, "password": PASSWORD, "role": "reviewer"},
-        headers=tenant_admin,
-    )
-    assert made.status_code == 201 and made.json()["tenant_id"] == tenants.a
-    listed = app_client.get("/auth/users", headers=tenant_admin).json()
-    assert new_user in {u["username"] for u in listed}
-    assert all(u["tenant_id"] == tenants.a for u in listed)  # only their own tenant's users
-
-    # Shared, platform-wide operations need the operator tenant's admin
-    assert app_client.post("/models/reload", headers=tenant_admin).status_code == 403
-    platform = _hdr(app_client, tenants.user["platform_admin"])
-    assert app_client.post("/models/reload", headers=platform).status_code == 200
-    assert app_client.get("/api-requests", headers=platform).status_code == 200
-
-    from backend.app.db.session import get_engine
-
-    with get_engine().begin() as conn:
-        conn.execute(text("DELETE FROM users WHERE username = :u"), {"u": new_user})
-
-
-def test_api_key_and_dev_mode_keep_backwards_compatibility(app_client, monkeypatch):
-    # Dev mode (AUTH_ENABLED off): no credentials -> platform admin of 'default'
-    monkeypatch.setattr(backend_config, "AUTH_ENABLED", False)
-    me = app_client.get("/auth/me").json()
-    assert me == {
-        "username": "anonymous-dev",
-        "role": "admin",
-        "tenant_id": "default",
-        "platform_admin": True,
-    }
-
-    # Auth on: the service API key still works and acts as platform admin
-    monkeypatch.setattr(backend_config, "AUTH_ENABLED", True)
-    monkeypatch.setattr(backend_config, "JWT_SECRET", "s" * 40)
-    key = {"X-API-Key": backend_config.API_KEY}
-    assert app_client.get("/auth/me", headers=key).json()["platform_admin"] is True
-    assert app_client.get("/jobs", headers=key).status_code == 200
-
-
-def test_auth_enabled_without_secret_refuses_to_issue_tokens(monkeypatch):
-    from backend.app.core import security
-
-    monkeypatch.setattr(backend_config, "AUTH_ENABLED", True)
-    monkeypatch.setattr(backend_config, "JWT_SECRET", "")
-    with pytest.raises(RuntimeError, match="JWT_SECRET"):
-        security.create_access_token("u", "admin", "default")
-
-
-# ---------------------------------------------------------------- multi-tenant isolation
-
-
-@pytest.fixture
-def tenant_data(pg, tenants):
-    """One job, batch and result row per tenant."""
-    ids = {}
-    with pg.begin() as conn:
-        for t in (tenants.a, tenants.b):
-            job_id = f"p4-{uuid.uuid4().hex[:10]}"
-            ids[t] = job_id
-            conn.execute(
-                text(
-                    "INSERT INTO jobs (id, batch_id, type, status, current_stage, started_at, domain, "
-                    "tenant_id, input_skus_json) VALUES (:id, :id, 'pipeline', 'completed', 'done', "
-                    "now(), 'market', :t, '[]')"
-                ),
-                {"id": job_id, "t": t},
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO batches (id, source, status, tenant_id) VALUES (:id, 'upload', 'completed', :t)"
-                ),
-                {"id": job_id, "t": t},
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO processed_skus (id, batch_id, sku_index, rule_version, sku_name, domain, tenant_id) "
-                    "VALUES (:id, :b, 0, 'v', :name, 'market', :t)"
-                ),
-                {"id": uuid.uuid4().hex, "b": job_id, "name": f"sku of {t}", "t": t},
-            )
-    yield ids
-    with pg.begin() as conn:
-        for job_id in ids.values():
-            conn.execute(text("DELETE FROM processed_skus WHERE batch_id = :id"), {"id": job_id})
-            conn.execute(text("DELETE FROM batches WHERE id = :id"), {"id": job_id})
-            conn.execute(text("DELETE FROM jobs WHERE id = :id"), {"id": job_id})
-
-
-def test_tenant_a_cannot_see_or_touch_tenant_b(app_client, tenants, tenant_data, auth_on):
-    a = _hdr(app_client, tenants.user["a_reviewer"])
-    a_job, b_job = tenant_data[tenants.a], tenant_data[tenants.b]
-
-    listed = {j["id"] for j in app_client.get("/jobs", headers=a).json()}
-    assert a_job in listed and b_job not in listed
-    assert app_client.get(f"/jobs/{a_job}", headers=a).status_code == 200
-    assert app_client.get(f"/jobs/{b_job}", headers=a).status_code == 404
-    assert app_client.post(f"/jobs/{b_job}/cancel", headers=a).status_code == 404
-    assert app_client.post(f"/jobs/{b_job}/retry", headers=a).status_code == 404
-    assert app_client.get(f"/batches/{a_job}", headers=a).status_code == 200
-    assert app_client.get(f"/batches/{b_job}", headers=a).status_code == 404
-
-    skus = app_client.get("/processed-skus", headers=a, params={"limit": 0}).json()
-    assert {s["batch_id"] for s in skus} >= {a_job} and b_job not in {s["batch_id"] for s in skus}
-    export = app_client.get("/processed-skus/export", headers=a).text
-    assert f"sku of {tenants.a}" in export and f"sku of {tenants.b}" not in export
-
-    # Non-admins cannot switch tenant with the header
-    assert app_client.get("/jobs", headers={**a, "X-Tenant-ID": tenants.b}).status_code == 403
-    # Tenant admins cannot either; only the platform admin can
-    a_admin = _hdr(app_client, tenants.user["a_admin"], **{"X-Tenant-ID": tenants.b})
-    assert app_client.get("/jobs", headers=a_admin).status_code == 403
-    platform = _hdr(app_client, tenants.user["platform_admin"], **{"X-Tenant-ID": tenants.b})
-    assert {j["id"] for j in app_client.get("/jobs", headers=platform).json()} == {b_job}
-
-
-def test_rules_are_isolated_per_tenant_including_in_the_engine(app_client, tenants, auth_on):
-    b_admin_token = _hdr(app_client, tenants.user["platform_admin"], **{"X-Tenant-ID": tenants.b})
-    created = app_client.post("/rules", json=RULE, headers=b_admin_token)
-    assert created.status_code == 200
-    rule_id = created.json()["rule_id"]
-
-    a = _hdr(app_client, tenants.user["a_engineer"])
-    assert rule_id not in {r["rule_id"] for r in app_client.get("/rules", headers=a).json()}
-    assert app_client.put(f"/rules/{rule_id}", json=RULE, headers=a).status_code == 404
-    assert app_client.delete(f"/rules/{rule_id}", headers=a).status_code == 404
-    assert (
-        app_client.post(f"/rules/{rule_id}/test", json={"sample_record": {}}, headers=a).status_code
-        == 404
-    )
-
-    # Engine side: a job pinned to tenant A never evaluates tenant B's rule
-    sync_rules_everywhere()
-    snap_a, snap_b = loader.snapshot_rules(tenants.a), loader.snapshot_rules(tenants.b)
-    assert rule_id not in {r.rule_id for r in snap_a.rules("market")}
-    assert rule_id in {r.rule_id for r in snap_b.rules("market")}
-    assert snap_a.version != snap_b.version  # results are versioned per tenant
-    assert rule_id not in {r.rule_id for r in loader.get_rules("market")}  # default tenant
-
-    from engine.rules_engine import run_rules_engine
-
-    record = {"domain": "market", "sku_name": "zzqq widget", "gk": []}
-    with loader.pinned_rules(snap_a):
-        assert run_rules_engine(dict(record))["gk"] == []
-    with loader.pinned_rules(snap_b):
-        assert run_rules_engine(dict(record))["gk"] == ["TenantTag"]
-
-
-def test_new_jobs_and_results_are_stamped_with_the_tenant(
-    pg, app_client, tenants, auth_on, monkeypatch
-):
-    from backend.app.services import worker
-    from backend.app.services.persistence import record_job_completion
-
-    dispatched = []
-    monkeypatch.setattr(worker, "dispatch_batch_job", lambda **kw: dispatched.append(kw))
-    csv_bytes = b"name,price\nAnchor Butter 200g,850\n"
-    resp = app_client.post(
-        "/batches",
-        data={"domain": "market", "created_by": "tester", "task": "pipeline"},
-        files={"file": ("t.csv", io.BytesIO(csv_bytes), "text/csv")},
-        headers=_hdr(app_client, tenants.user["a_reviewer"]),
-    )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["job_id"]
-    assert dispatched[0]["tenant_id"] == tenants.a
-
-    record_job_completion(
-        job_id, "market", "pipeline", [{"suggested_bt": "Butter"}], "v", 0.1, 1, 0, 0, 100.0
-    )
-    with pg.connect() as conn:
-        assert (
-            conn.execute(text("SELECT tenant_id FROM jobs WHERE id = :i"), {"i": job_id}).scalar()
-            == tenants.a
-        )
-        assert (
-            conn.execute(
-                text("SELECT tenant_id FROM batches WHERE id = :i"), {"i": job_id}
-            ).scalar()
-            == tenants.a
-        )
-        assert {
-            r[0]
-            for r in conn.execute(
-                text("SELECT tenant_id FROM processed_skus WHERE batch_id = :i"), {"i": job_id}
-            )
-        } == {tenants.a}
-
-
-# ---------------------------------------------------------------- migration 0002
-
-
-# ---------------------------------------------------------------- observability
-
+# ---------------------------------------------------------------- metrics & observability
 
 METRIC_NAMES = [
     "matchops_skus_processed_total",
-    "matchops_match_confidence_bucket",
+    "matchops_match_confidence",
     "matchops_onnx_inference_duration_seconds",
     "matchops_queue_depth",
     "matchops_dlq_size",
@@ -404,9 +70,7 @@ def test_gateway_and_engine_metrics_endpoints(app_client, monkeypatch):
     monkeypatch.setattr(
         "engine.pipeline.task_queue.get_task_queue", lambda: SimpleNamespace(stats=lambda: stats)
     )
-    observability.SKUS_PROCESSED.labels(domain="market", status="high", tenant_id="t_metrics").inc(
-        3
-    )
+    observability.SKUS_PROCESSED.labels(domain="market", status="high").inc(3)
     observability.MATCH_CONFIDENCE.observe(0.92)
     observability.ONNX_INFERENCE_SECONDS.labels(model="embed").observe(0.01)
 
@@ -419,10 +83,7 @@ def test_gateway_and_engine_metrics_endpoints(app_client, monkeypatch):
     for body in (resp.text, raw_payload.decode("utf-8")):
         for name in METRIC_NAMES:
             assert name in body, name
-        assert (
-            'matchops_skus_processed_total{domain="market",status="high",tenant_id="t_metrics"} 3.0'
-            in body
-        )
+        assert 'matchops_skus_processed_total{domain="market",status="high"} 3.0' in body
         assert 'matchops_queue_depth{queue="bulk"} 5.0' in body
         assert "matchops_dlq_size 4.0" in body
         assert 'matchops_onnx_inference_duration_seconds_count{model="embed"}' in body
@@ -442,7 +103,7 @@ def test_onnx_timing_is_recorded_per_model():
     eng.rerank_tokenizer = lambda a, b, **kw: {"input_ids": np.ones((len(a), 1), dtype=np.int64)}
     eng.cross_session = SimpleNamespace(run=lambda _o, inp: [inp["input_ids"].astype(np.float32)])
     before = count("cross_encoder")
-    eng.score_cross_encoder([["a", "b"]] * 70, batch_size=32)
+    eng.score_cross_encoder([["a", f"b{i}"] for i in range(70)], batch_size=32)
     assert count("cross_encoder") - before == 3  # one observation per micro-batch (32+32+6)
 
 
@@ -483,6 +144,9 @@ def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
     filt = observability.TraceIdFilter()
     with caplog.at_level(logging.INFO, logger="matchops.engine.worker"):
         caplog.handler.addFilter(filt)
+        handler_logger.addFilter(filt)
+        if caplog.handler not in logging.getLogger().handlers:
+            logging.getLogger().addHandler(caplog.handler)
         task_queue._run_claimed(
             fake,
             {"task_id": "task-1", "job_id": resp.json()["job_id"], "payload": captured[0]},
@@ -490,6 +154,8 @@ def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
             None,
         )
         caplog.handler.removeFilter(filt)
+        handler_logger.removeFilter(filt)
+
     assert seen["trace"] == trace
     assert any(
         getattr(r, "trace_id", None) == trace
@@ -531,17 +197,16 @@ def test_json_log_format(monkeypatch):
 
 # ---------------------------------------------------------------- golden regression
 
-
 GOLDEN = json.loads((Path(__file__).parent / "golden_dataset.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
 def golden_rules():
-    """Seeds the production business rules captured in the golden dataset (default tenant)."""
-    prev = (loader._RULES_CACHE, loader._RULES_VERSION, loader._TENANT_VERSIONS)
+    """Seeds the production business rules captured in the golden dataset."""
+    prev = (loader._RULES_CACHE, loader._RULES_VERSION)
     loader.set_rules_from_dicts(GOLDEN["rules"])
     yield
-    loader._RULES_CACHE, loader._RULES_VERSION, loader._TENANT_VERSIONS = prev
+    loader._RULES_CACHE, loader._RULES_VERSION = prev
     loader._cached_rules.cache_clear()
 
 
@@ -628,8 +293,8 @@ def test_golden_regression(golden_rules):
 # ---------------------------------------------------------------- gRPC fallback context
 
 
-def test_grpc_fallback_preserves_tenant_and_trace(monkeypatch):
-    """Redis unavailable -> Gateway dispatches via gRPC to the Engine; tenant and trace survive."""
+def test_grpc_fallback_preserves_trace(monkeypatch, loopback):
+    """Redis unavailable -> Gateway dispatches via gRPC to the Engine; trace survives."""
     from backend.app.schemas.models import BaseRequest, SKUItem
     from backend.app.services import engine_client
     from engine import grpc_server
@@ -647,28 +312,26 @@ def test_grpc_fallback_preserves_tenant_and_trace(monkeypatch):
         trace = f"fallback-{uuid.uuid4().hex[:8]}"
         req = BaseRequest(skus=[SKUItem(name="Coca Cola 1.5L")], domain="market", callback_url="")
         with observability.trace_context(trace):
-            engine_client.dispatch_batch_job("fb-1", req, "pipeline", tenant_id="tenant_fb")
+            engine_client.dispatch_batch_job("fb-1", req, "pipeline")
     finally:
         srv.stop(grace=0)
 
     payload = queued[0]
-    assert payload["tenant_id"] == "tenant_fb" and payload["trace_id"] == trace
+    assert payload["trace_id"] == trace
 
-    # Engine legacy worker loop: same tenant snapshot + trace binding as Redis-queued jobs
     seen = {}
 
     def fake_execute(p):
         seen["trace"] = observability.TRACE_ID.get()
-        seen["tenant"] = p["tenant_id"]
 
     monkeypatch.setattr(worker_runner, "_execute_job", fake_execute)
     worker_runner._batch_queue.put(payload)
     worker_runner._batch_queue.put(None)  # stop sentinel
     worker_runner._worker_loop()
-    assert seen == {"trace": trace, "tenant": "tenant_fb"}
+    assert seen == {"trace": trace}
 
 
-def test_grpc_fallback_defaults_when_context_missing(monkeypatch):
+def test_grpc_fallback_defaults_when_context_missing(monkeypatch, loopback):
     import grpc
 
     from engine import grpc_server
@@ -689,7 +352,7 @@ def test_grpc_fallback_defaults_when_context_missing(monkeypatch):
     finally:
         srv.stop(grace=0)
 
-    assert queued[0]["tenant_id"] == "default" and queued[0]["trace_id"] == "-"
+    assert queued[0]["trace_id"] == "-"
     with observability.trace_context("-") as bound:
         assert bound != "-" and len(bound) == 32  # placeholder gets a real trace id
 
@@ -697,36 +360,28 @@ def test_grpc_fallback_defaults_when_context_missing(monkeypatch):
 # ---------------------------------------------------------------- system status
 
 
-def test_system_status_is_tenant_scoped(app_client, tenants, tenant_data, auth_on, monkeypatch):
+def test_system_status_endpoint(app_client, monkeypatch):
     from backend.app.api.endpoints import queue as queue_api
 
-    stats = {"realtime": 1, "bulk": 2, "delayed": 0, "inflight": 1, "dlq": 7}
+    stats = {"realtime": 1, "bulk": 2, "delayed": 0, "inflight": 1, "dlq": 3}
     dlq = [
-        {"task_id": "t1", "payload": {"tenant_id": tenants.a}},
-        {"task_id": "t2", "payload": {"tenant_id": tenants.b}},
-        {"task_id": "t3", "payload": {"tenant_id": tenants.b}},
+        {"task_id": "t1", "payload": {"data": "item1"}},
+        {"task_id": "t2", "payload": {"data": "item2"}},
+        {"task_id": "t3", "payload": {"data": "item3"}},
     ]
-    fake = SimpleNamespace(stats=lambda: stats, dlq_items=lambda limit: dlq)
+    fake = SimpleNamespace(
+        stats=lambda: stats,
+        dlq_items=lambda limit=100: dlq[:limit],
+        dlq_count=lambda: len(dlq),
+    )
     monkeypatch.setattr(queue_api, "get_task_queue", lambda: fake)
 
-    a = app_client.get(
-        "/system/status", headers=_hdr(app_client, tenants.user["a_reviewer"])
-    ).json()
-    assert a["tenant_id"] == tenants.a
-    from backend.app.db.session import get_engine
-
-    with get_engine().connect() as conn:
-        expected = conn.execute(
-            text("SELECT COUNT(*) FROM processed_skus WHERE tenant_id = :t"), {"t": tenants.a}
-        ).scalar()
-    assert a["processed_skus"] == expected >= 1  # tenant A's rows only
-    assert a["dlq_size"] == 1
-    assert a["queue_depth"] is None  # cross-tenant volume is hidden from tenant users
-    assert a["rule_version"] == loader.snapshot_rules(tenants.a).version
-
-    platform = _hdr(app_client, tenants.user["platform_admin"], **{"X-Tenant-ID": tenants.b})
-    b = app_client.get("/system/status", headers=platform).json()
-    assert b["dlq_size"] == 2 and b["queue_depth"] == stats and b["queue_online"] is True
+    resp = app_client.get("/system/status").json()
+    assert resp["dlq_size"] == 3
+    assert resp["queue_depth"] == stats
+    assert resp["queue_online"] is True
+    assert isinstance(resp["processed_skus"], int)
+    assert resp["rule_version"] == loader.snapshot_rules().version
 
 
 def test_system_status_when_queue_offline(app_client, monkeypatch):

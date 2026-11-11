@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from concurrent import futures
+from typing import Any
 
 import grpc
 from qdrant_client.http.models import FieldCondition, Filter, MatchAny, MatchValue
@@ -33,8 +34,11 @@ from engine.pipeline.processor import process_request
 from engine.pipeline.worker_runner import cancel_job, enqueue_batch_job
 from engine.protos import engine_service_pb2 as pb2
 from engine.protos import engine_service_pb2_grpc as pb2_grpc
-from engine.rules_engine import refresh_rules_cache
+from engine.rules_engine import refresh_rules_cache, run_rules_engine
+from engine.rules_engine.actions import apply_actions
+from engine.rules_engine.evaluator import evaluate_conditions
 from engine.rules_engine.loader import (
+    Rule,
     pinned_rules,
     set_rules_from_dicts,
     snapshot_rules,
@@ -42,6 +46,12 @@ from engine.rules_engine.loader import (
 from engine.templates.template_suggest import suggest_tags_from_template
 
 logger = logging.getLogger("matchops.engine.grpc")
+
+
+def _get_vector_store() -> VectorStore:
+    vs = VectorStore.__new__(VectorStore)
+    vs.client = VectorStore.get_client()
+    return vs
 
 
 def _build_qdrant_filter(filters_json: str) -> Filter | None:
@@ -69,9 +79,8 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
     def Match(self, request, context):
         t0 = time.time()
         skus = [sku_proto_to_dict(s) for s in request.skus]
-        tenant = request.tenant_id or "default"
         try:
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 res = process_request(skus=skus, task="matcher", domain=request.domain)
             items = [
                 pb2.MatchResultItem(
@@ -101,9 +110,8 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
     def Classify(self, request, context):
         t0 = time.time()
         skus = [sku_proto_to_dict(s) for s in request.skus]
-        tenant = request.tenant_id or "default"
         try:
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 res = process_request(skus=skus, task="classifier", domain=request.domain)
             items = [
                 pb2.ClassifyResultItem(
@@ -140,9 +148,8 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
     def RunSingle(self, request, context):
         t0 = time.time()
         skus = [sku_proto_to_dict(s) for s in request.skus]
-        tenant = request.tenant_id or "default"
         try:
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 res = process_request(skus=skus, task=request.task, domain=request.domain)
             items = [result_to_pipeline_proto(item) for item in res.get("results", [])]
             return pb2.SingleRunResponse(
@@ -180,9 +187,8 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             abort_rpc_error(context, logger, "SuggestTags", e)
 
     def RunAudit(self, request, context):
-        tenant = request.tenant_id or "default"
         try:
-            with pinned_rules(snapshot_rules(tenant)):
+            with pinned_rules(snapshot_rules()):
                 res = run_sku_audit(
                     sku_name=request.sku_name,
                     domain=request.domain,
@@ -208,7 +214,6 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             "spreadsheet_id": request.spreadsheet_id or None,
             "backend_grpc_url": config.BACKEND_GRPC_URL,
             "created_by": request.created_by,
-            "tenant_id": request.tenant_id or "default",
             "trace_id": TRACE_ID.get(),
         }
         try:
@@ -236,7 +241,6 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             "spreadsheet_id": None,
             "backend_grpc_url": config.BACKEND_GRPC_URL,
             "created_by": request.created_by,
-            "tenant_id": request.tenant_id or "default",
             "trace_id": TRACE_ID.get(),
         }
         try:
@@ -288,16 +292,47 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
 
     def ListVectorCollections(self, request, context):
         try:
-            client = VectorStore.get_client()
-            cols = [c.name for c in client.get_collections().collections]
-            return pb2.JsonPayloadResponse(payload_json=json.dumps({"collections": cols}))
+            vs = _get_vector_store()
+            cols = [
+                c.name
+                for c in vs._call_with_retry(
+                    "get_collections", vs.client.get_collections
+                ).collections
+            ]
+            details: dict[str, Any] = {}
+            if cols and hasattr(vs.client, "get_collection"):
+
+                def _fetch_info(col_name: str) -> tuple[str, dict[str, Any] | None]:
+                    try:
+                        info = vs._call_with_retry(
+                            "get_collection", vs.client.get_collection, collection_name=col_name
+                        )
+                        payload = (
+                            info.model_dump(mode="json")
+                            if hasattr(info, "model_dump")
+                            else (info.dict() if hasattr(info, "dict") else None)
+                        )
+                        return col_name, payload
+                    except Exception:
+                        return col_name, None
+
+                with futures.ThreadPoolExecutor(max_workers=min(len(cols), 6)) as pool:
+                    for col_name, payload in pool.map(_fetch_info, cols):
+                        if isinstance(payload, dict):
+                            details[col_name] = payload
+
+            return pb2.JsonPayloadResponse(
+                payload_json=json.dumps({"collections": cols, "details": details})
+            )
         except Exception as e:
             abort_rpc_error(context, logger, "ListVectorCollections", e)
 
     def GetVectorCollection(self, request, context):
         try:
-            client = VectorStore.get_client()
-            info = client.get_collection(collection_name=request.name)
+            vs = _get_vector_store()
+            info = vs._call_with_retry(
+                "get_collection", vs.client.get_collection, collection_name=request.name
+            )
             payload = info.model_dump(mode="json") if hasattr(info, "model_dump") else info.dict()
             return pb2.JsonPayloadResponse(payload_json=json.dumps(payload))
         except Exception as e:
@@ -321,7 +356,7 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 if (request.has_score_threshold and mode in ("dense", "sparse"))
                 else None
             )
-            client = VectorStore.get_client()
+            vs = _get_vector_store()
             from engine.core.resource_loader import _get_shared_models
             from engine.nlp.text_cleaner import TextPipeline
 
@@ -337,22 +372,15 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             is_catalog = request.name.endswith("_catalog") or not request.name.endswith("_tags")
             dense_target = normalized_query if (is_catalog and normalized_query) else raw_query
 
-            queries_to_encode = [dense_target]
-            if mode in ("sparse", "hybrid"):
-                other_query = raw_query if dense_target == normalized_query else normalized_query
-                if other_query and other_query != dense_target:
-                    queries_to_encode.append(other_query)
-
-            encoded = embed_engine.encode(queries_to_encode)
+            # Strictly encode the normalized query so BGE-M3 produces consistent subword token IDs
+            # regardless of query casing or script (case-insensitive for Latin, Sinhala, etc.)
+            encoded = embed_engine.encode([dense_target])
             dense_vec = encoded["dense"][0]
             dense_list = dense_vec.tolist() if hasattr(dense_vec, "tolist") else dense_vec
 
             if mode in ("sparse", "hybrid"):
-                # Union sparse weights across casing variants (taking max weight per token ID)
-                sparse_dict = {}
-                for s_dict in encoded.get("sparse", []):
-                    for k, v in s_dict.items():
-                        sparse_dict[k] = max(sparse_dict.get(k, 0.0), float(v))
+                sparse_list = encoded.get("sparse", [{}])
+                sparse_dict = sparse_list[0] if sparse_list else {}
 
                 from qdrant_client.http.models import SparseVector
 
@@ -366,19 +394,47 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 sparse_vector = SparseVector(indices=indices, values=values)
 
                 if mode == "sparse":
-                    points = client.query_points(
+                    q_words = normalized_query.split()
+                    q_len = len(q_words)
+                    fetch_limit = max((request.limit or 10) * 3, 30)
+
+                    raw_points = vs._call_with_retry(
+                        "query_points (sparse collection search)",
+                        vs.client.query_points,
                         collection_name=request.name,
                         query=sparse_vector,
                         using="sparse",
-                        limit=request.limit or 10,
+                        limit=fetch_limit,
                         query_filter=query_filter,
                         score_threshold=score_threshold,
                         with_payload=True,
                     ).points
+
+                    # Apply length normalization penalty: min(1.0, |Q| / |D|) with exact-match priority
+                    scored_points = []
+                    for hit in raw_points:
+                        p_load = hit.payload or {}
+                        clean_name = str(p_load.get("clean_text") or "").strip().lower()
+                        doc_len = p_load.get("token_count") or (
+                            len(clean_name.split()) if clean_name else q_len
+                        )
+                        len_ratio = min(1.0, q_len / max(1, doc_len)) if q_len > 0 else 1.0
+
+                        is_exact = bool(clean_name and clean_name == normalized_query)
+                        boost = 1.25 if is_exact else 1.0
+                        adjusted_score = hit.score * len_ratio * boost
+                        hit.score = float(adjusted_score)
+                        scored_points.append((adjusted_score, is_exact, hit))
+
+                    scored_points.sort(key=lambda x: (x[0], 1 if x[1] else 0), reverse=True)
+                    final_limit = request.limit or 10
+                    points = [sp[2] for sp in scored_points[:final_limit]]
                 else:  # hybrid
                     from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
 
-                    points = client.query_points(
+                    points = vs._call_with_retry(
+                        "query_points (hybrid collection search)",
+                        vs.client.query_points,
                         collection_name=request.name,
                         prefetch=[
                             Prefetch(query=dense_list, using="dense", limit=request.limit or 10),
@@ -392,7 +448,9 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                         with_payload=True,
                     ).points
             else:  # dense
-                points = client.query_points(
+                points = vs._call_with_retry(
+                    "query_points (dense collection search)",
+                    vs.client.query_points,
                     collection_name=request.name,
                     query=dense_list,
                     using="dense",
@@ -406,6 +464,76 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             return pb2.JsonPayloadResponse(payload_json=json.dumps({"results": res}))
         except Exception as e:
             abort_rpc_error(context, logger, "SearchVectorCollection", e)
+
+    def RerunRules(self, request, context):
+        try:
+            gk_list = [x.strip() for x in request.gk.split(",") if x.strip()]
+            record = {
+                "sku_name": request.sku_name,
+                "domain": request.domain,
+                "bt": request.bt,
+                "gk": gk_list,
+                "region": request.region if request.domain == "food" else None,
+                "category": request.category if request.domain == "market" else None,
+                "price": request.price,
+                "confidence": request.confidence,
+                "match_source": request.match_source,
+                "matched_sku": request.matched_sku,
+                "reasoning": request.reasoning,
+                "rules_applied": [],
+            }
+            with pinned_rules(snapshot_rules()):
+                aug_record = run_rules_engine(record)
+
+            rules_applied = aug_record.get("rules_applied", [])
+            rules_applied_str = json.dumps(rules_applied) if rules_applied else ""
+
+            return pb2.RerunRulesResponse(
+                suggested_bt=str(aug_record.get("bt") or ""),
+                suggested_gk=", ".join(aug_record.get("gk", [])),
+                suggested_region=str(aug_record.get("region") or aug_record.get("category") or ""),
+                rules_applied=rules_applied_str,
+            )
+        except Exception as e:
+            abort_rpc_error(context, logger, "RerunRules", e)
+
+    def TestRule(self, request, context):
+        try:
+            rule_dict = json.loads(request.rule_json)
+            sample_record = json.loads(request.sample_record_json)
+
+            row_values = (
+                rule_dict.get("id", 0),
+                rule_dict["rule_id"],
+                rule_dict["domain"],
+                rule_dict["priority"],
+                rule_dict["description"],
+                rule_dict["reasoning"],
+                rule_dict["condition_logic"],
+                rule_dict.get("is_active", 1),
+            )
+            engine_rule = Rule(row_values)
+            engine_rule.conditions = rule_dict.get("conditions", [])
+            engine_rule.actions = rule_dict.get("actions", [])
+
+            record = dict(sample_record)
+            fires = evaluate_conditions(engine_rule, record)
+            changes = ""
+            if fires:
+                changes = apply_actions(engine_rule, record)
+
+            return pb2.TestRuleResponse(
+                rule_id=rule_dict["rule_id"],
+                fires=bool(fires),
+                matched_conditions_json=json.dumps(
+                    rule_dict.get("conditions", []) if fires else []
+                ),
+                actions_applied_json=json.dumps(rule_dict.get("actions", []) if fires else []),
+                changes=str(changes),
+                sample_record_after_json=json.dumps(record),
+            )
+        except Exception as e:
+            abort_rpc_error(context, logger, "TestRule", e)
 
 
 def start_grpc_server(port: int | None = None, host: str = "0.0.0.0") -> grpc.Server:

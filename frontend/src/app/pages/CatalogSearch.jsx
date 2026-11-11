@@ -28,8 +28,8 @@ import {
   Chip,
   Alert,
 } from '@mui/material';
-import { Search, Database, Tag, Key, Layers, Award, Map, RefreshCw, SlidersHorizontal } from 'lucide-react';
-import { PageContainer, PageHeader, ConfirmDialog } from '../components/ui';
+import { Search, Storage, Label, VpnKey, Layers, EmojiEvents, Map, Refresh, Tune } from '@mui/icons-material';
+import { PageContainer, PageHeader, ConfirmDialog, EmptyState } from '../components/ui';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { searchCatalog, buildCatalogCache, checkCatalogSync, getCatalogSummaryStats } from '../api';
 import { useSnackbar } from 'notistack';
@@ -192,12 +192,16 @@ export default function CatalogSearch() {
 
   // Define sidebar menu options
   const datasetsList = [
-    { id: 'catalog', label: 'Catalog SKUs', icon: <Database size={18} /> },
-    { id: 'gk', label: 'Generic Keywords', icon: <Tag size={18} /> },
-    { id: 'bt', label: 'Basic Type', icon: <Key size={18} /> },
-    { id: 'category', label: domain === 'food' ? 'Region' : 'Categories', icon: <Layers size={18} /> },
-    { id: 'brands', label: domain === 'food' ? 'Flavors List' : 'Brands List', icon: <Award size={18} /> },
-    { id: 'bt_gk_map', label: 'Basic Type - Generic Keywords Map', icon: <Map size={18} /> },
+    { id: 'catalog', label: 'Catalog SKUs', icon: <Storage sx={{ fontSize: 18 }} /> },
+    { id: 'gk', label: 'Generic Keywords', icon: <Label sx={{ fontSize: 18 }} /> },
+    { id: 'bt', label: 'Basic Type', icon: <VpnKey sx={{ fontSize: 18 }} /> },
+    { id: 'category', label: domain === 'food' ? 'Region' : 'Categories', icon: <Layers sx={{ fontSize: 18 }} /> },
+    {
+      id: 'brands',
+      label: domain === 'food' ? 'Flavors List' : 'Brands List',
+      icon: <EmojiEvents sx={{ fontSize: 18 }} />,
+    },
+    { id: 'bt_gk_map', label: 'Basic Type - Generic Keywords Map', icon: <Map sx={{ fontSize: 18 }} /> },
   ];
 
   // Memoize column definitions — avoids recreating arrays on every render cycle
@@ -367,7 +371,7 @@ export default function CatalogSearch() {
             <Button
               variant="outlined"
               color="primary"
-              startIcon={isChecking ? <CircularProgress size={16} color="inherit" /> : <Search size={16} />}
+              startIcon={isChecking ? <CircularProgress size={16} color="inherit" /> : <Search sx={{ fontSize: 16 }} />}
               disabled={isChecking || isSyncing}
               onClick={handleCheckSync}
             >
@@ -376,7 +380,7 @@ export default function CatalogSearch() {
             <Button
               variant="contained"
               color="primary"
-              startIcon={isSyncing ? <CircularProgress size={16} color="inherit" /> : <RefreshCw size={16} />}
+              startIcon={isSyncing ? <CircularProgress size={16} color="inherit" /> : <Refresh sx={{ fontSize: 16 }} />}
               disabled={isSyncing}
               onClick={() => setConfirmOpen(true)}
             >
@@ -538,7 +542,7 @@ export default function CatalogSearch() {
       {/* Main Exploration Section */}
       <Grid container spacing={3}>
         {/* Search Results and Filters Panel */}
-        <Grid item xs={12}>
+        <Grid size={{ xs: 12 }}>
           {/* Filters Card */}
           <Card sx={{ p: 2, mb: 3 }}>
             <Stack direction="row" spacing={2} sx={{ width: '100%' }}>
@@ -554,7 +558,7 @@ export default function CatalogSearch() {
                 InputProps={{
                   startAdornment: (
                     <InputAdornment position="start">
-                      <Search size={16} />
+                      <Search sx={{ fontSize: 16 }} />
                     </InputAdornment>
                   ),
                 }}
@@ -564,7 +568,7 @@ export default function CatalogSearch() {
                 <Button
                   variant="outlined"
                   color={showFilters ? 'primary' : 'inherit'}
-                  startIcon={<SlidersHorizontal size={16} />}
+                  startIcon={<Tune sx={{ fontSize: 16 }} />}
                   onClick={() => setShowFilters(!showFilters)}
                 >
                   Filters
@@ -575,7 +579,7 @@ export default function CatalogSearch() {
             {/* Advanced Filters Expandable block */}
             <Collapse in={showFilters && dataset === 'catalog'} sx={{ mt: 2 }}>
               <Grid container spacing={2}>
-                <Grid item xs={12} sm={4} md={3}>
+                <Grid size={{ xs: 12, sm: 4, md: 3 }}>
                   <TextField
                     size="small"
                     fullWidth
@@ -588,7 +592,7 @@ export default function CatalogSearch() {
                     }}
                   />
                 </Grid>
-                <Grid item xs={12} sm={4} md={3}>
+                <Grid size={{ xs: 12, sm: 4, md: 3 }}>
                   <TextField
                     size="small"
                     fullWidth
@@ -602,7 +606,7 @@ export default function CatalogSearch() {
                   />
                 </Grid>
                 {domain === 'food' ? (
-                  <Grid item xs={12} sm={4} md={3}>
+                  <Grid size={{ xs: 12, sm: 4, md: 3 }}>
                     <TextField
                       size="small"
                       fullWidth
@@ -615,7 +619,7 @@ export default function CatalogSearch() {
                     />
                   </Grid>
                 ) : (
-                  <Grid item xs={12} sm={4} md={3}>
+                  <Grid size={{ xs: 12, sm: 4, md: 3 }}>
                     <TextField
                       size="small"
                       fullWidth
@@ -628,7 +632,7 @@ export default function CatalogSearch() {
                     />
                   </Grid>
                 )}
-                <Grid item xs={12} sm={4} md={3}>
+                <Grid size={{ xs: 12, sm: 4, md: 3 }}>
                   <TextField
                     size="small"
                     fullWidth
@@ -640,7 +644,7 @@ export default function CatalogSearch() {
                     }}
                   />
                 </Grid>
-                <Grid item xs={12} sm={4} md={3}>
+                <Grid size={{ xs: 12, sm: 4, md: 3 }}>
                   <TextField
                     size="small"
                     fullWidth
@@ -652,7 +656,7 @@ export default function CatalogSearch() {
                     }}
                   />
                 </Grid>
-                <Grid item xs={12} sm={4} md={3}>
+                <Grid size={{ xs: 12, sm: 4, md: 3 }}>
                   <TextField
                     size="small"
                     fullWidth
@@ -664,7 +668,7 @@ export default function CatalogSearch() {
                     }}
                   />
                 </Grid>
-                <Grid item xs={12} sm={4} md={3}>
+                <Grid size={{ xs: 12, sm: 4, md: 3 }}>
                   <Button
                     fullWidth
                     variant="text"
@@ -727,10 +731,46 @@ export default function CatalogSearch() {
                     <TableSkeleton columns={columns.length} rows={5} />
                   ) : (data?.results || []).length === 0 ? (
                     <StyledTableRow>
-                      <TableCell colSpan={columns.length} align="center">
-                        <Typography variant="body2" color="text.secondary">
-                          No records found.
-                        </Typography>
+                      <TableCell colSpan={columns.length} sx={{ p: 0, border: 'none' }}>
+                        <EmptyState
+                          icon={Storage}
+                          title="No catalog records found"
+                          description={
+                            query || priceMin || priceMax || region || category || gkContains || brandFilter || btFilter
+                              ? 'No items matched your active search query or filter criteria. Try clearing filters or using broader search terms.'
+                              : 'There are no records in this dataset. Synchronize the local cache or switch domains.'
+                          }
+                          action={
+                            query ||
+                            priceMin ||
+                            priceMax ||
+                            region ||
+                            category ||
+                            gkContains ||
+                            brandFilter ||
+                            btFilter ? (
+                              <Button
+                                variant="outlined"
+                                size="small"
+                                onClick={() => {
+                                  setQuery('');
+                                  setPriceMin('');
+                                  setPriceMax('');
+                                  setRegion('');
+                                  setCategory('');
+                                  setGkContains('');
+                                  setBrandFilter('');
+                                  setBtFilter('');
+                                  setPaginationModel((prev) => ({ ...prev, page: 0 }));
+                                }}
+                                sx={{ textTransform: 'none', fontWeight: 600 }}
+                              >
+                                Clear search & filters
+                              </Button>
+                            ) : null
+                          }
+                          minHeight={260}
+                        />
                       </TableCell>
                     </StyledTableRow>
                   ) : (
@@ -787,7 +827,7 @@ export default function CatalogSearch() {
         open={confirmOpen}
         onClose={() => setConfirmOpen(false)}
         title="Sync from Google Sheets"
-        message="Are you sure you want to synchronize the catalog with Google Sheets? This will download the latest sheets, update Meilisearch/Qdrant databases, and rebuild the classifier models in the background."
+        message="Are you sure you want to synchronize the catalog with Google Sheets? This will download the latest sheets, update Qdrant databases, and rebuild the classifier models in the background."
         onConfirm={() => {
           setConfirmOpen(false);
           handleSyncCache();
@@ -808,7 +848,7 @@ export default function CatalogSearch() {
         }}
       >
         <DialogTitle sx={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Database size={20} /> Google Sheets Sync Status
+          <Storage sx={{ fontSize: 20 }} /> Google Sheets Sync Status
         </DialogTitle>
         <DialogContent dividers>
           {diffData && (

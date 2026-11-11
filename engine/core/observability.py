@@ -25,7 +25,7 @@ def new_trace_id() -> str:
 
 
 @contextmanager
-def trace_context(trace_id: str | None) -> Iterator[str]:
+def trace_context(trace_id: str | None = None) -> Iterator[str]:
     """Binds a trace id to the current thread/context so every log line carries it."""
     token = TRACE_ID.set(trace_id if trace_id and trace_id != "-" else new_trace_id())
     try:
@@ -79,7 +79,7 @@ def configure_logging(logger: logging.Logger | None = None) -> None:
 SKUS_PROCESSED = Counter(
     "matchops_skus_processed_total",
     "SKUs processed by batch jobs",
-    ["domain", "status", "tenant_id"],
+    ["domain", "status"],
 )
 MATCH_CONFIDENCE = Histogram(
     "matchops_match_confidence",

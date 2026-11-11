@@ -59,36 +59,24 @@ async function resolveBaseUrl() {
 // Eagerly resolve on load (non-blocking)
 resolveBaseUrl();
 
+const DEFAULT_API_KEY = import.meta.env.VITE_API_KEY || 'bismillah';
+
 const api = axios.create({
   baseURL: LOCAL_BACKEND, // initial default, overridden by interceptor
 });
 
-// Request interceptor: ensures every request uses the resolved tunnel URL and carries the
-// active session (Bearer JWT, else API key). No X-Tenant-ID: the server uses the account's tenant.
+// Request interceptor: ensures every request carries the API key
 api.interceptors.request.use(async (config) => {
   const base = await resolveBaseUrl();
   config.baseURL = base;
-  const { authToken, apiKey } = useStore.getState();
-  if (authToken) {
-    config.headers.Authorization = `Bearer ${authToken}`;
-  } else if (apiKey) {
-    config.headers['X-API-Key'] = apiKey;
-  }
+  const { apiKey } = useStore.getState();
+  config.headers['X-API-Key'] = apiKey || DEFAULT_API_KEY;
   return config;
 });
 
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response && error.response.status === 401) {
-      const url = error.config?.url || '';
-      const state = useStore.getState();
-      if (url.includes('/merchant-fetch')) {
-        state.clearToken(); // rejected merchant-portal token
-      } else if (!url.includes('/auth/token')) {
-        state.promptLoginOn401(); // open Sign in modal when logged out or session expired
-      }
-    }
     return Promise.reject(error);
   }
 );
@@ -103,6 +91,48 @@ export const getDashboardStats = async (params) => (await api.get('/jobs/dashboa
 export const getTagStats = async (params) => (await api.get('/jobs/tag-stats', { params })).data;
 export const cancelJob = async (id) => (await api.post(`/jobs/${id}/cancel`)).data;
 export const retryJob = async (id) => (await api.post(`/jobs/${id}/retry`)).data;
+
+export function subscribeJobStream(path, { onMessage, onError } = {}) {
+  const controller = new AbortController();
+  (async () => {
+    try {
+      const base = await resolveBaseUrl();
+      const { apiKey } = useStore.getState();
+      const headers = {
+        Accept: 'text/event-stream',
+        'X-API-Key': apiKey || DEFAULT_API_KEY,
+      };
+      const resp = await fetch(`${base}${path}`, { headers, signal: controller.signal });
+      if (!resp.ok || !resp.body) {
+        throw new Error(`SSE stream failed (${resp.status})`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        let sep;
+        while ((sep = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('data: ')) {
+              onMessage?.(JSON.parse(line.slice(6)));
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        onError?.(err);
+      }
+    }
+  })();
+  return () => controller.abort();
+}
 
 // Batches
 export const createBatch = async (formData) =>
@@ -171,14 +201,6 @@ export const getLogs = async (lines) => (await api.get('/logs', { params: { line
 export const checkHealth = async () => (await api.get('/health', { timeout: 4000 })).data;
 
 // Auth (OAuth2 password form -> JWT) and the server-confirmed identity
-export const login = async ({ username, password }) =>
-  (
-    await api.post('/auth/token', new URLSearchParams({ username, password }), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    })
-  ).data;
-export const getMe = async () => (await api.get('/auth/me')).data;
-
 // Queue & DLQ, system status strip
 export const getDeadLetters = async () => (await api.get('/queue/dlq')).data;
 export const replayDeadLetter = async (taskId) => (await api.post(`/queue/dlq/${taskId}/replay`)).data;

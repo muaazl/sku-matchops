@@ -29,7 +29,7 @@ const CONFIG = {
 
   // Your Apps Script Web App URL (for async callback).
   // Get this from: Deploy → Manage Deployments → copy the Web App URL.
-  CALLBACK_URL: "https://script.google.com/macros/s/AKfycbzSY6pZ_8GAKO6ThLOLeh7MkuFDNQzjUrVm9SXZoa2CfFwsOJRTQx6W15UwzmRV0voONA/exec",
+  CALLBACK_URL: "https://script.google.com/macros/s/AKfycbyGbZfZ-JOEdX2RXs5IPRMhcPQd3SVk6Vr29NcmFjclgjdBUQngZYj_CTSkiatQjxY/exec",
 
   // Column name in your active sheet that holds the SKU / dish name
   NAME_COL: "Name",
@@ -86,17 +86,60 @@ function _getOrCreateQueueSheet() {
   let sheet = ss.getSheetByName("_queue");
   if (!sheet) {
     sheet = ss.insertSheet("_queue");
-    sheet.getRange("A1:G1").setValues([["Job ID", "Spreadsheet ID", "Sheet Name", "Domain", "Task", "Status", "Created At"]]);
-    sheet.getRange("A1:G1").setFontWeight("bold");
+    sheet.getRange("A1:H1").setValues([["Job ID", "Spreadsheet ID", "Sheet Name", "Type", "Domain", "Task", "Status", "Created At"]]);
+    sheet.getRange("A1:H1").setFontWeight("bold");
     sheet.setColumnWidth(1, 280);
     sheet.setColumnWidth(2, 280);
-    sheet.setColumnWidth(3, 160);
-    sheet.setColumnWidth(4, 100);
+    sheet.setColumnWidth(3, 180);
+    sheet.setColumnWidth(4, 110);
     sheet.setColumnWidth(5, 100);
-    sheet.setColumnWidth(6, 120);
-    sheet.setColumnWidth(7, 180);
+    sheet.setColumnWidth(6, 100);
+    sheet.setColumnWidth(7, 140);
+    sheet.setColumnWidth(8, 180);
+    return sheet;
+  }
+
+  const lastCol = Math.max(1, sheet.getLastColumn());
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h).trim());
+  if (!headers.some(h => h.toLowerCase() === "type")) {
+    const sheetNameIdx = headers.findIndex(h => h.toLowerCase() === "sheet name");
+    const insertAfter = sheetNameIdx !== -1 ? sheetNameIdx + 1 : 3;
+    sheet.insertColumnAfter(insertAfter);
+    sheet.getRange(1, insertAfter + 1).setValue("Type").setFontWeight("bold");
+    sheet.setColumnWidth(insertAfter + 1, 110);
   }
   return sheet;
+}
+
+function _queueColMap(headers) {
+  const idx = name => headers.findIndex(h => String(h).trim().toLowerCase() === name.toLowerCase());
+  return {
+    job_id: idx("Job ID"),
+    spreadsheet_id: idx("Spreadsheet ID"),
+    sheet_name: idx("Sheet Name"),
+    type: idx("Type"),
+    domain: idx("Domain"),
+    task: idx("Task"),
+    status: idx("Status"),
+    created_at: idx("Created At"),
+  };
+}
+
+function _updateQueueRowStatus(queueSheet, jobId, newStatus) {
+  if (!queueSheet || queueSheet.getLastRow() < 2 || !jobId) return;
+  const qData = queueSheet.getDataRange().getValues();
+  const col = _queueColMap(qData[0]);
+  if (col.status === -1) return;
+  const targetId = String(jobId);
+  const backendTag = `(Job ${targetId})`;
+  for (let r = 1; r < qData.length; r++) {
+    const rowJobId = col.job_id !== -1 ? String(qData[r][col.job_id]) : "";
+    const rowStatus = String(qData[r][col.status] || "");
+    if (rowJobId === targetId || rowStatus.includes(backendTag)) {
+      queueSheet.getRange(r + 1, col.status + 1).setValue(newStatus);
+      break;
+    }
+  }
 }
 
 /**
@@ -287,7 +330,7 @@ function runMatching(domain, task) {
   // 5. Build payload & queue job in the central CATALOG sheet
   const jobId = Utilities.getUuid();
   const queueSheet = _getOrCreateQueueSheet();
-  queueSheet.appendRow([jobId, ss.getId(), sheet.getName(), domain, task, "PENDING", new Date().toISOString()]);
+  queueSheet.appendRow([jobId, ss.getId(), sheet.getName(), "tagging", domain, task, "PENDING", new Date().toISOString()]);
 
   // 6. Attempt direct connection if baseUrl is configured; fallback to local queue mode
   const baseUrl = getBaseUrl();
@@ -357,30 +400,25 @@ function doGet(e) {
           .setMimeType(ContentService.MimeType.JSON);
       }
       const data = queueSheet.getDataRange().getValues();
+      const col = _queueColMap(data[0]);
       const pending = [];
       for (let r = 1; r < data.length; r++) {
         const row = data[r];
-        if (row.length >= 7 && row[5] === "PENDING") {
+        const statusVal = col.status !== -1 ? String(row[col.status] || "").trim().toUpperCase() : "";
+        if (statusVal === "PENDING") {
+          const taskVal = col.task !== -1 ? String(row[col.task] || "pipeline") : "pipeline";
+          const rawType = col.type !== -1 ? String(row[col.type] || "").trim().toLowerCase() : "";
+          const typeVal = rawType || (taskVal.toLowerCase() === "upload" ? "uploading" : "tagging");
           pending.push({
             row_index: r + 1,
-            job_id: String(row[0]),
-            spreadsheet_id: String(row[1]),
-            sheet_name: String(row[2]),
-            domain: String(row[3]),
-            task: String(row[4]),
-            status: String(row[5]),
-            created_at: String(row[6]),
-          });
-        } else if (row[4] === "PENDING") {
-          pending.push({
-            row_index: r + 1,
-            job_id: String(row[0]),
-            spreadsheet_id: ssId,
-            sheet_name: String(row[1]),
-            domain: String(row[2]),
-            task: String(row[3]),
-            status: String(row[4]),
-            created_at: String(row[5]),
+            job_id: col.job_id !== -1 ? String(row[col.job_id]) : "",
+            spreadsheet_id: (col.spreadsheet_id !== -1 && String(row[col.spreadsheet_id]).trim()) ? String(row[col.spreadsheet_id]) : ssId,
+            sheet_name: col.sheet_name !== -1 ? String(row[col.sheet_name]) : "",
+            type: typeVal,
+            domain: col.domain !== -1 ? String(row[col.domain] || "food") : "food",
+            task: taskVal,
+            status: "PENDING",
+            created_at: col.created_at !== -1 ? String(row[col.created_at]) : "",
           });
         }
       }
@@ -433,17 +471,7 @@ function doPost(e) {
     // Handle queue status update from local worker (always targets central CATALOG sheet)
     if (body.type === "queue_update" && body.job_id) {
       const catalogSs = SpreadsheetApp.openById(CONFIG.CATALOG_SHEET_ID);
-      const queueSheet = catalogSs.getSheetByName("_queue");
-      if (queueSheet) {
-        const qData = queueSheet.getDataRange().getValues();
-        for (let r = 1; r < qData.length; r++) {
-          if (String(qData[r][0]) === String(body.job_id)) {
-            const statusColIdx = qData[0].length >= 7 ? 6 : 5;
-            queueSheet.getRange(r + 1, statusColIdx).setValue(body.status);
-            break;
-          }
-        }
-      }
+      _updateQueueRowStatus(catalogSs.getSheetByName("_queue"), body.job_id, body.status);
       return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
         .setMimeType(ContentService.MimeType.JSON);
     }
@@ -451,6 +479,10 @@ function doPost(e) {
     // Error case
     if (body.error) {
       Logger.log(`[MatchOps] Job ${body.job_id} failed: ${body.error}`);
+      if (body.job_id) {
+        const catalogSs = SpreadsheetApp.openById(CONFIG.CATALOG_SHEET_ID);
+        _updateQueueRowStatus(catalogSs.getSheetByName("_queue"), body.job_id, "FAILED");
+      }
       return ContentService.createTextOutput(JSON.stringify({ status: "error_logged" }))
         .setMimeType(ContentService.MimeType.JSON);
     }
@@ -483,20 +515,10 @@ function doPost(e) {
 
     _writeResults(data, dataRange, results, task, nameIdx, outIdxMap);
 
-    // Mark job as COMPLETED in _queue in the central CATALOG sheet if job_id is present
+    // Mark job as DONE in _queue in the central CATALOG sheet if job_id is present
     if (body.job_id) {
       const catalogSs = SpreadsheetApp.openById(CONFIG.CATALOG_SHEET_ID);
-      const queueSheet = catalogSs.getSheetByName("_queue");
-      if (queueSheet) {
-        const qData = queueSheet.getDataRange().getValues();
-        for (let r = 1; r < qData.length; r++) {
-          if (String(qData[r][0]) === String(body.job_id)) {
-            const statusColIdx = qData[0].length >= 7 ? 6 : 5;
-            queueSheet.getRange(r + 1, statusColIdx).setValue("COMPLETED");
-            break;
-          }
-        }
-      }
+      _updateQueueRowStatus(catalogSs.getSheetByName("_queue"), body.job_id, "DONE");
     }
 
     ss.toast(

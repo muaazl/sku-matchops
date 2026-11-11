@@ -39,9 +39,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 
 DATA_DIR = os.path.join(ROOT_DIR, "data")
-CACHE_DIR = os.path.join(DATA_DIR, "cache")
-STAGING_DIR = os.path.join(CACHE_DIR, "staged_sheets")
-QDRANT_DATA_DIR = os.path.join(DATA_DIR, "qdrant")
+CACHE_DIR = os.path.join(BASE_DIR, "data", "cache")
+STAGING_DIR = os.path.join(DATA_DIR, "staged_sheets")
+QDRANT_DATA_DIR = os.path.join(BASE_DIR, "data", "qdrant")
 
 LOG_DIR = os.path.join(DATA_DIR, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
@@ -54,10 +54,16 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 # Rule-cache distribution & invalidation (snapshot + version keys + pub/sub)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-# --- Engine & Callback gRPC Services ---
+# --- Engine & Callback Services ---
+ENVIRONMENT = "production"
 ENGINE_GRPC_PORT = int(os.getenv("ENGINE_GRPC_PORT", "50051"))
 BACKEND_GRPC_URL = os.getenv("BACKEND_GRPC_URL", "127.0.0.1:50052")
+BACKEND_HTTP_URL = os.getenv("BACKEND_HTTP_URL", "http://127.0.0.1:8000")
+API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
 INTERNAL_GRPC_SECRET = os.getenv("INTERNAL_GRPC_SECRET", "")
+
+if not API_KEY:
+    raise RuntimeError("A non-empty MATCHOPS_API_KEY must be configured in environment variables.")
 
 # --- Distributed job queue (Redis) ---
 # Off -> direct gRPC dispatch to a single engine. On but Redis unreachable -> same fallback.
@@ -68,11 +74,14 @@ TASK_REALTIME_MAX_SKUS = 50
 TASK_MAX_RETRIES = 3
 # Retry delay after attempt n is BACKOFF * 2**(n-1) seconds
 TASK_RETRY_BACKOFF_SECONDS = 5.0
-# A worker must renew its lease within this window or the task is reclaimed
-TASK_LEASE_SECONDS = 120.0
+# A worker must renew its lease within this window or the task is reclaimed (heartbeat runs every lease/3)
+TASK_LEASE_SECONDS = float(os.getenv("TASK_LEASE_SECONDS", "30.0"))
 TASK_POLL_INTERVAL = 0.5
 
 # --- Qdrant Vector DB Settings ---
+QDRANT_GRPC_PORT = int(os.getenv("QDRANT_GRPC_PORT", "6334"))
+QDRANT_PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true"
+QDRANT_HNSW_ON_DISK = os.getenv("QDRANT_HNSW_ON_DISK", "false").lower() == "true"
 QDRANT_HNSW_M = 16
 QDRANT_HNSW_EF_CONSTRUCT = 100
 QDRANT_INDEXING_THRESHOLD = 10000
@@ -89,7 +98,7 @@ QDRANT_COLLECTION_FOOD = "food_catalog"
 CACHE_SALT = "MatchOps_v2"
 
 # --- Model Artifacts & Quantization ---
-ONNX_DIR = os.path.join(ROOT_DIR, "models")
+ONNX_DIR = os.path.join(BASE_DIR, "models")
 ARCFACE_DIR = os.path.join(ONNX_DIR, "arcface")
 
 USE_INT8_MODELS = os.getenv("USE_INT8_MODELS", "true").lower() == "true"

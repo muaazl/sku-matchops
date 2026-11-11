@@ -11,9 +11,7 @@ from backend.app.schemas.models import (
     RuleTestRequest,
 )
 from backend.app.services import rules_service
-from engine.rules_engine.actions import apply_actions
-from engine.rules_engine.evaluator import evaluate_conditions
-from engine.rules_engine.loader import Rule
+from backend.app.services.engine_client import test_rule_via_engine
 
 router = APIRouter()
 
@@ -24,7 +22,7 @@ def get_rules(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    return rules_service.get_rules_list(db, domain=domain, tenant_id=principal.tenant_id)
+    return rules_service.get_rules_list(db, domain=domain)
 
 
 @router.post("/rules", response_model=RuleOperationResponse)
@@ -34,7 +32,7 @@ def create_rule(
     principal: Principal = Depends(require_rule_editor),
 ):
     try:
-        new_id = rules_service.create_rule_entry(db, rule, tenant_id=principal.tenant_id)
+        new_id = rules_service.create_rule_entry(db, rule)
         return RuleOperationResponse(message=f"Rule {new_id} created successfully.", rule_id=new_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create rule: {str(e)}")
@@ -51,7 +49,7 @@ def reorder_rules(
         return RuleOperationResponse(message="No order specified.")
 
     try:
-        rules_service.reorder_rules_entries(db, ordered_ids, tenant_id=principal.tenant_id)
+        rules_service.reorder_rules_entries(db, ordered_ids)
         return RuleOperationResponse(message="Rules reordered successfully.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to reorder rules: {str(e)}")
@@ -60,40 +58,15 @@ def reorder_rules(
 @router.post("/rules/test-draft")
 def test_rule_draft(request: RuleDraftTestRequest):
     rule_dict = request.rule.model_dump()
-    row_values = (
-        0,
-        rule_dict["rule_id"],
-        rule_dict["domain"],
-        rule_dict["priority"],
-        rule_dict["description"],
-        rule_dict["reasoning"],
-        rule_dict["condition_logic"],
-        rule_dict["is_active"],
-    )
-    engine_rule = Rule(row_values)
-    engine_rule.conditions = [
+    rule_dict["conditions"] = [
         c if isinstance(c, dict) else c.model_dump() if hasattr(c, "model_dump") else dict(c)
         for c in rule_dict.get("conditions", [])
     ]
-    engine_rule.actions = [
+    rule_dict["actions"] = [
         a if isinstance(a, dict) else a.model_dump() if hasattr(a, "model_dump") else dict(a)
         for a in rule_dict.get("actions", [])
     ]
-
-    record = dict(request.sample_record)
-    fires = evaluate_conditions(engine_rule, record)
-    changes = ""
-    if fires:
-        changes = apply_actions(engine_rule, record)
-
-    return {
-        "rule_id": rule_dict["rule_id"],
-        "fires": fires,
-        "matched_conditions": engine_rule.conditions if fires else [],
-        "actions_applied": engine_rule.actions if fires else [],
-        "changes": changes,
-        "sample_record_after": record,
-    }
+    return test_rule_via_engine(rule_dict, dict(request.sample_record))
 
 
 @router.put("/rules/{rule_id}", response_model=RuleOperationResponse)
@@ -104,7 +77,7 @@ def update_rule(
     principal: Principal = Depends(require_rule_editor),
 ):
     try:
-        updated = rules_service.update_rule_entry(db, rule_id, rule, tenant_id=principal.tenant_id)
+        updated = rules_service.update_rule_entry(db, rule_id, rule)
         if not updated:
             raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found.")
         return RuleOperationResponse(
@@ -123,7 +96,7 @@ def delete_rule(
     principal: Principal = Depends(require_rule_editor),
 ):
     try:
-        deleted = rules_service.delete_rule_entry(db, rule_id, tenant_id=principal.tenant_id)
+        deleted = rules_service.delete_rule_entry(db, rule_id)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found.")
         return RuleOperationResponse(
@@ -142,35 +115,8 @@ def test_rule(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    rule_dict = rules_service.get_rule_by_id(db, rule_id, tenant_id=principal.tenant_id)
+    rule_dict = rules_service.get_rule_by_id(db, rule_id)
     if not rule_dict:
         raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found.")
 
-    row_values = (
-        rule_dict.get("id", 0),
-        rule_dict["rule_id"],
-        rule_dict["domain"],
-        rule_dict["priority"],
-        rule_dict["description"],
-        rule_dict["reasoning"],
-        rule_dict["condition_logic"],
-        rule_dict["is_active"],
-    )
-    engine_rule = Rule(row_values)
-    engine_rule.conditions = rule_dict.get("conditions", [])
-    engine_rule.actions = rule_dict.get("actions", [])
-
-    record = dict(request.sample_record)
-    fires = evaluate_conditions(engine_rule, record)
-    changes = ""
-    if fires:
-        changes = apply_actions(engine_rule, record)
-
-    return {
-        "rule_id": rule_id,
-        "fires": fires,
-        "matched_conditions": rule_dict["conditions"] if fires else [],
-        "actions_applied": rule_dict["actions"] if fires else [],
-        "changes": changes,
-        "sample_record_after": record,
-    }
+    return test_rule_via_engine(rule_dict, dict(request.sample_record))

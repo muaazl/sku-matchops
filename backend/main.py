@@ -12,15 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from backend.app.api.routes import api_router
+from backend.app.core import config
+from backend.app.core.observability import TraceIdMiddleware, configure_logging
 from backend.app.db.init import init_db
 from backend.app.db.session import get_engine
 from backend.app.grpc_server import ensure_backend_grpc_server, stop_backend_grpc_server
 from backend.app.middleware.audit_logging import AuditLoggingMiddleware
 from backend.app.middleware.etag import ETagMiddleware
 from backend.app.services.rules_service import sync_rules_everywhere
-from engine import config
-from engine.core.observability import TraceIdMiddleware, configure_logging
-from engine.pipeline.task_queue import get_task_queue
+from backend.app.services.task_queue import get_task_queue
 
 # Configure logging with standard stream and file handlers
 LOG_DIR = config.LOG_DIR
@@ -29,37 +29,47 @@ LOG_FILE = config.LOG_FILE
 
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
-for handler in root_logger.handlers[:]:
-    root_logger.removeHandler(handler)
+
+# Preserve existing test/framework handlers (e.g. pytest LogCaptureHandler)
+has_stream = any(
+    isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+    for h in root_logger.handlers
+)
+has_file = any(isinstance(h, logging.FileHandler) for h in root_logger.handlers)
 
 formatter = logging.Formatter(
     "%(asctime)s - [%(levelname)s] - %(name)s - [%(filename)s:%(lineno)d] - %(message)s"
 )
 
-sh = logging.StreamHandler(sys.stdout)
-sh.setFormatter(formatter)
-root_logger.addHandler(sh)
+if not has_stream:
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(formatter)
+    root_logger.addHandler(sh)
 
-fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
-fh.setFormatter(formatter)
-root_logger.addHandler(fh)
+if not has_file:
+    try:
+        fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+        fh.setFormatter(formatter)
+        root_logger.addHandler(fh)
+    except Exception:
+        pass
 configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured output
 
 logger = logging.getLogger("matchops.server")
 
 
 def startup_event():
-    """Startup sequence: Run schema migrations, start callback gRPC server, and sync rules."""
+    """Startup sequence: Initialize database tables, start callback gRPC server, and sync rules."""
     logger.info("Executing Startup Sequence for Backend Gateway...")
 
     ensure_backend_grpc_server()
 
-    # Auto-run schema migrations on startup
+    # Verify and initialize database tables on startup
     try:
         init_db()
-        logger.info("Database schemas verified/migrated.")
+        logger.info("Database schemas and tables verified.")
     except Exception as e:
-        logger.error(f"Failed to execute database migrations on startup: {e}")
+        logger.error(f"Failed to initialize database tables on startup: {e}")
 
     try:
         sync_rules_everywhere()
@@ -90,12 +100,17 @@ def startup_event():
                 {"live": live_job_ids},
             )
             stuck_count = cur.rowcount
+            # Reconcile batches: only mark failed if no remaining active jobs exist for the batch
             conn.execute(
                 text("""
                 UPDATE batches SET status = 'failed', completed_at = now()
-                WHERE status IN ('queued', 'running') AND NOT (id = ANY(:live))
-                """),
-                {"live": live_job_ids},
+                WHERE status IN ('queued', 'running')
+                  AND id NOT IN (
+                      SELECT DISTINCT batch_id FROM jobs
+                      WHERE status IN ('queued', 'running')
+                        AND batch_id IS NOT NULL
+                  )
+                """)
             )
         if stuck_count:
             logger.warning(
@@ -116,6 +131,12 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         shutdown_event()
+        try:
+            from backend.app.api.endpoints.jobs import close_async_redis_pool
+
+            await close_async_redis_pool()
+        except Exception:
+            pass
 
 
 app = FastAPI(
@@ -140,7 +161,6 @@ app.add_middleware(
         "If-None-Match",
         "X-API-Key",
         "Authorization",
-        "X-Tenant-ID",
         "X-Request-ID",
     ],
     expose_headers=["X-Total-Count", "X-Request-ID"],

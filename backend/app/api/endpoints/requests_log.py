@@ -5,7 +5,7 @@ from backend.app.core.security import require_platform_admin
 from backend.app.db.session import get_db_connection
 from backend.app.schemas.models import ApiRequestDetailResponse, ApiRequestResponse
 
-# The raw request log spans every tenant (payloads included): platform admins only
+# Raw request log inspection: administrators only
 router = APIRouter(dependencies=[Depends(require_platform_admin)])
 
 
@@ -18,24 +18,29 @@ def get_api_requests(
     page: int = 1,
     db: Connection = Depends(get_db_connection),
 ):
-    query = "SELECT id, method, path, status_code, duration_ms, ip_address, created_at FROM api_requests WHERE 1=1"
-    params = {}
+    clauses: list[str] = []
+    params: dict = {}
 
     if path:
-        query += " AND path LIKE :path"
+        clauses.append("path LIKE :path")
         params["path"] = f"%{path}%"
     if status_code:
-        query += " AND status_code = :status_code"
+        clauses.append("status_code = :status_code")
         params["status_code"] = status_code
     if date_from:
-        query += " AND created_at >= CAST(:date_from AS timestamptz)"
+        clauses.append("created_at >= CAST(:date_from AS timestamptz)")
         params["date_from"] = date_from
     if date_to:
-        query += " AND created_at <= CAST(:date_to AS timestamptz)"
+        clauses.append("created_at <= CAST(:date_to AS timestamptz)")
         params["date_to"] = date_to
 
-    query += " ORDER BY created_at DESC LIMIT 50 OFFSET :offset"
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params["offset"] = (page - 1) * 50
+
+    query = (
+        f"SELECT id, method, path, status_code, duration_ms, ip_address, created_at "
+        f"FROM api_requests {where} ORDER BY created_at DESC LIMIT 50 OFFSET :offset"
+    )
 
     rows = db.execute(text(query), params).mappings().fetchall()
     return [dict(row) for row in rows]

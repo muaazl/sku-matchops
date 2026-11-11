@@ -266,9 +266,9 @@ def rule_db(pg, monkeypatch):
     loads = []
     real_load = loader.load_rules_from_cache
 
-    def counting_load():
+    def counting_load(*args, **kwargs):
         loads.append(1)
-        real_load()
+        real_load(*args, **kwargs)
 
     monkeypatch.setattr(loader, "load_rules_from_cache", counting_load)
     monkeypatch.setattr(loader, "_RULES_CACHE", None)
@@ -317,7 +317,6 @@ def test_rule_change_bumps_version_publishes_and_engine_reloads(rule_db, monkeyp
     rules_service.sync_rules_everywhere()
     v1 = loader.sync_rules_version()
     old_cache = loader._RULES_CACHE
-    old_tenant_versions = loader._TENANT_VERSIONS
     fake.published.clear()
 
     # Gateway: rule updated in PostgreSQL + snapshot/invalidation published to Redis
@@ -331,7 +330,6 @@ def test_rule_change_bumps_version_publishes_and_engine_reloads(rule_db, monkeyp
     # Separate Engine worker whose in-memory cache is still on v1 picks up v2 at next job start
     monkeypatch.setattr(loader, "_RULES_CACHE", old_cache)
     monkeypatch.setattr(loader, "_RULES_VERSION", v1)
-    monkeypatch.setattr(loader, "_TENANT_VERSIONS", old_tenant_versions)
     loader._cached_rules.cache_clear()
 
     loads_before = len(rule_db.loads)
@@ -367,9 +365,15 @@ def test_redis_down_pushes_rules_via_grpc_refresh(rule_db, monkeypatch):
 def test_gateway_falls_back_to_grpc_refresh_when_redis_down(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        rules_service, "load_active_rules_from_db", lambda db=None: [{"rule_id": "1"}]
+        rules_service,
+        "load_active_rules_from_db",
+        lambda db=None: [{"rule_id": "1"}],
     )
-    monkeypatch.setattr(rules_service, "publish_rules_snapshot", lambda data: ("v1", False))
+    monkeypatch.setattr(
+        rules_service,
+        "publish_rules_snapshot",
+        lambda data: ("v1", False),
+    )
     monkeypatch.setattr(
         rules_service,
         "refresh_engine_rules",
@@ -379,7 +383,11 @@ def test_gateway_falls_back_to_grpc_refresh_when_redis_down(monkeypatch):
     assert calls == [([{"rule_id": "1"}], "v1")]
 
     calls.clear()
-    monkeypatch.setattr(rules_service, "publish_rules_snapshot", lambda data: ("v1", True))
+    monkeypatch.setattr(
+        rules_service,
+        "publish_rules_snapshot",
+        lambda data: ("v1", True),
+    )
     rules_service._refresh_rules_everywhere()
     assert calls == []
 

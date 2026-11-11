@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from backend.app.core.security import require_platform_admin
 from backend.app.schemas.models import VectorSearchRequest
 from backend.app.services.engine_client import (
     get_vector_collection,
@@ -7,7 +8,7 @@ from backend.app.services.engine_client import (
     search_vector_collection,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_platform_admin)])
 
 
 def _call_vector_rpc(fn, *args):

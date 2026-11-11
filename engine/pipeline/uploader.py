@@ -10,6 +10,17 @@ from playwright.sync_api import sync_playwright
 logger = logging.getLogger("matchops.engine.uploader")
 
 
+def _target_page_size(sku_count: int) -> str | None:
+    """Returns the Ant Design pagination size ('20', '50', '100'), or None to keep default 10."""
+    if sku_count <= 10:
+        return None
+    if sku_count <= 20:
+        return "20"
+    if sku_count <= 50:
+        return "50"
+    return "100"
+
+
 def process_upload(skus, outlet_id, job_id, progress_callback, is_cancelled, has_more_jobs=False):
     """
     Executes the Playwright bulk upload automation for the provided SKUs.
@@ -100,26 +111,40 @@ def process_upload(skus, outlet_id, job_id, progress_callback, is_cancelled, has
             time.sleep(2)
             progress_callback("uploading", 40.0)
 
-            # Set Items per Page dynamically based on SKU count
-            sku_count = len(skus)
-            if sku_count > 10:
-                target_size = "50" if sku_count <= 50 else "100"
+            # Set Items per Page dynamically based on SKU count (10, 20, 50, 100)
+            target_size = _target_page_size(len(skus))
+            if target_size:
+                target_label = f"{target_size} / page"
                 try:
-                    page_size_dropdown = page.locator(
-                        "xpath=/html/body/div[1]/div/div/div/div/main/section/div[2]/div/div/div/div[2]/div/div/div/div/div[4]/div[3]/ul/li[11]/div/div/span/span[2]"
-                    )
-                    if page_size_dropdown.is_visible(timeout=3000):
-                        page_size_dropdown.click()
-                        time.sleep(0.5)
-                        page.keyboard.type(target_size)
-                        page.keyboard.press("Enter")
-                        time.sleep(1.5)
-                    else:
-                        logger.info(
-                            f"Page size dropdown not visible. Skipping resize to {target_size}."
+                    size_selector = page.locator(
+                        ".ant-select-selector:has(span.ant-select-selection-item[title*='/ page']):visible"
+                    ).first
+                    size_selector.wait_for(state="visible", timeout=8000)
+
+                    if target_label not in (size_selector.inner_text() or ""):
+                        size_selector.scroll_into_view_if_needed()
+                        size_selector.click(timeout=5000)
+
+                        option = (
+                            page.locator(".ant-select-dropdown:visible .ant-select-item-option")
+                            .filter(
+                                has_text=re.compile(
+                                    rf"^\s*{target_size}\s*/\s*page\s*$", re.IGNORECASE
+                                )
+                            )
+                            .first
                         )
+                        option.wait_for(state="visible", timeout=5000)
+                        option.click(timeout=5000)
+                        page.locator(
+                            f"span.ant-select-selection-item[title='{target_label}']:visible"
+                        ).first.wait_for(state="visible", timeout=5000)
+                        time.sleep(1.0)
+                        logger.info(f"[JOB {job_id}] Changed page size to '{target_label}'.")
                 except Exception as e:
-                    logger.warning(f"Could not change page size to {target_size}: {e}")
+                    logger.warning(
+                        f"[JOB {job_id}] Could not change page size to '{target_label}': {e}"
+                    )
 
             current_page = 1
             pages_processed = 0

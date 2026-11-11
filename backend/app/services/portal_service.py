@@ -11,6 +11,7 @@ import time
 
 import requests
 
+from backend.app.core.security import validate_outbound_url
 from backend.app.db.session import log_outbound_request
 from backend.app.schemas.models import SKUItem
 
@@ -85,6 +86,15 @@ def fetch_merchant_csv(merchant_id: str, bearer_token: str, portal_url: str | No
     token, as well as a generic 401/403 from the portal).
     """
     base_url = (portal_url or "").strip() or PORTAL_URL
+    try:
+        validate_outbound_url(base_url, allowed_domains=("pickme.lk", "google.com"))
+    except ValueError as e:
+        logger.warning(f"[PORTAL] Blocked SSRF attempt for merchant '{merchant_id}': {e}")
+        return {
+            "skus": [],
+            "auth_failed": False,
+            "error": f"Invalid portal URL: {e}",
+        }
     url = base_url.replace("{merchantid}", merchant_id.strip())
 
     headers = {

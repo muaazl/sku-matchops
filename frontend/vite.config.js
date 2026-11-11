@@ -30,6 +30,7 @@ export default defineConfig({
           react: ['react', 'react-dom', 'react-router-dom'],
           mui: ['@mui/material', '@mui/system', '@emotion/react', '@emotion/styled'],
           query: ['@tanstack/react-query', 'axios', 'zustand', 'notistack'],
+          charts: ['chart.js'],
         },
       },
     },

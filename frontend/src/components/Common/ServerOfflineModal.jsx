@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useTheme } from '@mui/material/styles';
 import { Box, Paper, Typography, Button, CircularProgress } from '@mui/material';
-import { WifiOff, RefreshCw } from 'lucide-react';
+import { WifiOff, Refresh } from '@mui/icons-material';
 import { checkHealth } from '../../app/api';
 
 export default function ServerOfflineModal() {
@@ -69,7 +69,7 @@ export default function ServerOfflineModal() {
             mb: 2,
           }}
         >
-          <WifiOff size={32} color={theme.palette.text.secondary} />
+          <WifiOff sx={{ fontSize: 32, color: theme.palette.text.secondary }} />
         </Box>
 
         <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
@@ -86,7 +86,7 @@ export default function ServerOfflineModal() {
           fullWidth
           onClick={runHealthCheck}
           disabled={checking}
-          startIcon={checking ? <CircularProgress size={16} color="inherit" /> : <RefreshCw size={16} />}
+          startIcon={checking ? <CircularProgress size={16} color="inherit" /> : <Refresh sx={{ fontSize: 16 }} />}
           sx={{ textTransform: 'none', fontWeight: 600, py: 1 }}
         >
           {checking ? 'Checking Connection…' : 'Retry Connection'}

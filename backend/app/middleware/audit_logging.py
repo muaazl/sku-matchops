@@ -37,6 +37,23 @@ def _redact_sensitive_data(obj):
                 _redact_sensitive_data(item)
 
 
+def _format_audit_response(body_bytes: bytes | None, content_length: int | None = None) -> str:
+    """Format and redact response body for audit trail, truncating responses exceeding 64KB."""
+    if content_length is not None and content_length > 65536:
+        return f"<omitted: response body {content_length} bytes > 64KB>"
+    if body_bytes is not None and len(body_bytes) > 65536:
+        return f"<omitted: response body {len(body_bytes)} bytes > 64KB>"
+    if not body_bytes:
+        return ""
+    text = body_bytes.decode("utf-8", errors="replace")
+    try:
+        resp_data = json.loads(text)
+        _redact_sensitive_data(resp_data)
+        return json.dumps(resp_data)
+    except Exception:
+        return text
+
+
 class AuditLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Determine if we should log this request
@@ -109,30 +126,34 @@ class AuditLoggingMiddleware(BaseHTTPMiddleware):
         duration_ms = int((time.time() - start_time) * 1000)
         status_code = response.status_code
 
-        # 5. Capture response body safely
+        # 5. Capture response body safely (capped at 64KB to avoid memory blowup)
         response_json = ""
         try:
-            if hasattr(response, "body_iterator"):
-                response_body = [section async for section in response.body_iterator]
+            content_length = response.headers.get("content-length")
+            cl_int = int(content_length) if content_length and content_length.isdigit() else None
+            if cl_int and cl_int > 65536:
+                response_json = f"<omitted: response body {cl_int} bytes > 64KB>"
+            elif hasattr(response, "body_iterator"):
+                response_body = []
+                total_bytes = 0
+                too_large = False
+                async for section in response.body_iterator:
+                    response_body.append(section)
+                    total_bytes += len(section)
+                    if total_bytes > 65536:
+                        too_large = True
 
                 async def async_iter():
                     for chunk in response_body:
                         yield chunk
 
                 response.body_iterator = async_iter()
-                body_bytes = b"".join(response_body)
-                response_json = body_bytes.decode("utf-8", errors="replace")
+                if too_large:
+                    response_json = f"<omitted: response body {total_bytes} bytes > 64KB>"
+                else:
+                    response_json = _format_audit_response(b"".join(response_body))
             elif hasattr(response, "body"):
-                response_json = response.body.decode("utf-8", errors="replace")
-
-            # Safely redact response JSON
-            if response_json:
-                try:
-                    resp_data = json.loads(response_json)
-                    _redact_sensitive_data(resp_data)
-                    response_json = json.dumps(resp_data)
-                except Exception:
-                    pass
+                response_json = _format_audit_response(response.body, cl_int)
         except Exception as e:
             logger.error(f"Failed to capture response body: {e}")
 

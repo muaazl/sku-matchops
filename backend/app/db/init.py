@@ -9,12 +9,15 @@ logger = logging.getLogger("matchops.db.init")
 
 
 def init_db() -> None:
-    """Synchronizes PostgreSQL database schema and ID sequences directly using SQLAlchemy metadata."""
+    """Initializes PostgreSQL database schema, extensions, tables, and ID sequences."""
     engine = get_engine()
     try:
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm;"))
+
+        # Idempotently checks database and creates any missing tables and indexes
         metadata.create_all(engine)
+
         with engine.begin() as conn:
             for seq, table, col in (
                 ("jobs_id_seq", "jobs", "id"),
@@ -28,7 +31,7 @@ def init_db() -> None:
                         f"EXISTS(SELECT 1 FROM {table} WHERE {col} ~ '^[0-9]+$'))"
                     )
                 )
-        logger.info("Database schema is fully synchronized.")
+        logger.info("Database schema, tables, and sequences are fully initialized.")
     except Exception as e:
-        logger.error(f"Failed to synchronize database schema: {e}")
+        logger.error(f"Failed to initialize database schema: {e}")
         raise

@@ -28,7 +28,6 @@ logger = logging.getLogger("matchops.task_queue")
 REALTIME = "matchops:queue:realtime"
 BULK = "matchops:queue:bulk"
 DLQ = "matchops:queue:dlq"
-DLQ_TENANTS = "matchops:queue:dlq_tenants"  # HASH tenant_id -> count
 INFLIGHT = "matchops:queue:inflight"  # ZSET task_id -> lease deadline (epoch seconds)
 TASKS = "matchops:queue:tasks"  # HASH task_id -> task JSON
 TASK_JOBS = "matchops:queue:task_jobs"  # HASH task_id -> job_id (lightweight index)
@@ -131,9 +130,24 @@ class TaskQueue:
     def ack(self, task_id: str) -> None:
         pipe = self.r.pipeline()
         pipe.zrem(INFLIGHT, task_id)
+        pipe.lrem(REALTIME, 0, task_id)
+        pipe.lrem(BULK, 0, task_id)
         pipe.hdel(TASKS, task_id)
         pipe.hdel(TASK_JOBS, task_id)
         pipe.execute()
+
+    def release(self, task: dict) -> bool:
+        """Returns an in-flight idempotent task to the head of its queue on graceful shutdown
+        without incrementing attempts or adding retry backoff."""
+        if (task.get("payload") or {}).get("task") == "upload":
+            return False
+        if not self.r.zrem(INFLIGHT, task["task_id"]):
+            return False
+        self.r.lpush(task["queue"], task["task_id"])
+        logger.info(
+            f"[QUEUE] Released in-flight job {task['job_id']} ({task['task_id']}) back to {task['queue']} on shutdown."
+        )
+        return True
 
     def fail(self, task: dict, error: str) -> str:
         """Records a failed attempt. Returns 'retry', 'dead', or 'lost' (lease no longer ours)."""
@@ -152,15 +166,24 @@ class TaskQueue:
                 continue
             task = json.loads(raw)
             logger.warning(f"[QUEUE] Lease expired for job {task['job_id']} ({task_id}).")
-            if self._retry_or_dead(task, "lease expired (worker crashed or stalled)") == "dead":
+            if (
+                self._retry_or_dead(
+                    task, "lease expired (worker crashed or stalled)", immediate_first_retry=True
+                )
+                == "dead"
+            ):
                 dead.append(task)
         return dead
 
-    def _retry_or_dead(self, task: dict, error: str) -> str:
+    def _retry_or_dead(self, task: dict, error: str, immediate_first_retry: bool = False) -> str:
         task["attempts"] += 1
         task["last_error"] = error
         if task["attempts"] < task["max_attempts"]:
-            delay = self.backoff_seconds * 2 ** (task["attempts"] - 1)
+            delay = (
+                0.0
+                if (immediate_first_retry and task["attempts"] == 1)
+                else self.backoff_seconds * 2 ** (task["attempts"] - 1)
+            )
             pipe = self.r.pipeline()
             pipe.hset(TASKS, task["task_id"], json.dumps(task))
             pipe.zadd(DELAYED[task["queue"]], {task["task_id"]: _now() + delay})
@@ -181,12 +204,11 @@ class TaskQueue:
             "failed_at": datetime.now(UTC).isoformat(),
             "payload": task["payload"],
         }
-        tenant_id = str(task["payload"].get("tenant_id") or "default")
+        entry_raw = json.dumps(entry)
         pipe = self.r.pipeline()
-        pipe.rpush(DLQ, json.dumps(entry))
+        pipe.rpush(DLQ, entry_raw)
         pipe.hdel(TASKS, task["task_id"])
         pipe.hdel(TASK_JOBS, task["task_id"])
-        pipe.hincrby(DLQ_TENANTS, tenant_id, 1)
         pipe.execute()
         logger.error(
             f"[QUEUE] Job {task['job_id']} moved to DLQ after {task['attempts']} attempts: {error}"
@@ -210,38 +232,25 @@ class TaskQueue:
     def dlq_items(self, limit: int = 100) -> list[dict]:
         return [json.loads(raw) for raw in self.r.lrange(DLQ, 0, limit - 1)]
 
-    def dlq_count(self, tenant_id: str = "default") -> int:
-        """O(1) per-tenant dead-letter count (backfills once if pre-existing DLQ entries exist)."""
-        pipe = self.r.pipeline()
-        pipe.llen(DLQ)
-        pipe.hlen(DLQ_TENANTS)
-        pipe.hget(DLQ_TENANTS, tenant_id)
-        total_dlq, tracked_tenants, val = pipe.execute()
-        if total_dlq == 0:
-            if tracked_tenants:
-                self.r.delete(DLQ_TENANTS)
-            return 0
-        if tracked_tenants > 0:
-            return max(0, int(val or 0))
-        counts: dict[str, int] = {}
-        for raw in self.r.lrange(DLQ, 0, -1):
-            t = str(json.loads(raw).get("payload", {}).get("tenant_id") or "default")
-            counts[t] = counts.get(t, 0) + 1
-        if counts:
-            self.r.hset(DLQ_TENANTS, mapping=counts)
-        return counts.get(tenant_id, 0)
+    def dlq_count(self) -> int:
+        return int(self.r.llen(DLQ) or 0)
 
     def replay(self, task_id: str) -> str | None:
         """Moves a DLQ entry back onto its queue with a fresh attempt budget. Returns the new
         task id, or None if no such entry."""
         for raw in self.r.lrange(DLQ, 0, -1):
             entry = json.loads(raw)
-            if entry["task_id"] == task_id and self.r.lrem(DLQ, 1, raw):
-                tenant_id = str(entry["payload"].get("tenant_id") or "default")
-                if self.r.hincrby(DLQ_TENANTS, tenant_id, -1) <= 0:
-                    self.r.hdel(DLQ_TENANTS, tenant_id)
-                return self.enqueue(entry["payload"], queue=entry["queue"])
+            if entry["task_id"] == task_id:
+                if self.r.lrem(DLQ, 1, raw):
+                    return self.enqueue(entry["payload"], queue=entry["queue"])
         return None
+
+    def drop_dlq(self, task_id: str) -> bool:
+        for raw in self.r.lrange(DLQ, 0, -1):
+            entry = json.loads(raw)
+            if entry["task_id"] == task_id:
+                return bool(self.r.lrem(DLQ, 1, raw))
+        return False
 
     # -- bookkeeping ----------------------------------------------------------------------------
 
@@ -282,6 +291,22 @@ class TaskQueue:
 
 
 _queue: TaskQueue | None = None
+_active_lock = threading.Lock()
+_active_tasks: dict[str, tuple[TaskQueue, dict]] = {}
+
+
+def release_active_tasks() -> int:
+    """Releases all currently in-flight idempotent tasks in this process back to Redis immediately."""
+    with _active_lock:
+        items = list(_active_tasks.values())
+    released = 0
+    for q, task in items:
+        try:
+            if q.release(task):
+                released += 1
+        except Exception as e:
+            logger.warning(f"[QUEUE] Failed to release task {task.get('task_id')} on shutdown: {e}")
+    return released
 
 
 def get_task_queue() -> TaskQueue | None:
@@ -307,7 +332,7 @@ def run_worker(
     stop: threading.Event | None = None,
     lock=None,  # a threading.Lock shared with other job runners in this process
     poll_interval: float | None = None,
-    reclaim_interval: float = 15.0,
+    reclaim_interval: float = 3.0,
 ) -> None:
     """
     Consumer loop: reclaim stale leases, claim the next task, run `handler(payload)` while a
@@ -331,9 +356,11 @@ def run_worker(
             if lock:
                 lock.acquire()
             try:
+                if stop.is_set():
+                    break
                 task = queue.claim()
                 if task is not None:
-                    _run_claimed(queue, task, handler, on_dead)
+                    _run_claimed(queue, task, handler, on_dead, stop=stop)
             finally:
                 if lock:
                     lock.release()
@@ -346,19 +373,28 @@ def run_worker(
             backoff = min(backoff * 2, 30.0)
 
 
-def _run_claimed(queue: TaskQueue, task: dict, handler, on_dead) -> None:
+def _run_claimed(
+    queue: TaskQueue, task: dict, handler, on_dead, stop: threading.Event | None = None
+) -> None:
     # The Gateway's request trace id follows the job into every worker log line
     with trace_context(task["payload"].get("trace_id")):
-        _run_traced(queue, task, handler, on_dead)
+        _run_traced(queue, task, handler, on_dead, stop=stop)
 
 
-def _run_traced(queue: TaskQueue, task: dict, handler, on_dead) -> None:
+def _run_traced(
+    queue: TaskQueue, task: dict, handler, on_dead, stop: threading.Event | None = None
+) -> None:
+    task_id = task["task_id"]
+    with _active_lock:
+        _active_tasks[task_id] = (queue, task)
     done = threading.Event()
 
     def _heartbeat():
         while not done.wait(queue.lease_seconds / 3):
+            if stop is not None and stop.is_set():
+                return
             try:
-                if not queue.renew(task["task_id"]):
+                if not queue.renew(task_id):
                     logger.warning(f"[QUEUE] Lost lease on job {task['job_id']}.")
                     return
             except Exception as e:
@@ -369,12 +405,18 @@ def _run_traced(queue: TaskQueue, task: dict, handler, on_dead) -> None:
     try:
         handler(task["payload"])
     except Exception as e:
+        if stop is not None and stop.is_set():
+            if hasattr(queue, "release"):
+                queue.release(task)
+            return
         outcome = queue.fail(task, str(e))
         if outcome == "dead" and on_dead:
             task["last_error"] = str(e)
             on_dead(task)
     else:
-        queue.ack(task["task_id"])
+        queue.ack(task_id)
     finally:
+        with _active_lock:
+            _active_tasks.pop(task_id, None)
         done.set()
         heartbeat.join(timeout=1)

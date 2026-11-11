@@ -13,7 +13,7 @@ import {
   TableRow,
   Typography,
 } from '@mui/material';
-import { ArrowRight, Tag, Gauge, Compass, Store, UtensilsCrossed, ShoppingBasket } from 'lucide-react';
+import { ArrowForward, Label, Speed, Explore, Storefront, Restaurant, ShoppingBasket } from '@mui/icons-material';
 import { PageContainer, PageHeader } from '../components/ui';
 import {
   StyledTableBody,
@@ -120,7 +120,7 @@ export default function Guide() {
 
       <Stack spacing={3}>
         <SectionCard
-          icon={Tag}
+          icon={Label}
           title="How a SKU gets tagged"
           subheader="Every processed SKU gets three tags: Basic Type, Generic Keyword, and Region (or Category for market SKUs)"
         >
@@ -132,11 +132,11 @@ export default function Guide() {
             sx={{ py: 2, flexWrap: 'wrap', rowGap: 2 }}
           >
             <FlowChip label='"Egg Roll"' sub="SKU name" />
-            <ArrowRight size={18} style={{ opacity: 0.5 }} />
+            <ArrowForward sx={{ fontSize: 18, opacity: 0.5 }} />
             <FlowChip label="Short Eats → Rolls → Egg Roll" sub="Generic Keyword (broad → specific)" />
-            <ArrowRight size={18} style={{ opacity: 0.5 }} />
+            <ArrowForward sx={{ fontSize: 18, opacity: 0.5 }} />
             <FlowChip label="Rolls" sub="Basic Type" />
-            <ArrowRight size={18} style={{ opacity: 0.5 }} />
+            <ArrowForward sx={{ fontSize: 18, opacity: 0.5 }} />
             <FlowChip label="Sri Lankan" sub="Region" />
           </Stack>
 
@@ -180,7 +180,7 @@ export default function Guide() {
         <Grid container spacing={3}>
           <Grid size={{ xs: 12, md: 6 }}>
             <SectionCard
-              icon={Gauge}
+              icon={Speed}
               title="Confidence & status"
               subheader="What AUTO / REVIEW / LOW mean for a tag you see in the Dashboard or Interactive tools"
             >
@@ -215,7 +215,7 @@ export default function Guide() {
 
           <Grid size={{ xs: 12, md: 6 }}>
             <SectionCard
-              icon={Compass}
+              icon={Explore}
               title="Where a tag comes from"
               subheader="The source attached to every predicted tag"
             >
@@ -237,7 +237,7 @@ export default function Guide() {
 
         <Grid container spacing={3}>
           <Grid size={{ xs: 12, md: 6 }}>
-            <SectionCard icon={UtensilsCrossed} title="Food domain" subheader="Basic Type + Generic Keyword + Region">
+            <SectionCard icon={Restaurant} title="Food domain" subheader="Basic Type + Generic Keyword + Region">
               <Typography variant="body2" color="text.secondary">
                 Food SKUs are tagged by cuisine — e.g. a <em>Chicken Kottu</em> gets Basic Type <strong>Kottu</strong>{' '}
                 and Region <strong>Sri Lankan</strong>. Region answers "where does this dish come from," which is what
@@ -261,7 +261,7 @@ export default function Guide() {
         </Grid>
 
         <SectionCard
-          icon={Store}
+          icon={Storefront}
           title="Outlet-level cuisine tagging"
           subheader="Sometimes the Region tag comes from the restaurant brand itself, not just the SKU name"
         >

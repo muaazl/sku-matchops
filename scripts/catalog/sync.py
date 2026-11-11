@@ -9,7 +9,7 @@ Keeps three independent things up to date, each with an explicit mode:
             catalog metadata pickle) — local to this checkout, derived from --db.
   --qdrant  Qdrant vector collections (catalog + tag embeddings) and classifier training —
             this is the piece that is typically SHARED across multiple checkouts pointed
-            at the same Qdrant/Meilisearch instance.
+            at the same Qdrant instance.
 
 Each target takes a mode:
   sync     Incremental — only touches what actually changed/is missing. Safe default.

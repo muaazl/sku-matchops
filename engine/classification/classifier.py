@@ -154,6 +154,9 @@ class ZeroShotClassifier:
         try:
             sess_opts = ort.SessionOptions()
             sess_opts.add_session_config_entry("session.use_mmap_for_weights", "1")
+            sess_opts.enable_cpu_mem_arena = False
+            sess_opts.intra_op_num_threads = config.MAX_CPU_CORES
+            sess_opts.inter_op_num_threads = 1
             self._arcface_session = ort.InferenceSession(
                 onnx_path, sess_options=sess_opts, providers=["CPUExecutionProvider"]
             )

@@ -157,7 +157,9 @@ class TextPipeline:
         text = re.sub(r"(-|\|)?\s*sku\s*\d+", "", text)
         text = re.sub(r"\b\d{4,6}\b", "", text)
         # Keep only alphanumeric and dots
-        text = re.sub(r"[^a-z0-9\s\.]", " ", text)
+        # Preserve all Unicode word characters (letters, marks, numbers in any script like Sinhala/Latin) and dots
+        # Preserve all alphanumeric, dots, and Indic/Sinhala/Tamil Unicode scripts
+        text = re.sub(r"[^\w\s\.\u0D80-\u0DFF\u0B80-\u0BFF]|_", " ", text)
         return re.sub(r"\s+", " ", text).strip()
 
     @staticmethod

@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import warnings
+from collections import OrderedDict
 
 import pandas as pd
 from rapidfuzz import fuzz, process
@@ -58,6 +59,11 @@ class NEREngine:
         # every catalog resync) in memory forever instead of letting old ones be garbage
         # collected. Binding the cache per-instance here means it lives and dies with self.
         self._get_dict_entities = functools.lru_cache(maxsize=100000)(self._get_dict_entities)
+        # Per-instance LRU cache for Layer-2 GLiNER fallback predictions so repeated SKU strings
+        # across food prepass / matcher / tagger never re-run ONNX GLiNER, while still getting GC'd
+        # cleanly whenever this NEREngine instance is replaced on catalog reload.
+        self._ner_cache: OrderedDict[str, list[dict]] = OrderedDict()
+        self._ner_cache_max = 50000
 
     # ─────────────────────────────────────────────────────────────
     # Model Loading
@@ -238,11 +244,20 @@ class NEREngine:
         return matched if matched else {value}
 
     def _run_ner(self, text: str) -> list[dict]:
+        cache = getattr(self, "_ner_cache", None)
+        if cache is not None and text in cache:
+            cache.move_to_end(text)
+            return cache[text]
         try:
             if self.model:
-                return self.model.predict_entities(
+                res = self.model.predict_entities(
                     text, self.labels, threshold=config.NER_CONFIDENCE_THRESHOLD
                 )
+                if cache is not None:
+                    cache[text] = res
+                    if len(cache) > getattr(self, "_ner_cache_max", 50000):
+                        cache.popitem(last=False)
+                return res
             logger.warning(f"[NER] No model available for '{text}'.")
             return []
         except Exception as e:
@@ -304,37 +319,62 @@ class NEREngine:
         if not fallback_indices:
             return all_results
 
-        # Batch NER for texts that got no dict hit
-        fallback_texts = [valid_texts[i] for i in fallback_indices]
+        # Batch NER for texts that got no dict hit (with per-instance cache + batch deduplication)
+        cache = getattr(self, "_ner_cache", None)
+        cache_max = getattr(self, "_ner_cache_max", 50000)
+        resolved_raw: dict[str, list[dict]] = {}
+        missing_texts: list[str] = []
+        missing_seen: set[str] = set()
+
+        for idx in fallback_indices:
+            txt = valid_texts[idx]
+            if cache is not None and txt in cache:
+                cache.move_to_end(txt)
+                resolved_raw[txt] = cache[txt]
+            elif txt not in missing_seen:
+                missing_seen.add(txt)
+                missing_texts.append(txt)
+
         t_ner = time.perf_counter()
         try:
-            if self.model:
-                if hasattr(self.model, "inference"):
-                    raw_list = self.model.inference(
-                        fallback_texts,
-                        self.labels,
-                        threshold=config.NER_CONFIDENCE_THRESHOLD,
-                        batch_size=batch_size,
-                    )
-                elif hasattr(self.model, "batch_predict_entities"):
-                    raw_list = self.model.batch_predict_entities(
-                        fallback_texts,
-                        self.labels,
-                        threshold=config.NER_CONFIDENCE_THRESHOLD,
-                        batch_size=batch_size,
-                    )
+            if missing_texts:
+                if self.model:
+                    if hasattr(self.model, "inference"):
+                        raw_list = self.model.inference(
+                            missing_texts,
+                            self.labels,
+                            threshold=config.NER_CONFIDENCE_THRESHOLD,
+                            batch_size=batch_size,
+                        )
+                    elif hasattr(self.model, "batch_predict_entities"):
+                        raw_list = self.model.batch_predict_entities(
+                            missing_texts,
+                            self.labels,
+                            threshold=config.NER_CONFIDENCE_THRESHOLD,
+                            batch_size=batch_size,
+                        )
+                    else:
+                        raw_list = [
+                            self.model.predict_entities(t, self.labels, threshold=0.25) if t else []
+                            for t in missing_texts
+                        ]
                 else:
-                    raw_list = [
-                        self.model.predict_entities(t, self.labels, threshold=0.25) if t else []
-                        for t in fallback_texts
-                    ]
-            else:
-                logger.warning("[NER] No model for batch NER; returning empty for fallback items.")
-                raw_list = [[] for _ in fallback_texts]
-            ONNX_INFERENCE_SECONDS.labels(model="ner").observe(time.perf_counter() - t_ner)
+                    logger.warning(
+                        "[NER] No model for batch NER; returning empty for fallback items."
+                    )
+                    raw_list = [[] for _ in missing_texts]
+                ONNX_INFERENCE_SECONDS.labels(model="ner").observe(time.perf_counter() - t_ner)
 
-            for list_idx, original_idx in enumerate(fallback_indices):
-                for entity in raw_list[list_idx]:
+                for txt, ents_raw in zip(missing_texts, raw_list):
+                    resolved_raw[txt] = ents_raw
+                    if cache is not None and self.model is not None:
+                        cache[txt] = ents_raw
+                if cache is not None:
+                    while len(cache) > cache_max:
+                        cache.popitem(last=False)
+
+            for original_idx in fallback_indices:
+                for entity in resolved_raw.get(valid_texts[original_idx], ()):
                     label = entity["label"]
                     resolved = self._resolve_entity_text(entity["text"])
                     all_results[original_idx][label].update(resolved)

@@ -3,10 +3,12 @@ import io
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import Connection, text
 
+from backend.app.core import config as app_config
 from backend.app.core.security import Principal, get_principal
-from backend.app.db.session import get_db_connection
+from backend.app.db.session import get_db_connection, get_engine
 from backend.app.schemas.models import ProcessedSkuResponse
 
 router = APIRouter()
@@ -41,37 +43,37 @@ def get_history(
     db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
 ):
-    where = "WHERE tenant_id = :tenant_id"
-    params = {"tenant_id": principal.tenant_id}
+    clauses: list[str] = []
+    params: dict = {}
 
     if batch_id:
-        where += " AND batch_id = :batch_id"
+        clauses.append("batch_id = :batch_id")
         params["batch_id"] = batch_id
     if domain:
-        where += " AND domain = :domain"
+        clauses.append("domain = :domain")
         params["domain"] = domain
     if min_confidence is not None:
-        where += " AND confidence >= :min_confidence"
+        clauses.append("confidence >= :min_confidence")
         params["min_confidence"] = min_confidence
     if date_from:
-        where += " AND created_at >= CAST(:date_from AS timestamptz)"
+        clauses.append("created_at >= CAST(:date_from AS timestamptz)")
         params["date_from"] = date_from
     if date_to:
-        where += " AND created_at <= CAST(:date_to AS timestamptz)"
+        clauses.append("created_at <= CAST(:date_to AS timestamptz)")
         params["date_to"] = date_to
     if sku_name:
-        where += " AND sku_name ILIKE :sku_name"
+        clauses.append("sku_name ILIKE :sku_name")
         params["sku_name"] = f"%{sku_name}%"
     if bt:
-        where += " AND bt ILIKE :bt"
+        clauses.append("bt ILIKE :bt")
         params["bt"] = f"%{bt}%"
     if gk:
-        where += " AND gk_json ILIKE :gk"
+        clauses.append("gk_json ILIKE :gk")
         params["gk"] = f"%{gk}%"
     if match_source:
         source_val = match_source.strip().lower()
         if source_val == "matcher":
-            where += """ AND (
+            clauses.append("""(
                 LOWER(TRIM(COALESCE(match_source, ''))) IN ('matcher', 'catalogue')
                 OR (
                     (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
@@ -80,19 +82,21 @@ def get_history(
                         AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
                     )
                 )
-            )"""
+            )""")
         elif source_val == "classifier":
-            where += """ AND (
+            clauses.append("""(
                 LOWER(TRIM(COALESCE(match_source, ''))) = 'classifier'
                 OR (
                     (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
                     AND (matched_catalog_name IS NULL OR TRIM(matched_catalog_name) = '')
                     AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
                 )
-            )"""
+            )""")
         else:
-            where += " AND match_source ILIKE :match_source"
-        params["match_source"] = f"%{match_source}%"
+            clauses.append("match_source ILIKE :match_source")
+            params["match_source"] = f"%{match_source}%"
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     total_count = db.execute(text(f"SELECT COUNT(*) FROM processed_skus {where}"), params).scalar()
     response.headers["X-Total-Count"] = str(total_count)
@@ -106,44 +110,84 @@ def get_history(
     return [dict(row) for row in rows]
 
 
+def generate_csv_chunks(principal: Principal, ids: str | None = None, db: Connection | None = None):
+    """Generates sanitized CSV chunks for export, managing its own DB connection lifecycle."""
+    clauses: list[str] = []
+    params: dict = {}
+
+    if ids:
+        id_list = [i.strip() for i in ids.split(",") if i.strip()][:1000]
+        if id_list:
+            clauses.append("id = ANY(:ids)")
+            params["ids"] = id_list
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    query = f"SELECT * FROM processed_skus {where} ORDER BY created_at DESC LIMIT 50000"
+
+    buf = io.StringIO()
+    writer = None
+
+    def _execute_and_stream(conn):
+        nonlocal writer
+        exec_conn = (
+            conn.execution_options(stream_results=True, max_row_buffer=2000)
+            if hasattr(conn, "execution_options") and not app_config.USE_PGBOUNCER
+            else conn
+        )
+        result = exec_conn.execute(text(query), params)
+        try:
+            mappings = result.mappings()
+            batches = (
+                mappings.partitions(2000)
+                if hasattr(mappings, "partitions")
+                else [mappings.fetchall()]
+            )
+            for partition in batches:
+                for row in partition:
+                    row_dict = dict(row)
+                    if writer is None:
+                        writer = csv.DictWriter(buf, fieldnames=row_dict.keys())
+                        writer.writeheader()
+                    writer.writerow({k: _sanitize_csv_cell(v) for k, v in row_dict.items()})
+                chunk = buf.getvalue()
+                if chunk:
+                    yield chunk
+                    buf.seek(0)
+                    buf.truncate(0)
+        finally:
+            if hasattr(result, "close"):
+                result.close()
+
+    if db is not None:
+        yield from _execute_and_stream(db)
+    else:
+        with get_engine().connect() as conn:
+            yield from _execute_and_stream(conn)
+
+
+def _streaming_db() -> Connection | None:
+    """Route dependency returning None so StreamingResponse manages its own DB connection lifecycle,
+    while allowing unit tests to inject a mock connection directly."""
+    return None
+
+
 @router.get("/processed-skus/export")
 def export_history(
     ids: str | None = None,
     format: Literal["csv", "xlsx"] = "csv",
-    db: Connection = Depends(get_db_connection),
     principal: Principal = Depends(get_principal),
+    db: Connection | None = Depends(_streaming_db),
 ):
-    query = "SELECT * FROM processed_skus WHERE tenant_id = :tenant_id"
-    params = {"tenant_id": principal.tenant_id}
-
-    if ids:
-        id_list = [i.strip() for i in ids.split(",") if i.strip()]
-        if id_list:
-            query += " AND id = ANY(:ids)"
-            params["ids"] = id_list
-    else:
-        # No explicit id filter: cap the export instead of dumping the entire table.
-        query += " ORDER BY created_at DESC LIMIT 50000"
-
-    rows = db.execute(text(query), params).mappings().fetchall()
-
-    if format == "csv":
-        output = io.StringIO()
-        if rows:
-            writer = csv.DictWriter(output, fieldnames=dict(rows[0]).keys())
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({k: _sanitize_csv_cell(v) for k, v in dict(row).items()})
-
-        return Response(
-            content=output.getvalue(),
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=export.csv"},
-        )
-    else:
+    if format != "csv":
         raise HTTPException(
             status_code=400, detail="XLSX export not fully implemented yet. Please use format=csv."
         )
+
+    return StreamingResponse(
+        generate_csv_chunks(principal, ids=ids, db=db),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=export.csv"},
+    )
 
 
 @router.get("/processed-skus/{id}", response_model=ProcessedSkuResponse)
@@ -154,8 +198,8 @@ def get_processed_sku(
 ):
     row = (
         db.execute(
-            text("SELECT * FROM processed_skus WHERE id = :id AND tenant_id = :tenant_id"),
-            {"id": id, "tenant_id": principal.tenant_id},
+            text("SELECT * FROM processed_skus WHERE id = :id"),
+            {"id": id},
         )
         .mappings()
         .fetchone()

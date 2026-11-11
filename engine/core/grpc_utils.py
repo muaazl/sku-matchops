@@ -40,16 +40,20 @@ class GrpcContextInterceptor(grpc.ServerInterceptor):
 
         meta = {k.lower(): v for k, v in (handler_call_details.invocation_metadata or ())}
         secret = config.INTERNAL_GRPC_SECRET
-        if secret and not hmac.compare_digest(str(meta.get("x-internal-secret", "")), secret):
+        if secret:
+            incoming = str(meta.get("x-internal-secret", ""))
+            if not incoming or not hmac.compare_digest(incoming, secret):
 
-            def _unauthenticated(_request, context):
-                context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid internal gRPC secret.")
+                def _unauthenticated(_request, context):
+                    context.abort(
+                        grpc.StatusCode.UNAUTHENTICATED, "Invalid or missing internal gRPC secret."
+                    )
 
-            return grpc.unary_unary_rpc_method_handler(
-                _unauthenticated,
-                request_deserializer=handler.request_deserializer,
-                response_serializer=handler.response_serializer,
-            )
+                return grpc.unary_unary_rpc_method_handler(
+                    _unauthenticated,
+                    request_deserializer=handler.request_deserializer,
+                    response_serializer=handler.response_serializer,
+                )
 
         raw_trace = str(meta.get("x-request-id", ""))
         trace_id = raw_trace if _VALID_TRACE.match(raw_trace) else "-"
@@ -72,8 +76,10 @@ class GrpcContextInterceptor(grpc.ServerInterceptor):
 def is_not_found_error(err: Exception) -> bool:
     if isinstance(err, KeyError) or getattr(err, "status_code", None) == 404:
         return True
+    if isinstance(err, grpc.RpcError) and err.code() == grpc.StatusCode.NOT_FOUND:
+        return True
     msg = str(err).lower()
-    return isinstance(err, ValueError) and "collection" in msg and "not found" in msg
+    return "collection" in msg and ("not found" in msg or "doesn't exist" in msg)
 
 
 def abort_rpc_error(context, logger: logging.Logger, op: str, err: Exception) -> None:

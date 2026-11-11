@@ -28,6 +28,38 @@ os.environ["AUTH_ENABLED"] = "false"
 backend_config.AUTH_ENABLED = False
 
 _pg_error: str | None = None
+_loopback_error: str | None = None
+
+
+def _check_loopback() -> str | None:
+    import socket
+
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        port = s.getsockname()[1]
+        c = socket.socket()
+        c.settimeout(0.5)
+        try:
+            c.connect(("127.0.0.1", port))
+            return None
+        except Exception as e:
+            return f"TCP loopback connect forbidden on this environment (e.g. WinError 10013): {e}"
+        finally:
+            c.close()
+    finally:
+        s.close()
+
+
+@pytest.fixture(scope="session")
+def loopback():
+    """Skips tests requiring live loopback TCP sockets when loopback connections are forbidden."""
+    global _loopback_error
+    if _loopback_error is None:
+        _loopback_error = _check_loopback() or ""
+    if _loopback_error:
+        pytest.skip(_loopback_error)
 
 
 def _create_database_if_missing(url_str: str) -> None:

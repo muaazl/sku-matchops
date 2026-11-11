@@ -19,15 +19,24 @@ import {
   TablePagination,
   Tooltip,
 } from '@mui/material';
-import { Plus, Trash2, Play, FlaskConical, GripVertical, Pencil, X, Sparkles } from 'lucide-react';
+import {
+  Add,
+  DeleteOutline,
+  PlayArrow,
+  Science,
+  DragIndicator,
+  Edit,
+  Close,
+  AutoAwesome,
+  Balance,
+} from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
-import { PageContainer, PageHeader, StatusChip, ConfirmDialog } from '../components/ui';
+import { PageContainer, PageHeader, StatusChip, ConfirmDialog, EmptyState } from '../components/ui';
 import { CONDITION_TYPES, ACTION_TYPES, DOMAINS } from '../constants';
 import { JsonBlock } from '../components/JsonBlock';
 import TagAutocomplete from '../components/rules/TagAutocomplete';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getRules, saveRule, reorderRules, testRule, deleteRule } from '../api';
-import { useAuth } from '../hooks/useAuth';
 import {
   StyledTableBody,
   StyledTableContainer,
@@ -258,8 +267,8 @@ export default function RulesEngine() {
     setPage(0);
   };
 
-  const { canEditRules, role } = useAuth();
-  const lockedHint = canEditRules ? '' : 'Read-only: your role cannot create, change or delete rules';
+  const canEditRules = true;
+  const lockedHint = '';
 
   const paginatedRows = useMemo(() => {
     return localRules.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
@@ -272,14 +281,11 @@ export default function RulesEngine() {
         subtitle="Domain-scoped rules. Edit conditions/actions and test against a sample."
         actions={
           <>
-            {!canEditRules && role && (
-              <Chip size="small" color="warning" variant="outlined" label={`Read-only · ${role.replace('_', ' ')}`} />
-            )}
             <Tooltip title={lockedHint}>
               <span>
                 <Button
                   variant="contained"
-                  startIcon={<Plus size={16} />}
+                  startIcon={<Add sx={{ fontSize: 16 }} />}
                   disabled={!canEditRules}
                   onClick={() => {
                     setEditing(emptyRule(filtered));
@@ -333,10 +339,33 @@ export default function RulesEngine() {
               <TableSkeleton columns={6} rows={5} />
             ) : paginatedRows.length === 0 ? (
               <StyledTableRow>
-                <TableCell colSpan={6} align="center">
-                  <Typography variant="body2" color="text.secondary">
-                    No rules found.
-                  </Typography>
+                <TableCell colSpan={6} sx={{ p: 0, border: 'none' }}>
+                  <EmptyState
+                    icon={Balance}
+                    title="No rules found"
+                    description={
+                      domain !== 'all'
+                        ? `No rules found for the "${domain}" domain. Try selecting "All Domain".`
+                        : 'Define automated business rules to apply specific tags, categories, or actions to incoming SKUs.'
+                    }
+                    action={
+                      canEditRules && domain === 'all' ? (
+                        <Button
+                          variant="contained"
+                          size="small"
+                          startIcon={<Add sx={{ fontSize: 16 }} />}
+                          onClick={() => {
+                            setEditing(emptyRule(filtered));
+                            setTestResult(null);
+                          }}
+                          sx={{ textTransform: 'none', fontWeight: 600 }}
+                        >
+                          New rule
+                        </Button>
+                      ) : null
+                    }
+                    minHeight={240}
+                  />
                 </TableCell>
               </StyledTableRow>
             ) : (
@@ -371,7 +400,7 @@ export default function RulesEngine() {
                           }}
                           title="Drag to reorder"
                         >
-                          <GripVertical size={16} />
+                          <DragIndicator sx={{ fontSize: 16 }} />
                         </Box>
                       ) : (
                         <Box
@@ -385,7 +414,7 @@ export default function RulesEngine() {
                           }}
                           title={canEditRules ? 'Select a specific domain to enable reordering' : lockedHint}
                         >
-                          <GripVertical size={16} />
+                          <DragIndicator sx={{ fontSize: 16 }} />
                         </Box>
                       )}
                     </TableCell>
@@ -410,7 +439,7 @@ export default function RulesEngine() {
                           aria-label="Edit rule"
                           title="Edit rule"
                         >
-                          <Pencil size={18} />
+                          <Edit sx={{ fontSize: 18 }} />
                         </IconButton>
                         <Tooltip title={lockedHint || 'Delete rule'}>
                           <span>
@@ -429,7 +458,7 @@ export default function RulesEngine() {
                               }}
                               aria-label="Delete rule"
                             >
-                              <Trash2 size={18} />
+                              <DeleteOutline sx={{ fontSize: 18 }} />
                             </IconButton>
                           </span>
                         </Tooltip>
@@ -464,7 +493,7 @@ export default function RulesEngine() {
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
               <Typography variant="h6">Edit rule</Typography>
               <IconButton aria-label="Close edit rule" onClick={() => setEditing(null)} size="small">
-                <X size={18} />
+                <Close sx={{ fontSize: 18 }} />
               </IconButton>
             </Box>
 
@@ -569,13 +598,13 @@ export default function RulesEngine() {
                     size="small"
                     onClick={() => setEditing({ ...editing, conditions: editing.conditions.filter((_, j) => j !== i) })}
                   >
-                    <Trash2 size={15} />
+                    <DeleteOutline sx={{ fontSize: 15 }} />
                   </IconButton>
                 </Stack>
               ))}
               <Button
                 size="small"
-                startIcon={<Plus size={14} />}
+                startIcon={<Add sx={{ fontSize: 14 }} />}
                 sx={{ alignSelf: 'flex-start' }}
                 onClick={() =>
                   setEditing({
@@ -636,13 +665,13 @@ export default function RulesEngine() {
                     size="small"
                     onClick={() => setEditing({ ...editing, actions: editing.actions.filter((_, j) => j !== i) })}
                   >
-                    <Trash2 size={15} />
+                    <DeleteOutline sx={{ fontSize: 15 }} />
                   </IconButton>
                 </Stack>
               ))}
               <Button
                 size="small"
-                startIcon={<Plus size={14} />}
+                startIcon={<Add sx={{ fontSize: 14 }} />}
                 sx={{ alignSelf: 'flex-start' }}
                 onClick={() =>
                   setEditing({ ...editing, actions: [...editing.actions, { action_type: 'set_bt', value: '' }] })
@@ -655,12 +684,12 @@ export default function RulesEngine() {
             <Divider sx={{ my: 2.5 }} />
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
               <Typography variant="subtitle2" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <FlaskConical size={16} /> Test against sample
+                <Science sx={{ fontSize: 16 }} /> Test against sample
               </Typography>
               <Button
                 size="small"
                 variant="text"
-                startIcon={<Sparkles size={14} />}
+                startIcon={<AutoAwesome sx={{ fontSize: 14 }} />}
                 onClick={() => generateSampleForRule(editing)}
                 sx={{ textTransform: 'none', fontWeight: 600 }}
               >
@@ -680,7 +709,7 @@ export default function RulesEngine() {
               variant="outlined"
               color="inherit"
               disabled={testMutation.isPending}
-              startIcon={<Play size={14} />}
+              startIcon={<PlayArrow sx={{ fontSize: 14 }} />}
               onClick={runTest}
               sx={{ mt: 1.5 }}
             >

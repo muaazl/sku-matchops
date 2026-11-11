@@ -54,7 +54,7 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 | **`backend`** | `8000` | FastAPI API gateway, deterministic rules engine, batch processing worker, and audit logger. |
 | **`engine`** | `50051` | Dedicated ML inference microservice (gRPC) serving INT8 ONNX models and zero-shot entity extractors. |
 | **`qdrant`** | `6333` | Vector database managing BGE-M3 dense and sparse embeddings with HNSW indexing. |
-| **`postgres`** | `5432` | PostgreSQL 16 for jobs, rules, and per-SKU audit results. Managed exclusively by the backend gateway via a pooled SQLAlchemy engine; schema is managed by Alembic (`migrate` one-shot service runs `alembic upgrade head`). |
+| **`postgres`** | `5432` | PostgreSQL 16 for jobs, rules, and per-SKU audit results. Managed exclusively by the backend gateway via a pooled SQLAlchemy engine; schema is initialized automatically on startup. |
 
 ---
 
@@ -166,8 +166,8 @@ If you prefer running the Python and Node services directly on your host machine
 - Running instances of **PostgreSQL** (`localhost:5432`), **Redis** (`localhost:6379`, job queue + rule cache), **Qdrant** (`localhost:6333`). You can start just these containers using Docker:
   ```bash
   docker compose up -d postgres redis qdrant
-  alembic upgrade head   # create/upgrade the schema (DATABASE_URL from .env)
   ```
+  Tables and sequences are auto-created when the backend starts up.
 - Optional: `docker compose up -d pgadmin` for a Postgres web UI at http://localhost:5050.
 
 ### 2. Python Environment Setup
@@ -176,11 +176,12 @@ If you prefer running the Python and Node services directly on your host machine
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# Install CPU PyTorch first (fast & lightweight)
+# Install CPU PyTorch first (fast & lightweight, required for ML engine)
 uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-# Install service dependencies
-uv pip install -r requirements.txt
+# Install dependencies across all services:
+uv pip install -r backend/requirements.txt   # FastAPI Gateway, DB, Rules Engine
+uv pip install -r engine/requirements.txt    # ML Engine, Qdrant, ONNX Runtime
 
 # Ingest sample catalog data & prepare ONNX models
 python scripts/catalog/sync.py --sample

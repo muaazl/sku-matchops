@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from engine import config
+from backend.app.core.constants import DOMAIN_MARKET
 
 
 class SKUItem(BaseModel):
@@ -15,7 +15,7 @@ class SKUItem(BaseModel):
 
 class BaseRequest(BaseModel):
     skus: list[SKUItem]
-    domain: str = config.DOMAIN_MARKET
+    domain: str = DOMAIN_MARKET
     callback_url: str
     spreadsheet_id: str | None = None
     sheet_name: str | None = None
@@ -36,7 +36,17 @@ class PipelineRequest(BaseRequest):
 class UploadRequest(BaseModel):
     outlet_id_or_name: str
     skus: list[dict]
-    domain: str = config.DOMAIN_MARKET
+    domain: str = DOMAIN_MARKET
+    sheet_name: str | None = None
+    host_managed: bool = False
+
+
+class UploadJobStateUpdate(BaseModel):
+    status: Literal["running", "completed", "failed", "cancelled"]
+    progress_pct: float | None = None
+    stage: str = "uploading"
+    duration_minutes: float = 0.0
+    error_message: str | None = None
 
 
 class MatchResult(BaseModel):

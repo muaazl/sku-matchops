@@ -37,7 +37,7 @@ export const StyledTableRow = styled(TableRow)(({ theme }) => ({
   '& .MuiTableCell-root': {
     padding: '1rem',
     borderBottom: 'none',
-    fontSize: '1rem',
+    fontSize: '0.95rem',
     fontWeight: 400,
     lineHeight: 1.5,
     color: theme.palette.text.primary,

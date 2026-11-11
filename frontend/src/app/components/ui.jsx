@@ -1,8 +1,21 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Box, Button, Chip, Dialog, Drawer, IconButton, Stack, Typography } from '@mui/material';
+import {
+  Box,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  Chip,
+  Dialog,
+  Drawer,
+  IconButton,
+  Skeleton,
+  Stack,
+  Typography,
+} from '@mui/material';
 import { useTheme } from '@mui/material/styles';
-import { AlertTriangle, HelpCircle, X } from 'lucide-react';
+import { WarningAmber, HelpOutline, Inbox, Close } from '@mui/icons-material';
 
 // Map a job/request status to an MUI chip color.
 const STATUS_COLOR = {
@@ -96,7 +109,7 @@ export function SideDrawer({ open, onClose, title, children, width = 480 }) {
               {title}
             </Typography>
             <IconButton onClick={onClose} size="small" aria-label="Close drawer">
-              <X size={20} />
+              <Close sx={{ fontSize: 20 }} />
             </IconButton>
           </Box>
           <Box sx={{ flexGrow: 1, overflowY: 'auto' }}>{children}</Box>
@@ -162,7 +175,7 @@ export function IconModal({
           aria-label="Close dialog"
           sx={{ position: 'absolute', top: 12, right: 12, color: 'text.secondary' }}
         >
-          <X size={18} />
+          <Close sx={{ fontSize: 18 }} />
         </IconButton>
       )}
 
@@ -177,7 +190,11 @@ export function IconModal({
               mb: 2,
             }}
           >
-            <Icon size={32} color={iconColor || theme.palette.text.secondary} />
+            {React.isValidElement(Icon) ? (
+              Icon
+            ) : (
+              <Icon sx={{ fontSize: 32, color: iconColor || theme.palette.text.secondary }} />
+            )}
           </Box>
         )}
 
@@ -232,7 +249,7 @@ export function ConfirmDialog({
     <IconModal
       open={open}
       onClose={onClose}
-      icon={isDestructive ? AlertTriangle : HelpCircle}
+      icon={isDestructive ? WarningAmber : HelpOutline}
       iconColor={isDestructive ? theme.palette.error.main : undefined}
       title={title}
       description={message}
@@ -259,4 +276,287 @@ ConfirmDialog.propTypes = {
   confirmText: PropTypes.string,
   cancelText: PropTypes.string,
   confirmColor: PropTypes.string,
+};
+
+// Standardized KPI / Metric Card with built-in loading skeleton,
+// accessible markup, and smooth micro-interaction hover state.
+export function StatCard({
+  icon: Icon,
+  label,
+  value,
+  subtext,
+  color = 'primary',
+  isLoading = false,
+  trend,
+  onClick,
+  sx = {},
+}) {
+  const theme = useTheme();
+  const paletteColor = theme.palette[color] || theme.palette.primary;
+
+  return (
+    <Card
+      role="region"
+      aria-label={typeof label === 'string' ? label : 'Metric card'}
+      onClick={onClick}
+      sx={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        cursor: onClick ? 'pointer' : 'default',
+        borderRadius: 2,
+        border: `1px solid ${theme.palette.divider}`,
+        transition:
+          'transform 180ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 180ms cubic-bezier(0.4, 0, 0.2, 1), border-color 180ms ease',
+        '&:hover': onClick
+          ? {
+              transform: 'translateY(-2px)',
+              boxShadow: theme.palette.mode === 'dark' ? '0 6px 20px rgba(0,0,0,0.45)' : '0 6px 20px rgba(0,0,0,0.08)',
+              borderColor: paletteColor.main,
+            }
+          : {
+              borderColor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.2)',
+            },
+        ...sx,
+      }}
+    >
+      <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, p: 2.5, '&:last-child': { pb: 2.5 } }}>
+        {Icon && (
+          <Box
+            sx={{
+              width: 48,
+              height: 48,
+              borderRadius: 2,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              bgcolor: paletteColor.main + '1f',
+              color: paletteColor.main,
+              flexShrink: 0,
+            }}
+          >
+            {React.isValidElement(Icon) ? Icon : <Icon sx={{ fontSize: 24 }} />}
+          </Box>
+        )}
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          {isLoading ? (
+            <>
+              <Skeleton variant="text" width="60%" height={32} sx={{ mb: 0.5 }} />
+              <Skeleton variant="text" width="85%" height={20} />
+              {subtext && <Skeleton variant="text" width="45%" height={16} sx={{ mt: 0.5 }} />}
+            </>
+          ) : (
+            <>
+              <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.15, letterSpacing: '-0.02em' }}>
+                {value}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, fontWeight: 500 }} noWrap>
+                {label}
+              </Typography>
+              {(subtext || trend) && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5, flexWrap: 'wrap' }}>
+                  {trend && (
+                    <Chip
+                      size="small"
+                      label={trend.label}
+                      color={trend.direction === 'up' ? 'success' : trend.direction === 'down' ? 'error' : 'default'}
+                      sx={{ height: 20, fontSize: '0.7rem', fontWeight: 600 }}
+                    />
+                  )}
+                  {subtext && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                      {subtext}
+                    </Typography>
+                  )}
+                </Box>
+              )}
+            </>
+          )}
+        </Box>
+      </CardContent>
+    </Card>
+  );
+}
+
+StatCard.propTypes = {
+  icon: PropTypes.elementType,
+  label: PropTypes.node.isRequired,
+  value: PropTypes.node,
+  subtext: PropTypes.node,
+  color: PropTypes.string,
+  isLoading: PropTypes.bool,
+  trend: PropTypes.shape({
+    label: PropTypes.string,
+    direction: PropTypes.oneOf(['up', 'down', 'neutral']),
+  }),
+  onClick: PropTypes.func,
+  sx: PropTypes.object,
+};
+
+// Standardized Section & Chart container with consistent border tokens,
+// headers, actions, and built-in skeleton loader.
+export function SectionCard({
+  title,
+  subheader,
+  action,
+  children,
+  isLoading = false,
+  minHeight,
+  sx = {},
+  contentSx = {},
+  ...props
+}) {
+  const theme = useTheme();
+
+  return (
+    <Card
+      sx={{
+        height: '100%',
+        borderRadius: 2,
+        border: `1px solid ${theme.palette.divider}`,
+        display: 'flex',
+        flexDirection: 'column',
+        ...sx,
+      }}
+      {...props}
+    >
+      {(title || action) && (
+        <CardHeader
+          title={title}
+          subheader={subheader}
+          action={action}
+          titleTypographyProps={{ variant: 'subtitle1', fontWeight: 600 }}
+          subheaderTypographyProps={{ variant: 'body2', color: 'text.secondary' }}
+          sx={{ pb: 1, pt: 2, px: 2.5 }}
+        />
+      )}
+      <CardContent
+        sx={{
+          flexGrow: 1,
+          p: 2.5,
+          minHeight,
+          '&:last-child': { pb: 2.5 },
+          ...contentSx,
+        }}
+      >
+        {isLoading ? (
+          <Box
+            sx={{
+              height: minHeight || 260,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+              justifyContent: 'center',
+            }}
+          >
+            <Skeleton variant="rounded" width="100%" height="80%" sx={{ borderRadius: 2 }} />
+            <Skeleton variant="text" width="40%" height={24} />
+          </Box>
+        ) : (
+          children
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+SectionCard.propTypes = {
+  title: PropTypes.node,
+  subheader: PropTypes.node,
+  action: PropTypes.node,
+  children: PropTypes.node,
+  isLoading: PropTypes.bool,
+  minHeight: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+  sx: PropTypes.object,
+  contentSx: PropTypes.object,
+};
+
+// Standardized Empty State with icon badge, clear heading,
+// optional explanatory copy, and action button.
+export function EmptyState({ icon: Icon = Inbox, title, description, action, minHeight = 220, sx = {} }) {
+  const theme = useTheme();
+
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center',
+        p: 3,
+        minHeight,
+        ...sx,
+      }}
+    >
+      <Box
+        sx={{
+          width: 52,
+          height: 52,
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          bgcolor: theme.palette.mode === 'dark' ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
+          color: 'text.secondary',
+          mb: 2,
+        }}
+      >
+        {React.isValidElement(Icon) ? Icon : <Icon sx={{ fontSize: 26 }} />}
+      </Box>
+      <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: description ? 0.75 : 0 }}>
+        {title}
+      </Typography>
+      {description && (
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{ maxWidth: 440, mb: action ? 2.5 : 0, lineHeight: 1.5 }}
+        >
+          {description}
+        </Typography>
+      )}
+      {action && <Box sx={{ mt: description ? 0 : 2 }}>{action}</Box>}
+    </Box>
+  );
+}
+
+EmptyState.propTypes = {
+  icon: PropTypes.elementType,
+  title: PropTypes.node.isRequired,
+  description: PropTypes.node,
+  action: PropTypes.node,
+  minHeight: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+  sx: PropTypes.object,
+};
+
+// Layout-preserving table skeleton loader.
+export function TableSkeleton({ rows = 5, height = 44, sx = {} }) {
+  return (
+    <Box sx={{ width: '100%', overflow: 'hidden', ...sx }}>
+      <Stack spacing={1.5}>
+        <Skeleton variant="rounded" height={40} sx={{ borderRadius: 1 }} />
+        {Array.from({ length: rows }).map((_, idx) => (
+          <Skeleton key={idx} variant="rounded" height={height} sx={{ borderRadius: 1, opacity: 1 - idx * 0.12 }} />
+        ))}
+      </Stack>
+    </Box>
+  );
+}
+
+TableSkeleton.propTypes = {
+  rows: PropTypes.number,
+  height: PropTypes.number,
+  sx: PropTypes.object,
+};
+
+// Reusable card skeleton placeholder.
+export function CardSkeleton({ height = 120, sx = {} }) {
+  return <Skeleton variant="rounded" height={height} sx={{ borderRadius: 2, ...sx }} />;
+}
+
+CardSkeleton.propTypes = {
+  height: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+  sx: PropTypes.object,
 };

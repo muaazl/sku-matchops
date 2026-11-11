@@ -21,7 +21,7 @@ SEAFOOD_CONDITIONS = [
 @pytest.fixture(scope="class")
 def seafood_rule():
     """Seeds the food-domain Seafood rule directly into the Engine rule cache, then restores it."""
-    prev = (loader._RULES_CACHE, loader._RULES_VERSION, loader._TENANT_VERSIONS)
+    prev = (loader._RULES_CACHE, loader._RULES_VERSION)
     loader.set_rules_from_dicts(
         [
             {
@@ -45,7 +45,7 @@ def seafood_rule():
         ]
     )
     yield
-    loader._RULES_CACHE, loader._RULES_VERSION, loader._TENANT_VERSIONS = prev
+    loader._RULES_CACHE, loader._RULES_VERSION = prev
     loader._cached_rules.cache_clear()
 
 

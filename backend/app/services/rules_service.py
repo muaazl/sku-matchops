@@ -1,17 +1,101 @@
+import hashlib
+import json
 from typing import Any
 
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.core.config import DEFAULT_TENANT
+from backend.app.core import config
 from backend.app.db.session import get_connection, next_seq_id
 from backend.app.schemas.models import RuleModel
 from backend.app.services.engine_client import refresh_engine_rules
-from engine.rules_engine.loader import publish_rules_snapshot
+
+RULES_DATA_KEY = "matchops:rules:data"
+RULES_VERSION_KEY = "matchops:rules:version"
+RULES_INVALIDATE_CHANNEL = "matchops:rules:invalidate"
 
 
-def load_active_rules_from_db(db: Connection | None = None) -> list[dict[str, Any]]:
-    """Loads all active rules (across all tenants) from PostgreSQL for Redis/gRPC distribution."""
+def rules_data_key() -> str:
+    return RULES_DATA_KEY
+
+
+def rules_version_key() -> str:
+    return RULES_VERSION_KEY
+
+
+def compute_rules_version(rules_data: list[dict[str, Any]]) -> str:
+    if not rules_data:
+        return "4f53cda18c2baa0c"
+    fingerprint = [
+        [
+            r.get("rule_id"),
+            r.get("domain"),
+            r.get("priority"),
+            r.get("condition_logic"),
+            r.get("conditions", []),
+            r.get("actions", []),
+        ]
+        for r in rules_data
+    ]
+    return hashlib.sha256(
+        json.dumps(fingerprint, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def publish_rules_snapshot(
+    rules_data: list[dict[str, Any]],
+) -> tuple[str, bool]:
+    import sys
+
+    # In monorepo unit test environments where engine loader is loaded in the same process:
+    if "engine.rules_engine.loader" in sys.modules:
+        loader = sys.modules["engine.rules_engine.loader"]
+        return loader.publish_rules_snapshot(rules_data)
+
+    version = compute_rules_version(rules_data)
+    try:
+        import redis
+
+        client = redis.Redis.from_url(
+            config.REDIS_URL, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
+        )
+        payload = json.dumps(rules_data, default=str)
+        pipe = client.pipeline(transaction=True)
+        pipe.set(RULES_DATA_KEY, payload)
+        pipe.set(RULES_VERSION_KEY, version)
+        pipe.publish(RULES_INVALIDATE_CHANNEL, version)
+        pipe.execute()
+        return version, True
+    except Exception:
+        return version, False
+
+
+def get_rule_version() -> str:
+    import sys
+
+    if "engine.rules_engine.loader" in sys.modules:
+        loader = sys.modules["engine.rules_engine.loader"]
+        return loader.snapshot_rules().version
+
+    try:
+        import redis
+
+        client = redis.Redis.from_url(
+            config.REDIS_URL, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
+        )
+        v = client.get(RULES_VERSION_KEY)
+        if v:
+            return v
+    except Exception:
+        pass
+    active_rules = load_active_rules_from_db()
+    return compute_rules_version(active_rules)
+
+
+def load_active_rules_from_db(
+    db: Connection | None = None,
+) -> list[dict[str, Any]]:
+    """Loads active rules from PostgreSQL for Redis/gRPC distribution."""
     owns_conn = db is None
     conn = get_connection() if owns_conn else db
     assert conn is not None
@@ -20,7 +104,7 @@ def load_active_rules_from_db(db: Connection | None = None) -> list[dict[str, An
             conn.execute(
                 text("""
                 SELECT id, rule_id, domain, priority, description, reasoning,
-                       condition_logic, is_active, tenant_id
+                       condition_logic, is_active
                 FROM rules
                 WHERE is_active = 1
                 ORDER BY priority ASC, rule_id ASC
@@ -79,7 +163,6 @@ def load_active_rules_from_db(db: Connection | None = None) -> list[dict[str, An
         )
 
     for r in rules:
-        r["tenant_id"] = r.get("tenant_id") or DEFAULT_TENANT
         r["conditions"] = conds_by_rule.get(r["rule_id"], [])
         r["actions"] = acts_by_rule.get(r["rule_id"], [])
 
@@ -87,8 +170,8 @@ def load_active_rules_from_db(db: Connection | None = None) -> list[dict[str, An
 
 
 def sync_rules_everywhere(db: Connection | None = None) -> tuple[str, bool]:
-    """Loads active rules from PostgreSQL, publishes the snapshot + version to Redis, and falls
-    back to direct gRPC RefreshRules if Redis is unreachable."""
+    """Loads active rules from PostgreSQL, publishes the snapshot + version
+    to Redis, and falls back to direct gRPC RefreshRules if Redis is unreachable."""
     rules_data = load_active_rules_from_db(db)
     version, published = publish_rules_snapshot(rules_data)
     if not published:
@@ -129,11 +212,11 @@ def _insert_conditions_and_actions(db: Connection, rule_id: str, rule: RuleModel
         )
 
 
-def _owned(db: Connection, rule_id: str, tenant_id: str) -> bool:
+def _owned(db: Connection, rule_id: str) -> bool:
     return (
         db.execute(
-            text("SELECT 1 FROM rules WHERE rule_id = :rule_id AND tenant_id = :tenant_id"),
-            {"rule_id": rule_id, "tenant_id": tenant_id},
+            text("SELECT 1 FROM rules WHERE rule_id = :rule_id"),
+            {"rule_id": rule_id},
         ).fetchone()
         is not None
     )
@@ -144,18 +227,15 @@ def get_next_rule_id(db: Connection) -> str:
     return next_seq_id(db, "rules_id_seq", "rules", "rule_id")
 
 
-def get_rules_list(
-    db: Connection, domain: str | None = None, tenant_id: str = DEFAULT_TENANT
-) -> list[dict[str, Any]]:
-    """Fetches the tenant's rules with their conditions and actions in batched queries."""
-    query = "SELECT * FROM rules WHERE tenant_id = :tenant_id"
-    params = {"tenant_id": tenant_id}
-
+def get_rules_list(db: Connection, domain: str | None = None) -> list[dict[str, Any]]:
+    """Fetches rules with their conditions and actions in batched queries."""
     if domain and domain != "all":
-        query += " AND domain = :domain"
-        params["domain"] = domain
+        query = "SELECT * FROM rules WHERE domain = :domain ORDER BY priority ASC"
+        params = {"domain": domain}
+    else:
+        query = "SELECT * FROM rules ORDER BY priority ASC"
+        params = {}
 
-    query += " ORDER BY priority ASC"
     rows = db.execute(text(query), params).mappings().fetchall()
     if not rows:
         return []
@@ -207,14 +287,12 @@ def get_rules_list(
     return rules
 
 
-def get_rule_by_id(
-    db: Connection, rule_id: str, tenant_id: str = DEFAULT_TENANT
-) -> dict[str, Any] | None:
-    """Fetches one of the tenant's rules by rule_id including conditions and actions."""
-    params = {"rule_id": rule_id, "tenant_id": tenant_id}
+def get_rule_by_id(db: Connection, rule_id: str) -> dict[str, Any] | None:
+    """Fetches a rule by rule_id including conditions and actions."""
+    params = {"rule_id": rule_id}
     rule_row = (
         db.execute(
-            text("SELECT * FROM rules WHERE rule_id = :rule_id AND tenant_id = :tenant_id"),
+            text("SELECT * FROM rules WHERE rule_id = :rule_id"),
             params,
         )
         .mappings()
@@ -247,23 +325,18 @@ def get_rule_by_id(
     return rule_dict
 
 
-def create_rule_entry(db: Connection, rule: RuleModel, tenant_id: str = DEFAULT_TENANT) -> str:
-    """Inserts a new rule and its conditions/actions atomically, then refreshes cache.
-
-    Retries on a rare rule_id collision (two near-simultaneous rule creations both computing
-    the same "next id" before either commits) instead of surfacing an opaque IntegrityError.
-    """
+def create_rule_entry(db: Connection, rule: RuleModel) -> str:
+    """Inserts a new rule and its conditions/actions atomically, then refreshes cache."""
     max_attempts = 5
-    new_id = None
     for attempt in range(1, max_attempts + 1):
         new_id = get_next_rule_id(db)
         try:
             db.execute(
                 text("""
-                INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic, is_active, tenant_id)
-                VALUES (:rule_id, :domain, :priority, :description, :reasoning, :condition_logic, :is_active, :tenant_id)
+                INSERT INTO rules (rule_id, domain, priority, description, reasoning, condition_logic, is_active)
+                VALUES (:rule_id, :domain, :priority, :description, :reasoning, :condition_logic, :is_active)
                 """),
-                {"rule_id": new_id, "tenant_id": tenant_id, **_rule_fields(rule)},
+                {"rule_id": new_id, **_rule_fields(rule)},
             )
             _insert_conditions_and_actions(db, new_id, rule)
             db.commit()
@@ -282,12 +355,10 @@ def create_rule_entry(db: Connection, rule: RuleModel, tenant_id: str = DEFAULT_
     raise RuntimeError("Unreachable")
 
 
-def update_rule_entry(
-    db: Connection, rule_id: str, rule: RuleModel, tenant_id: str = DEFAULT_TENANT
-) -> bool:
-    """Updates one of the tenant's rules and replaces its conditions/actions, then refreshes cache."""
+def update_rule_entry(db: Connection, rule_id: str, rule: RuleModel) -> bool:
+    """Updates a rule and replaces its conditions/actions, then refreshes cache."""
     params = {"rule_id": rule_id}
-    if not _owned(db, rule_id, tenant_id):
+    if not _owned(db, rule_id):
         return False
 
     try:
@@ -313,10 +384,10 @@ def update_rule_entry(
         raise e
 
 
-def delete_rule_entry(db: Connection, rule_id: str, tenant_id: str = DEFAULT_TENANT) -> bool:
-    """Deletes one of the tenant's rules and its conditions/actions, then refreshes cache."""
+def delete_rule_entry(db: Connection, rule_id: str) -> bool:
+    """Deletes a rule and its conditions/actions, then refreshes cache."""
     params = {"rule_id": rule_id}
-    if not _owned(db, rule_id, tenant_id):
+    if not _owned(db, rule_id):
         return False
 
     try:
@@ -331,22 +402,18 @@ def delete_rule_entry(db: Connection, rule_id: str, tenant_id: str = DEFAULT_TEN
         raise e
 
 
-def reorder_rules_entries(
-    db: Connection, ordered_ids: list[str], tenant_id: str = DEFAULT_TENANT
-) -> bool:
-    """Reorders the tenant's rules by priority according to the given ordered list of rule IDs
-    (ids belonging to other tenants are ignored)."""
+def reorder_rules_entries(db: Connection, ordered_ids: list[str]) -> bool:
+    """Reorders rules by priority according to the given ordered list of rule IDs."""
     if not ordered_ids:
         return False
 
     try:
         db.execute(
             text(
-                "UPDATE rules SET priority = :priority, updated_at = now() "
-                "WHERE rule_id = :rule_id AND tenant_id = :tenant_id"
+                "UPDATE rules SET priority = :priority, updated_at = now() WHERE rule_id = :rule_id"
             ),
             [
-                {"priority": (index + 1) * 10, "rule_id": rule_id, "tenant_id": tenant_id}
+                {"priority": (index + 1) * 10, "rule_id": rule_id}
                 for index, rule_id in enumerate(ordered_ids)
             ],
         )

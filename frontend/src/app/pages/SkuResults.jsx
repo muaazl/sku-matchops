@@ -18,9 +18,17 @@ import {
   TablePagination,
   IconButton,
 } from '@mui/material';
-import { Download, ArrowLeft, Info, ChevronDown, FileSpreadsheet, ShieldCheck } from 'lucide-react';
+import {
+  Download,
+  ArrowBack,
+  InfoOutlined,
+  KeyboardArrowDown,
+  TableChart,
+  VerifiedUser,
+  Label,
+} from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
-import { PageContainer, PageHeader, SideDrawer, ConfirmDialog } from '../components/ui';
+import { PageContainer, PageHeader, SideDrawer, ConfirmDialog, EmptyState } from '../components/ui';
 import RulesAppliedList from '../components/RulesAppliedList';
 import { DOMAINS } from '../constants';
 import { fmtTime, download, toCsv, formatGk, formatGkText } from '../utils';
@@ -316,10 +324,43 @@ export default function SkuResults() {
                 <TableSkeleton columns={7} rows={5} />
               ) : serverJobs.length === 0 ? (
                 <StyledTableRow>
-                  <TableCell colSpan={7} align="center">
-                    <Typography variant="body2" color="text.secondary">
-                      No jobs found.
-                    </Typography>
+                  <TableCell colSpan={7} sx={{ p: 0, border: 'none' }}>
+                    <EmptyState
+                      icon={TableChart}
+                      title="No completed jobs found"
+                      description={
+                        sheetFilter || domainFilter !== 'all' || taskFilter !== 'all'
+                          ? 'No completed SKU matching jobs match your active filters.'
+                          : 'There are no completed batch jobs available to review yet.'
+                      }
+                      action={
+                        sheetFilter || domainFilter !== 'all' || taskFilter !== 'all' ? (
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            onClick={() => {
+                              setSheetFilter('');
+                              setDomainFilter('all');
+                              setTaskFilter('all');
+                              setPage(0);
+                            }}
+                            sx={{ textTransform: 'none', fontWeight: 600 }}
+                          >
+                            Reset filters
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="contained"
+                            size="small"
+                            onClick={() => navigate('/process-skus')}
+                            sx={{ textTransform: 'none', fontWeight: 600 }}
+                          >
+                            Process new SKUs
+                          </Button>
+                        )
+                      }
+                      minHeight={240}
+                    />
                   </TableCell>
                 </StyledTableRow>
               ) : (
@@ -341,7 +382,7 @@ export default function SkuResults() {
                           setSelectedJob(row);
                         }}
                       >
-                        <Info size={18} />
+                        <InfoOutlined sx={{ fontSize: 18 }} />
                       </IconButton>
                     </TableCell>
                   </StyledTableRow>
@@ -377,7 +418,12 @@ export default function SkuResults() {
 
   return (
     <PageContainer>
-      <Button startIcon={<ArrowLeft size={16} />} onClick={() => setSelectedJob(null)} sx={{ mb: 2 }} color="inherit">
+      <Button
+        startIcon={<ArrowBack sx={{ fontSize: 16 }} />}
+        onClick={() => setSelectedJob(null)}
+        sx={{ mb: 2 }}
+        color="inherit"
+      >
         Back to SKU Results
       </Button>
       <PageHeader
@@ -388,8 +434,8 @@ export default function SkuResults() {
             <Button
               variant="outlined"
               color="inherit"
-              startIcon={<Download size={15} />}
-              endIcon={<ChevronDown size={14} />}
+              startIcon={<Download sx={{ fontSize: 15 }} />}
+              endIcon={<KeyboardArrowDown sx={{ fontSize: 14 }} />}
               onClick={(e) => setExportAnchorEl(e.currentTarget)}
               aria-controls={exportAnchorEl ? 'export-csv-menu' : undefined}
               aria-haspopup="true"
@@ -418,7 +464,7 @@ export default function SkuResults() {
                 sx={{ py: 1, borderRadius: 1 }}
               >
                 <ListItemIcon sx={{ minWidth: 34, color: 'primary.main' }}>
-                  <FileSpreadsheet size={18} />
+                  <TableChart sx={{ fontSize: 18 }} />
                 </ListItemIcon>
                 <ListItemText
                   primary="Clean Version (CSV)"
@@ -436,7 +482,7 @@ export default function SkuResults() {
                 sx={{ py: 1, borderRadius: 1 }}
               >
                 <ListItemIcon sx={{ minWidth: 34, color: 'text.secondary' }}>
-                  <ShieldCheck size={18} />
+                  <VerifiedUser sx={{ fontSize: 18 }} />
                 </ListItemIcon>
                 <ListItemText
                   primary="Audit Version (CSV)"
@@ -525,10 +571,35 @@ export default function SkuResults() {
               <TableSkeleton columns={colSpan} rows={5} />
             ) : serverSkus.length === 0 ? (
               <StyledTableRow>
-                <TableCell colSpan={colSpan} align="center">
-                  <Typography variant="body2" color="text.secondary">
-                    No SKUs found.
-                  </Typography>
+                <TableCell colSpan={colSpan} sx={{ p: 0, border: 'none' }}>
+                  <EmptyState
+                    icon={Label}
+                    title="No matching SKUs found"
+                    description={
+                      skuSearch || skuBtFilter || skuGkFilter || skuSourceFilter !== 'all'
+                        ? 'No SKUs in this job match your search or filter criteria. Try clearing or relaxing filters.'
+                        : 'This job contains no processed SKU records.'
+                    }
+                    action={
+                      skuSearch || skuBtFilter || skuGkFilter || skuSourceFilter !== 'all' ? (
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          onClick={() => {
+                            setSkuSearch('');
+                            setSkuBtFilter('');
+                            setSkuGkFilter('');
+                            setSkuSourceFilter('all');
+                            setSkuPage(0);
+                          }}
+                          sx={{ textTransform: 'none', fontWeight: 600 }}
+                        >
+                          Clear SKU filters
+                        </Button>
+                      ) : null
+                    }
+                    minHeight={240}
+                  />
                 </TableCell>
               </StyledTableRow>
             ) : (
@@ -624,71 +695,36 @@ export default function SkuResults() {
             <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
               Audit Details
             </Typography>
-            {[
-              ['Source', selectedSku.match_source || '—'],
+            {(() => {
+              const srcLower = String(selectedSku.match_source || '')
+                .trim()
+                .toLowerCase();
+              const isSkuMatcher = srcLower === 'matcher' || (!srcLower && isMatcher);
+              const isPureClassifierJob =
+                isClassifier && !selectedSku.matched_catalog_name && selectedSku.match_score == null;
 
-              // Only for Matcher & Pipeline
-              ...(!isClassifier
-                ? [
-                    ['Matched Catalog Name', selectedSku.matched_catalog_name || '—'],
-                    ['Logic Notes', selectedSku.logic_notes || '—'],
-                    [
-                      'Match Score',
-                      selectedSku.match_score != null
-                        ? `${Math.round(
-                            Number(selectedSku.match_score) > 1
-                              ? selectedSku.match_score
-                              : selectedSku.match_score * 100
-                          )}%`
-                        : '—',
-                    ],
-                  ]
-                : []),
+              const fmtPct = (val) =>
+                val != null && val !== '' ? `${Math.round(Number(val) > 1 ? Number(val) : Number(val) * 100)}%` : null;
 
-              // Only for Classifier & Pipeline
-              ...(!isMatcher
-                ? [
-                    [
-                      'BT Confidence',
-                      selectedSku.bt_confidence != null
-                        ? `${Math.round(
-                            Number(selectedSku.bt_confidence) > 1
-                              ? selectedSku.bt_confidence
-                              : selectedSku.bt_confidence * 100
-                          )}%`
-                        : '—',
-                    ],
-                    [
-                      'GK Confidence',
-                      selectedSku.gk_confidence != null
-                        ? `${Math.round(
-                            Number(selectedSku.gk_confidence) > 1
-                              ? selectedSku.gk_confidence
-                              : selectedSku.gk_confidence * 100
-                          )}%`
-                        : '—',
-                    ],
-                    [
-                      'Region/Cat Confidence',
-                      selectedSku.region_confidence != null
-                        ? `${Math.round(
-                            Number(selectedSku.region_confidence) > 1
-                              ? selectedSku.region_confidence
-                              : selectedSku.region_confidence * 100
-                          )}%`
-                        : '—',
-                    ],
-                    [
-                      'Final Confidence',
-                      selectedSku.confidence != null
-                        ? `${Math.round(
-                            Number(selectedSku.confidence) > 1 ? selectedSku.confidence : selectedSku.confidence * 100
-                          )}%`
-                        : '—',
-                    ],
-                  ]
-                : []),
-            ]
+              return [
+                ['Source', selectedSku.match_source || '—'],
+
+                // Matcher / candidate details (shown unless a pure classifier job with no matcher candidates)
+                ...(!isPureClassifierJob
+                  ? [
+                      ['Matched Catalog Name', selectedSku.matched_catalog_name || '—'],
+                      ['Logic Notes', selectedSku.logic_notes || '—'],
+                      ['Match Score', fmtPct(selectedSku.match_score) || '—'],
+                    ]
+                  : []),
+
+                // Classifier tag confidences: for Matcher SKUs, display 'N/A'
+                ['BT Confidence', isSkuMatcher ? 'N/A' : fmtPct(selectedSku.bt_confidence) || '—'],
+                ['GK Confidence', isSkuMatcher ? 'N/A' : fmtPct(selectedSku.gk_confidence) || '—'],
+                ['Region/Cat Confidence', isSkuMatcher ? 'N/A' : fmtPct(selectedSku.region_confidence) || '—'],
+                ['Final Confidence', fmtPct(selectedSku.confidence) || '—'],
+              ];
+            })()
               .filter(([, v]) => v !== null && v !== undefined)
               .map(([k, v]) => (
                 <Box key={k} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.7 }}>

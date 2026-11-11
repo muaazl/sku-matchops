@@ -24,7 +24,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { ArrowLeft, Search } from 'lucide-react';
+import { ArrowBack, Search } from '@mui/icons-material';
 import { PageContainer, PageHeader, StatusChip } from '../../components/ui';
 import RulesAppliedList from '../../components/RulesAppliedList';
 import { JsonBlock } from '../../components/JsonBlock';
@@ -88,7 +88,7 @@ export default function AuditTelemetryView({ auditTrace, sku, domain, task, resu
   return (
     <PageContainer>
       <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
-        <Button startIcon={<ArrowLeft size={16} />} onClick={onBack} color="inherit" size="small">
+        <Button startIcon={<ArrowBack sx={{ fontSize: 16 }} />} onClick={onBack} color="inherit" size="small">
           Back to Interactive Execution
         </Button>
       </Box>
@@ -394,7 +394,7 @@ export default function AuditTelemetryView({ auditTrace, sku, domain, task, resu
                         InputProps={{
                           startAdornment: (
                             <InputAdornment position="start">
-                              <Search size={16} />
+                              <Search sx={{ fontSize: 16 }} />
                             </InputAdornment>
                           ),
                         }}

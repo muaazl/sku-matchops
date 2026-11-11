@@ -13,15 +13,12 @@ from engine import config
 
 logger = logging.getLogger("matchops.rules_loader")
 
-# In-memory cache: { tenant_id: { domain: [ Rule ] } }
+# In-memory cache: { domain: [ Rule ] }
 _RULES_CACHE = None
 # Fingerprint of the loaded active rule set; part of the processed_skus idempotency key
 _RULES_VERSION = "none"
-# Per-tenant fingerprints: the rule_version stored with a tenant's job results
-_TENANT_VERSIONS: dict[str, str] = {}
-# Guards swapping (_RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS) as one unit
+# Guards swapping (_RULES_CACHE, _RULES_VERSION) as one unit
 _STATE_LOCK = threading.Lock()
-DEFAULT_TENANT = "default"
 
 # --- Cross-process rule distribution & invalidation via Redis ---
 RULES_DATA_KEY = "matchops:rules:data"
@@ -41,7 +38,6 @@ class Rule:
         self.reasoning = row[5]
         self.condition_logic = row[6]
         self.is_active = row[7]
-        self.tenant_id = row[8] if len(row) > 8 else DEFAULT_TENANT
         self.conditions = []
         self.actions = []
 
@@ -69,9 +65,10 @@ def _redis():
 
 def set_rules_from_dicts(rules_data: list[dict], version: str | None = None) -> None:
     """Sets rules in cache from a list of rule dictionaries (from Redis snapshot or gRPC push)."""
-    global _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS
+    global _RULES_CACHE, _RULES_VERSION
     rules_map = {}
-    new_cache: dict[str, dict[str, list[Rule]]] = {}
+    new_cache: dict[str, list[Rule]] = {}
+
     for r in rules_data:
         rule_row = (
             r.get("id", 0),
@@ -82,7 +79,6 @@ def set_rules_from_dicts(rules_data: list[dict], version: str | None = None) -> 
             r.get("reasoning", ""),
             r.get("condition_logic", "AND"),
             r.get("is_active", 1),
-            r.get("tenant_id", DEFAULT_TENANT),
         )
         rule = Rule(rule_row)
         rule.conditions = [
@@ -98,16 +94,14 @@ def set_rules_from_dicts(rules_data: list[dict], version: str | None = None) -> 
             {"action_type": a["action_type"], "value": a["value"]} for a in r.get("actions", [])
         ]
         rules_map[rule.rule_id] = rule
-        new_cache.setdefault(rule.tenant_id, {}).setdefault(rule.domain, []).append(rule)
+        new_cache.setdefault(rule.domain, []).append(rule)
 
     all_rules = list(rules_map.values())
     v = version or _fingerprint(all_rules)
-    tenant_rules: dict[str, list[Rule]] = {}
-    for rule in all_rules:
-        tenant_rules.setdefault(rule.tenant_id, []).append(rule)
-    tenant_versions = {t: _fingerprint(rs) for t, rs in tenant_rules.items()}
+
     with _STATE_LOCK:
-        _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = new_cache, v, tenant_versions
+        _RULES_CACHE, _RULES_VERSION = new_cache, v
+
     _cached_rules.cache_clear()
     logger.info(f"Loaded {len(rules_map)} rules into memory (version {v}).")
 
@@ -115,14 +109,14 @@ def set_rules_from_dicts(rules_data: list[dict], version: str | None = None) -> 
 def load_rules_from_cache() -> None:
     """Loads active rules into the in-memory cache from Redis (`matchops:rules:data`).
     Failed reloads preserve the existing in-memory cache."""
-    global _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS
+    global _RULES_CACHE, _RULES_VERSION
     try:
         raw = _redis().get(RULES_DATA_KEY)
     except Exception as e:
         logger.debug(f"Redis rules cache not accessible: {e}")
         if _RULES_CACHE is None:
             with _STATE_LOCK:
-                _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = {}, "none", {}
+                _RULES_CACHE, _RULES_VERSION = {}, "none"
         return
 
     if raw is not None:
@@ -132,7 +126,7 @@ def load_rules_from_cache() -> None:
             logger.warning(f"Malformed rules JSON in Redis cache: {e}")
             if _RULES_CACHE is None:
                 with _STATE_LOCK:
-                    _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = {}, "none", {}
+                    _RULES_CACHE, _RULES_VERSION = {}, "none"
             return
         if isinstance(data, list):
             set_rules_from_dicts(data)
@@ -140,7 +134,7 @@ def load_rules_from_cache() -> None:
 
     empty_version = _fingerprint([])
     with _STATE_LOCK:
-        _RULES_CACHE, _RULES_VERSION, _TENANT_VERSIONS = {}, empty_version, {}
+        _RULES_CACHE, _RULES_VERSION = {}, empty_version
     _cached_rules.cache_clear()
 
 
@@ -153,10 +147,10 @@ def _rules_for_domain(cache: dict, domain: str) -> list:
 
 @functools.lru_cache(maxsize=128)
 def _cached_rules(domain: str) -> list:
-    """Unpinned lookups (no job context) use the default tenant's rules."""
+    """Unpinned lookups (no job context) use active rules."""
     if _RULES_CACHE is None:
         load_rules_from_cache()
-    return _rules_for_domain((_RULES_CACHE or {}).get(DEFAULT_TENANT, {}), domain)
+    return _rules_for_domain(_RULES_CACHE or {}, domain)
 
 
 @dataclass(frozen=True)
@@ -184,16 +178,14 @@ def get_rules(domain: str):
     return _cached_rules(domain)
 
 
-def snapshot_rules(tenant_id: str = DEFAULT_TENANT) -> RulesSnapshot:
-    """Captures one tenant's current rules and their version as one consistent pair.
-    Other tenants' rules are never visible through the snapshot."""
+def snapshot_rules() -> RulesSnapshot:
+    """Captures current rules and their version as one consistent pair."""
     if _RULES_CACHE is None:
         load_rules_from_cache()
-    # Reloads build a brand-new dict and Rule objects, so holding a reference is a stable copy
     with _STATE_LOCK:
         return RulesSnapshot(
-            version=_TENANT_VERSIONS.get(tenant_id) or _fingerprint([]),
-            _cache=(_RULES_CACHE or {}).get(tenant_id, {}),
+            version=_RULES_VERSION or _fingerprint([]),
+            _cache=dict(_RULES_CACHE or {}),
         )
 
 
@@ -215,7 +207,7 @@ def get_rules_version() -> str:
 
 
 def refresh_rules_cache() -> None:
-    """Forces a reload of the rules cache from Redis (swapped in atomically; readers never see it empty)."""
+    """Forces a reload of the rules cache from Redis."""
     load_rules_from_cache()
 
 
@@ -227,8 +219,8 @@ def publish_rules_snapshot(rules_data: list[dict]) -> tuple[str, bool]:
     try:
         client = _redis()
         payload = json.dumps(rules_data, default=str)
-        if hasattr(client, "pipeline"):
-            pipe = client.pipeline(transaction=True)
+        pipe = client.pipeline(transaction=True) if hasattr(client, "pipeline") else None
+        if pipe is not None:
             pipe.set(RULES_DATA_KEY, payload)
             pipe.set(RULES_VERSION_KEY, version)
             pipe.publish(RULES_INVALIDATE_CHANNEL, version)
@@ -245,8 +237,7 @@ def publish_rules_snapshot(rules_data: list[dict]) -> tuple[str, bool]:
 
 def sync_rules_version() -> str:
     """Engine side: call at the start of each job. Costs one Redis GET; reloads from Redis only
-    when another process published a newer rule_version. If Redis is down, preserves the current
-    in-memory rule set (updated via gRPC RefreshRules fallback). Returns the active rule_version."""
+    when another process published a newer rule_version. Returns the active rule_version."""
     local = get_rules_version()
     try:
         remote = _redis().get(RULES_VERSION_KEY)
@@ -275,7 +266,6 @@ def start_invalidation_listener() -> threading.Thread:
         backoff = 1.0
         while True:
             try:
-                # Own connection: no read timeout while idle, health-check pings detect dead sockets
                 client = redis.Redis.from_url(
                     config.REDIS_URL,
                     socket_connect_timeout=1,
@@ -285,11 +275,10 @@ def start_invalidation_listener() -> threading.Thread:
                 pubsub = client.pubsub(ignore_subscribe_messages=True)
                 pubsub.subscribe(RULES_INVALIDATE_CHANNEL)
                 backoff = 1.0
-                # Catch up on anything published while we were disconnected
                 sync_rules_version()
                 while True:
                     msg = pubsub.get_message(timeout=30)
-                    if msg and msg.get("data") != _RULES_VERSION:
+                    if msg and msg.get("data"):
                         refresh_rules_cache()
                         logger.info(f"[RULES] Reloaded rules (version {_RULES_VERSION}).")
             except Exception as e:

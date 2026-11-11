@@ -9,7 +9,9 @@ import signal
 import sys
 
 from engine.core.observability import configure_logging
+from engine.core.resource_loader import trigger_model_load
 from engine.grpc_server import start_grpc_server
+from engine.pipeline.worker_runner import shutdown_workers
 
 logger = logging.getLogger("matchops.engine.server")
 logging.basicConfig(
@@ -21,11 +23,15 @@ configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured o
 
 
 def serve(port: int | None = None, host: str = "0.0.0.0") -> None:
-    """Starts the gRPC inference server and blocks until SIGINT/SIGTERM."""
+    """Starts the gRPC inference server, initiates background model warmup, and blocks until SIGINT/SIGTERM."""
     grpc_server = start_grpc_server(port=port, host=host)
+    trigger_model_load(reload=False)
 
     def _shutdown(signum, _frame):
-        logger.info(f"[ENGINE] Received signal {signum}; stopping gRPC server...")
+        logger.info(
+            f"[ENGINE] Received signal {signum}; releasing active queue leases & stopping gRPC server..."
+        )
+        shutdown_workers()
         grpc_server.stop(grace=5)
 
     signal.signal(signal.SIGINT, _shutdown)

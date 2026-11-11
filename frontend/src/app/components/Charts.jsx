@@ -1,9 +1,36 @@
 import React, { useEffect, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { useTheme } from '@mui/material/styles';
-import { Chart, registerables } from 'chart.js';
+import {
+  ArcElement,
+  BarController,
+  BarElement,
+  CategoryScale,
+  Chart,
+  DoughnutController,
+  Filler,
+  Legend,
+  LinearScale,
+  LineController,
+  LineElement,
+  PointElement,
+  Tooltip,
+} from 'chart.js';
 
-Chart.register(...registerables);
+Chart.register(
+  ArcElement,
+  BarController,
+  BarElement,
+  CategoryScale,
+  DoughnutController,
+  Filler,
+  Legend,
+  LinearScale,
+  LineController,
+  LineElement,
+  PointElement,
+  Tooltip
+);
 
 function useChart(config) {
   const canvasRef = useRef(null);
@@ -11,11 +38,24 @@ function useChart(config) {
 
   useEffect(() => {
     if (!canvasRef.current) return undefined;
+    if (chartRef.current && chartRef.current.config?.type === config.type) {
+      chartRef.current.data = config.data;
+      chartRef.current.options = config.options;
+      chartRef.current.update('none');
+      return undefined;
+    }
+    chartRef.current?.destroy();
     chartRef.current = new Chart(canvasRef.current, config);
-    return () => {
-      chartRef.current?.destroy();
-    };
+    return undefined;
   }, [JSON.stringify(config.data), JSON.stringify(config.options), config.type]);
+
+  useEffect(
+    () => () => {
+      chartRef.current?.destroy();
+      chartRef.current = null;
+    },
+    []
+  );
 
   return canvasRef;
 }

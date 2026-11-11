@@ -7,66 +7,213 @@ Receives progress, completion, and failure callbacks from ML Engine workers over
 import json
 import logging
 import threading
+import time
 from concurrent import futures
+from typing import Any
 
 import grpc
 from sqlalchemy import text
 
 from backend.app.core import config
-from backend.app.db.session import get_engine, log_outbound_request
-from backend.app.services.persistence import record_job_completion, record_job_failure
-from engine.core.grpc_utils import (
+from backend.app.core.grpc_utils import (
     GRPC_CHANNEL_OPTIONS,
     GrpcContextInterceptor,
     pipeline_proto_to_result,
 )
-from engine.protos import engine_service_pb2 as pb2
-from engine.protos import engine_service_pb2_grpc as pb2_grpc
+from backend.app.db.session import get_engine, log_outbound_request
+from backend.app.protos import engine_service_pb2 as pb2
+from backend.app.protos import engine_service_pb2_grpc as pb2_grpc
+from backend.app.services.persistence import record_job_completion, record_job_failure
 
 logger = logging.getLogger("matchops.backend.grpc")
 
-# In-memory store for fast job polling & dynamic ETA computation (active jobs only)
+JOB_PROGRESS_PREFIX = "matchops:job:progress:"
+JOB_PROGRESS_TTL = 3600
+
+# In-memory mirror for degraded single-node fallback when Redis is unreachable
 _job_progress: dict[str, float] = {}
 _job_eta: dict[str, int | None] = {}
 _job_stage: dict[str, str] = {}
+
+_redis_lock = threading.Lock()
+_redis_client = None
+_redis_target: str | None = None
+_redis_down_until: float = 0.0
 
 _server_lock = threading.Lock()
 _active_server: grpc.Server | None = None
 
 
+def job_events_channel() -> str:
+    return "matchops:jobs:events"
+
+
+def _mark_redis_down() -> None:
+    global _redis_down_until
+    _redis_down_until = time.monotonic() + 5.0
+
+
+def _progress_redis():
+    """Shared Redis client with short timeouts and a 5s circuit breaker on outage."""
+    global _redis_client, _redis_target
+    if time.monotonic() < _redis_down_until:
+        return None
+    url = config.REDIS_URL
+    with _redis_lock:
+        if _redis_client is None or _redis_target != url:
+            try:
+                import redis
+
+                _redis_client = redis.Redis.from_url(
+                    url, socket_connect_timeout=0.5, socket_timeout=0.5, decode_responses=True
+                )
+                _redis_target = url
+            except Exception:
+                _mark_redis_down()
+                return None
+        return _redis_client
+
+
+def set_job_progress(
+    job_id: str,
+    pct: float,
+    eta: int | None = None,
+    stage: str | None = None,
+) -> None:
+    jid = str(job_id)
+    _job_progress[jid] = float(pct)
+    _job_eta[jid] = eta
+    if stage is not None:
+        _job_stage[jid] = stage
+
+    r = _progress_redis()
+    if r is None:
+        return
+    fields: dict[str, str] = {"pct": str(float(pct)), "eta": "" if eta is None else str(int(eta))}
+    if stage is not None:
+        fields["stage"] = stage
+    try:
+        key = f"{JOB_PROGRESS_PREFIX}{jid}"
+        pipe = r.pipeline()
+        pipe.hset(key, mapping=fields)
+        pipe.expire(key, JOB_PROGRESS_TTL)
+        pipe.execute()
+    except Exception as e:
+        logger.debug(f"Redis progress write skipped for job {jid}: {e}")
+        _mark_redis_down()
+
+
+def get_job_progress_state(job_id: str) -> tuple[float, int | None]:
+    """Reads live progress & ETA from Redis (multi-replica safe), falling back to local memory."""
+    jid = str(job_id)
+    r = _progress_redis()
+    if r is not None:
+        try:
+            pct_raw, eta_raw = r.hmget(f"{JOB_PROGRESS_PREFIX}{jid}", "pct", "eta")
+            if pct_raw is not None:
+                eta_val = int(eta_raw) if eta_raw not in (None, "") else None
+                return float(pct_raw), eta_val
+        except Exception:
+            _mark_redis_down()
+    return _job_progress.get(jid, 0.0), _job_eta.get(jid)
+
+
+def get_bulk_job_progress_states(job_ids: list[str]) -> dict[str, tuple[float, int | None]]:
+    """Batch-fetches live progress & ETA for multiple running jobs in a single Redis pipeline."""
+    if not job_ids:
+        return {}
+    jids = [str(j) for j in job_ids]
+    out: dict[str, tuple[float, int | None]] = {}
+    r = _progress_redis()
+    if r is not None:
+        try:
+            pipe = r.pipeline()
+            for jid in jids:
+                pipe.hmget(f"{JOB_PROGRESS_PREFIX}{jid}", "pct", "eta")
+            raw_list = pipe.execute()
+            for jid, res in zip(jids, raw_list):
+                if res and res[0] is not None:
+                    eta_val = int(res[1]) if res[1] not in (None, "") else None
+                    out[jid] = (float(res[0]), eta_val)
+        except Exception:
+            _mark_redis_down()
+    for jid in jids:
+        if jid not in out:
+            out[jid] = (_job_progress.get(jid, 0.0), _job_eta.get(jid))
+    return out
+
+
+def publish_job_event(event: dict[str, Any]) -> None:
+    """Broadcasts a live job state update on the Redis Pub/Sub channel."""
+    if not event:
+        return
+    r = _progress_redis()
+    if r is None:
+        return
+    try:
+        r.publish(job_events_channel(), json.dumps(event, default=str))
+    except Exception as e:
+        logger.debug(f"Redis event publish skipped for job {event.get('id')}: {e}")
+        _mark_redis_down()
+
+
 def clear_job_progress(job_id: str) -> None:
-    """Evicts terminal job progress/ETA/stage entries so memory stays O(J_active)."""
+    """Evicts terminal job progress/ETA/stage entries from Redis and local memory."""
     jid = str(job_id)
     _job_progress.pop(jid, None)
     _job_eta.pop(jid, None)
     _job_stage.pop(jid, None)
+    r = _progress_redis()
+    if r is not None:
+        try:
+            r.delete(f"{JOB_PROGRESS_PREFIX}{jid}")
+        except Exception:
+            _mark_redis_down()
 
 
 class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
     def ReportJobProgress(self, request, context):
         j_id = str(request.job_id)
-        _job_progress[j_id] = float(request.progress_pct)
-        _job_eta[j_id] = int(request.eta_seconds) if request.has_eta else None
+        pct = float(request.progress_pct)
+        eta = int(request.eta_seconds) if request.has_eta else None
 
-        # Only perform a DB write when the stage changes
         last_stage = _job_stage.get(j_id)
-        if last_stage != request.current_stage:
-            _job_stage[j_id] = request.current_stage
+        if last_stage is None:
+            r = _progress_redis()
+            if r is not None:
+                try:
+                    last_stage = r.hget(f"{JOB_PROGRESS_PREFIX}{j_id}", "stage")
+                except Exception:
+                    _mark_redis_down()
+
+        # Only perform a DB write when the stage changes or when first observed
+        if last_stage != request.current_stage or _job_stage.get(j_id) is None:
             try:
                 with get_engine().begin() as conn:
                     # Never resurrect a job that already reached a terminal state
-                    cur = conn.execute(
+                    row = conn.execute(
                         text(
                             "UPDATE jobs SET status = 'running', current_stage = :stage, updated_at = now() "
                             "WHERE id = :id AND status IN ('queued', 'running')"
                         ),
                         {"stage": request.current_stage, "id": j_id},
-                    )
-                    if cur.rowcount == 0:
+                    ).rowcount
+                    if row == 0:
                         clear_job_progress(j_id)
+                        return pb2.JobCallbackResponse(status="ok")
             except Exception as e:
                 logger.error(f"Failed to update progress for job {j_id} in DB: {e}")
 
+        set_job_progress(j_id, pct=pct, eta=eta, stage=request.current_stage)
+        publish_job_event(
+            {
+                "id": j_id,
+                "status": "running",
+                "current_stage": request.current_stage,
+                "progress_pct": pct,
+                "eta_seconds": eta,
+            },
+        )
         return pb2.JobCallbackResponse(status="ok")
 
     def CompleteJob(self, request, context):
@@ -97,6 +244,20 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
             context.abort(grpc.StatusCode.INTERNAL, str(e))
 
         clear_job_progress(j_id)
+        publish_job_event(
+            {
+                "id": j_id,
+                "status": "completed",
+                "current_stage": "done",
+                "progress_pct": 100.0,
+                "eta_seconds": 0,
+                "high_conf": int(request.high_conf),
+                "med_conf": int(request.med_conf),
+                "low_conf": int(request.low_conf),
+                "match_rate": float(request.match_rate),
+                "duration_minutes": float(request.duration_minutes),
+            },
+        )
 
         if request.webhook_log_json:
             try:
@@ -110,18 +271,30 @@ class BackendCallbackServicer(pb2_grpc.BackendCallbackServiceServicer):
 
     def FailJob(self, request, context):
         j_id = str(request.job_id)
+        is_cancelled = bool(request.is_cancelled)
+        err_msg = request.error_message or "Job execution failed"
         try:
             record_job_failure(
                 job_id=j_id,
-                error_message=request.error_message or "Job execution failed",
+                error_message=err_msg,
                 duration_minutes=float(request.duration_minutes),
-                is_cancelled=bool(request.is_cancelled),
+                is_cancelled=is_cancelled,
             )
         except Exception as e:
             logger.error(f"Failed to record job failure in DB for job {j_id}: {e}", exc_info=True)
             context.abort(grpc.StatusCode.INTERNAL, str(e))
 
         clear_job_progress(j_id)
+        publish_job_event(
+            {
+                "id": j_id,
+                "status": "cancelled" if is_cancelled else "failed",
+                "current_stage": "cancelled" if is_cancelled else "failed",
+                "error_message": err_msg,
+                "duration_minutes": float(request.duration_minutes),
+                "eta_seconds": None,
+            },
+        )
         return pb2.JobCallbackResponse(status="ok")
 
 

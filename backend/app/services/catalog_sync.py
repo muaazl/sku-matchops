@@ -3,19 +3,110 @@ import json
 import logging
 import math
 import os
+import time
 from collections import Counter, defaultdict
+from typing import Any
 
 import pandas as pd
 import polars as pl
+import requests
 from sqlalchemy import text
 
+from backend.app.core import config as backend_config
+from backend.app.core.constants import (
+    CACHE_SALT,
+    CATALOG_COL_MAP_FOOD,
+    CATALOG_COL_MAP_MARKET,
+    DOMAIN_FOOD,
+    DOMAIN_MARKET,
+    FOOD_CATALOG_SHEET,
+    MARKET_CATALOG_SHEET,
+    get_third_tag_col,
+)
+from backend.app.core.helpers import TextPipeline, calculate_row_hash, clean_price
 from backend.app.db.session import get_connection
-from engine import config
-from engine.data_pipeline.cache_manager import calculate_row_hash, clean_price
-from engine.data_pipeline.ingestion import DataIngestion
-from engine.nlp.text_cleaner import TextPipeline
 
 logger = logging.getLogger("matchops.catalog_sync")
+
+
+def _get_staged_path(sheet_name: str) -> str:
+    staging_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "data",
+        "staged_sheets",
+    )
+    safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in sheet_name) + ".csv"
+    return os.path.join(staging_dir, safe_name)
+
+
+def _download_sheet_with_retries(
+    sheet_id: str,
+    sheet_name: str,
+    max_retries: int = 3,
+    backoff_factor: float = 1.5,
+    timeout: int = 30,
+) -> str:
+    encoded_name = sheet_name.replace(" ", "%20")
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_name}"
+    last_exception = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+            text_data = r.text
+            if not text_data or not text_data.strip():
+                raise ValueError(
+                    f"Received empty response from Google Sheets for tab '{sheet_name}'."
+                )
+            return text_data
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries:
+                wait_time = backoff_factor**attempt
+                logger.warning(
+                    f"[DOWNLOAD] (Attempt {attempt}/{max_retries}) Failed to download sheet '{sheet_name}': {e}. "
+                    f"Retrying in {wait_time:.1f}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                logger.critical(
+                    f"[DOWNLOAD] (Attempt {attempt}/{max_retries}) Final failure downloading sheet '{sheet_name}': {e}"
+                )
+    raise ConnectionError(
+        f"Failed to download Google Sheet '{sheet_name}' after {max_retries} attempts. "
+        f"Original error: {last_exception}"
+    ) from last_exception
+
+
+def _fetch_sheet_as_csv(
+    sheet_id: str,
+    sheet_name: str,
+    header: int | None = 0,
+    dtype: Any = None,
+) -> pd.DataFrame:
+    staged_path = _get_staged_path(sheet_name)
+    if os.path.exists(staged_path) and os.path.getsize(staged_path) > 0:
+        with open(staged_path, "rb") as f:
+            content_bytes = f.read()
+    else:
+        text_data = _download_sheet_with_retries(sheet_id, sheet_name)
+        content_bytes = text_data.encode("utf-8")
+
+    pl_kwargs = {"ignore_errors": True}
+    if header is None:
+        pl_kwargs["has_header"] = False
+
+    df = pl.read_csv(content_bytes, **pl_kwargs)
+    df = df.select([c for c in df.columns if not c.startswith("Unnamed")])
+    pd_df = df.to_pandas()
+
+    if dtype is str:
+        pd_df = pd_df.astype(str)
+    elif isinstance(dtype, dict):
+        for col, d_type in dtype.items():
+            if col in pd_df.columns:
+                pd_df[col] = pd_df[col].astype(d_type)
+    return pd_df
 
 
 def _nan_to_none(row: dict) -> dict:
@@ -28,51 +119,42 @@ def _flag(val) -> int:
 
 
 def sync_catalog_to_database(
-    sheet_id: str = config.GOOGLE_SHEET_ID,
-    domain: str = config.DOMAIN_MARKET,
+    sheet_id: str | None = None,
+    domain: str = DOMAIN_MARKET,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Downloads or reads staged Google Sheets data, incrementally diffs against
     PostgreSQL catalog_items and brand_flavors tables, persists changes,
-    and updates the local Feather cache.
+    and returns the refreshed DataFrames. Engine-side caches are rebuilt by the engine itself.
     """
-    os.makedirs(config.CACHE_DIR, exist_ok=True)
-    hash_file = os.path.join(config.CACHE_DIR, f"{domain}_source_hashes.json")
-
-    sheet_name = (
-        config.FOOD_CATALOG_SHEET if domain == config.DOMAIN_FOOD else config.MARKET_CATALOG_SHEET
-    )
-    brand_sheet = "Food_Flavors" if domain == config.DOMAIN_FOOD else "Market_Brands"
+    if not sheet_id:
+        sheet_id = backend_config.GOOGLE_SHEET_ID
+    sheet_name = FOOD_CATALOG_SHEET if domain == DOMAIN_FOOD else MARKET_CATALOG_SHEET
+    brand_sheet = "Food_Flavors" if domain == DOMAIN_FOOD else "Market_Brands"
 
     logger.info(
         f"[SYNC] [{domain.upper()}] Loading catalog and brands from staged cache / Google Sheets..."
     )
 
-    cat_staged = DataIngestion._get_staged_path(sheet_name)
-    brand_staged = DataIngestion._get_staged_path(brand_sheet)
+    cat_staged = _get_staged_path(sheet_name)
+    brand_staged = _get_staged_path(brand_sheet)
 
     if os.path.exists(cat_staged) and os.path.getsize(cat_staged) > 0:
         with open(cat_staged, encoding="utf-8") as f:
             catalog_text = f.read()
     else:
-        catalog_text = DataIngestion._download_sheet_with_retries(sheet_id, sheet_name)
-    catalog_hash = hashlib.md5(catalog_text.encode("utf-8")).hexdigest()
+        catalog_text = _download_sheet_with_retries(sheet_id, sheet_name)
 
     if os.path.exists(brand_staged) and os.path.getsize(brand_staged) > 0:
         with open(brand_staged, encoding="utf-8") as f:
             brands_text = f.read()
     else:
-        brands_text = DataIngestion._download_sheet_with_retries(sheet_id, brand_sheet)
-    brands_hash = hashlib.md5(brands_text.encode("utf-8")).hexdigest()
+        brands_text = _download_sheet_with_retries(sheet_id, brand_sheet)
 
     # Clean/Parse Polars DataFrames
     catalog_pl = pl.read_csv(catalog_text.encode("utf-8"), ignore_errors=True)
     catalog_pl = catalog_pl.select([c for c in catalog_pl.columns if not c.startswith("Unnamed")])
-    col_map = (
-        config.CATALOG_COL_MAP_FOOD
-        if domain == config.DOMAIN_FOOD
-        else config.CATALOG_COL_MAP_MARKET
-    )
+    col_map = CATALOG_COL_MAP_FOOD if domain == DOMAIN_FOOD else CATALOG_COL_MAP_MARKET
     catalog_pl = catalog_pl.rename({k: v for k, v in col_map.items() if k in catalog_pl.columns})
 
     if "Name" in catalog_pl.columns:
@@ -86,7 +168,7 @@ def sync_catalog_to_database(
     brands_pl = pl.read_csv(brands_text.encode("utf-8"), ignore_errors=True)
     brands_pl = brands_pl.select([c for c in brands_pl.columns if not c.startswith("Unnamed")])
 
-    brand_col = "Flavor Name" if domain == config.DOMAIN_FOOD else "Brand Name"
+    brand_col = "Flavor Name" if domain == DOMAIN_FOOD else "Brand Name"
     if brand_col in brands_pl.columns:
         brands_pl = brands_pl.filter(
             (pl.col(brand_col).is_not_null())
@@ -157,13 +239,13 @@ def sync_catalog_to_database(
 
             values = {
                 "name": row.get("Name"),
-                "brand": row.get("Brand") if domain == config.DOMAIN_MARKET else None,
-                "flavor": row.get("Flavor") if domain == config.DOMAIN_FOOD else None,
+                "brand": row.get("Brand") if domain == DOMAIN_MARKET else None,
+                "flavor": row.get("Flavor") if domain == DOMAIN_FOOD else None,
                 "basictype": row.get("basictype"),
                 "generic_keywords": row.get("Generic keywords"),
                 "price": clean_price(row.get("Price")),
-                "category": row.get("category") if domain == config.DOMAIN_MARKET else None,
-                "region": row.get("region") if domain == config.DOMAIN_FOOD else None,
+                "category": row.get("category") if domain == DOMAIN_MARKET else None,
+                "region": row.get("region") if domain == DOMAIN_FOOD else None,
                 "description": row.get("Description"),
                 "clean_text": clean_text,
                 "clean_no_weights": clean_no_weights,
@@ -226,15 +308,13 @@ def sync_catalog_to_database(
 
         for row in brands_df_raw.to_dict(orient="records"):
             row = _nan_to_none(row)
-            name_val = (
-                row.get("Flavor Name") if domain == config.DOMAIN_FOOD else row.get("Brand Name")
-            )
+            name_val = row.get("Flavor Name") if domain == DOMAIN_FOOD else row.get("Brand Name")
             raw_name = str(name_val).strip().lower()
             brand_counts_new[raw_name] = brand_counts_new.get(raw_name, 0) + 1
             uid = f"{raw_name}#occ_{brand_counts_new[raw_name]}"
             new_brands_seen.add(uid)
 
-            row_str = str(name_val) + str(row.get("Aliases", "")) + config.CACHE_SALT
+            row_str = str(name_val) + str(row.get("Aliases", "")) + CACHE_SALT
             row_hash = hashlib.md5(row_str.encode("utf-8")).hexdigest()
 
             values = {
@@ -298,9 +378,6 @@ def sync_catalog_to_database(
             f"Brands ({brands_inserted} inserted, {brands_updated} updated, {brands_deleted} deleted)."
         )
 
-        with open(hash_file, "w") as f:
-            json.dump({"catalog": catalog_hash, "brands": brands_hash}, f)
-
     except Exception as e:
         conn.rollback()
         logger.error(f"[SYNC] Transaction rollback due to error: {e}")
@@ -308,35 +385,7 @@ def sync_catalog_to_database(
     finally:
         conn.close()
 
-    # Re-query DB to produce clean DataFrames and write Feather caches
-    cat_df, brands_df = query_catalog_from_database(domain)
-
-    # Write high-performance Feather files
-    try:
-        import pyarrow.feather as feather
-
-        catalog_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
-        brands_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
-
-        cat_df_feather = cat_df.copy()
-        if "entities" in cat_df_feather.columns:
-            cat_df_feather = cat_df_feather.drop(columns=["entities"])
-        if "weight_val" in cat_df_feather.columns:
-            cat_df_feather["weight_val"] = cat_df_feather["weight_val"].astype(str)
-
-        cat_df_feather = cat_df_feather.reset_index(drop=True)
-        brands_df_feather = brands_df.reset_index(drop=True)
-
-        feather.write_feather(cat_df_feather, catalog_cache_path, compression="lz4")
-        feather.write_feather(brands_df_feather, brands_cache_path, compression="lz4")
-        logger.info(f"[SYNC] Cached Feather files successfully for '{domain}' domain.")
-    except Exception as fe_err:
-        logger.error(f"[SYNC] Failed to write Feather cache files: {fe_err}")
-
-    # Clear engine in-memory cache so fresh data is loaded
-    DataIngestion.clear_mem_cache(domain)
-
-    return cat_df, brands_df
+    return query_catalog_from_database(domain)
 
 
 def query_catalog_from_database(domain: str) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -405,7 +454,7 @@ def query_catalog_from_database(domain: str) -> tuple[pd.DataFrame, pd.DataFrame
             }
         )
 
-        if domain == config.DOMAIN_MARKET:
+        if domain == DOMAIN_MARKET:
             cat_df = cat_df.rename(columns={"brand": "Brand"})
         else:
             cat_df = cat_df.rename(columns={"flavor": "Flavor"})
@@ -416,7 +465,7 @@ def query_catalog_from_database(domain: str) -> tuple[pd.DataFrame, pd.DataFrame
 
         brands_df = brands_df.rename(
             columns={
-                "name": "Flavor Name" if domain == config.DOMAIN_FOOD else "Brand Name",
+                "name": "Flavor Name" if domain == DOMAIN_FOOD else "Brand Name",
                 "aliases": "Aliases",
                 "is_weak": "Is_Weak",
                 "is_meat": "Is_Meat",
@@ -435,14 +484,16 @@ def query_catalog_from_database(domain: str) -> tuple[pd.DataFrame, pd.DataFrame
 
 
 def sync_classifier_dictionaries_to_database(
-    sheet_id: str = config.GOOGLE_SHEET_ID,
-    domain: str = config.DOMAIN_MARKET,
+    sheet_id: str | None = None,
+    domain: str = DOMAIN_MARKET,
 ) -> dict[str, list[str]]:
     """Fetches dictionary tags from staged/online sheets and synchronizes to PostgreSQL."""
+    if not sheet_id:
+        sheet_id = backend_config.GOOGLE_SHEET_ID
     dicts = {}
-    third_tag_key = config.get_third_tag_col(domain)
-    third_tag_sheet = "Region" if domain == config.DOMAIN_FOOD else "Category"
-    domain_suffix = "Food" if domain == config.DOMAIN_FOOD else "Market"
+    third_tag_key = get_third_tag_col(domain)
+    third_tag_sheet = "Region" if domain == DOMAIN_FOOD else "Category"
+    domain_suffix = "Food" if domain == DOMAIN_FOOD else "Market"
     sheets_to_load = {
         "gk": f"{domain_suffix}_GK",
         "bt": f"{domain_suffix}_BT",
@@ -457,7 +508,7 @@ def sync_classifier_dictionaries_to_database(
         )
 
         for key, sheet_name in sheets_to_load.items():
-            df = DataIngestion._fetch_sheet_as_csv(sheet_id, sheet_name, header=None, dtype=str)
+            df = _fetch_sheet_as_csv(sheet_id, sheet_name, header=None, dtype=str)
             keywords = df.iloc[:, 0].dropna().str.strip().tolist()
             keywords = [k for k in keywords if k]
 
@@ -472,13 +523,6 @@ def sync_classifier_dictionaries_to_database(
 
         conn.commit()
         logger.info(f"[SYNC] Imported classifier dictionaries into PostgreSQL ({domain}).")
-
-        # Also write local JSON cache
-        os.makedirs(config.CACHE_DIR, exist_ok=True)
-        dicts_cache = os.path.join(config.CACHE_DIR, f"{domain}_classifier_dicts.json")
-        with open(dicts_cache, "w", encoding="utf-8") as f:
-            json.dump(dicts, f, indent=2)
-
         return dicts
     except Exception as e:
         conn.rollback()
@@ -489,11 +533,13 @@ def sync_classifier_dictionaries_to_database(
 
 
 def sync_bt_gk_map_to_database(
-    sheet_id: str = config.GOOGLE_SHEET_ID,
-    domain: str = config.DOMAIN_MARKET,
+    sheet_id: str | None = None,
+    domain: str = DOMAIN_MARKET,
     cat_df: pd.DataFrame | None = None,
 ) -> dict[str, list[str]]:
     """Builds BT->GK mappings and synchronizes them to PostgreSQL."""
+    if not sheet_id:
+        sheet_id = backend_config.GOOGLE_SHEET_ID
     conn = get_connection()
     try:
         grouped = defaultdict(set)
@@ -579,9 +625,9 @@ def compute_and_store_dictionary_counts(domain: str, cat_df: pd.DataFrame | None
     conn = get_connection()
     try:
         p = {"domain": domain}
-        cat_col = "category" if domain == config.DOMAIN_MARKET else "region"
-        brand_col = "Brand" if domain == config.DOMAIN_MARKET else "Flavor"
-        brand_db_col = "brand" if domain == config.DOMAIN_MARKET else "flavor"
+        cat_col = "category" if domain == DOMAIN_MARKET else "region"
+        brand_col = "Brand" if domain == DOMAIN_MARKET else "Flavor"
+        brand_db_col = "brand" if domain == DOMAIN_MARKET else "flavor"
 
         gk_c = Counter()
         bt_c = Counter()

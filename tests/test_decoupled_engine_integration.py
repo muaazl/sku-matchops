@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from backend.app.api.routes import api_router
 from backend.app.db.session import get_engine
-from backend.app.grpc_server import start_backend_grpc_server
+from backend.app.grpc_server import clear_job_progress, start_backend_grpc_server
 from backend.app.schemas.models import BaseRequest, SKUItem
 from backend.app.services.worker import enqueue_job
 from engine.pipeline.worker_runner import _get_backend_stub
@@ -24,12 +24,14 @@ client = TestClient(app)
 
 
 def _delete_job(job_id: str) -> None:
+    clear_job_progress(job_id)
     with get_engine().begin() as conn:
         conn.execute(text("DELETE FROM jobs WHERE id = :id"), {"id": job_id})
         conn.execute(text("DELETE FROM processed_skus WHERE batch_id = :id"), {"id": job_id})
 
 
 class TestDecoupledEngineIntegration(unittest.TestCase):
+    @pytest.mark.usefixtures("loopback")
     @patch("backend.app.api.routes.get_engine_health")
     def test_health_with_engine_status(self, mock_health):
         mock_health.return_value = {
@@ -311,6 +313,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             srv.stop(grace=0)
             _delete_job(job_id)
 
+    @pytest.mark.usefixtures("loopback")
     def test_grpc_secret_ssrf_pinning_typed_upload_and_error_mapping(self):
         """Verifies INTERNAL_GRPC_SECRET, SSRF pinning, typed upload, and 400/404 RPC error mapping."""
         from types import SimpleNamespace
@@ -432,6 +435,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
     def test_model_load_lifecycle_concurrency_and_reload_cache_eviction(self):
         """trigger_model_load guards concurrent loads, evicts caches on reload, and skips duplicate classifier calls."""
         import threading
+        import time
 
         from engine.core import resource_loader as rl
 
@@ -461,6 +465,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
 
             with (
                 patch.object(rl, "_get_shared_models", return_value=(None, None)),
+                patch.object(rl, "_rebuild_data_caches"),
                 patch.object(rl, "refresh_rules_cache"),
                 patch.object(rl, "start_invalidation_listener"),
                 patch.object(rl, "clear_flavor_cache"),
@@ -472,7 +477,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
                 self.assertEqual(status, "started")
                 self.assertTrue(done.wait(timeout=5.0))
                 while rl._model_load_lock.locked():
-                    pass
+                    time.sleep(0.01)
 
             self.assertEqual(loaded_domains, ["market", "food"])
             mock_clf.assert_not_called()
@@ -486,6 +491,182 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             rl._classifiers.update(saved_classifiers)
             for d, st in saved_statuses.items():
                 rl._model_statuses[d] = st
+
+    def test_engine_boot_autoload_and_immediate_worker_running_callback(self):
+        """Engine serve() auto-triggers model load on boot, and _execute_job reports 0% stage before process_request."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from engine import server as eng_server
+        from engine.pipeline import worker_runner
+        from engine.rules_engine.loader import RulesSnapshot
+
+        fake_srv = MagicMock()
+        with (
+            patch.object(eng_server, "start_grpc_server", return_value=fake_srv),
+            patch.object(eng_server, "trigger_model_load") as mock_load,
+            patch("engine.server.signal.signal"),
+        ):
+            eng_server.serve(port=0, host="127.0.0.1")
+            mock_load.assert_called_once_with(reload=False)
+            fake_srv.wait_for_termination.assert_called_once()
+
+        call_order: list[str] = []
+        fake_stub = SimpleNamespace(
+            ReportJobProgress=lambda req, **_kw: call_order.append(
+                f"progress:{req.current_stage}:{req.progress_pct}"
+            ),
+            CompleteJob=lambda req, **_kw: call_order.append(f"complete:{req.status}"),
+        )
+        with (
+            patch.object(worker_runner, "_get_backend_stub", return_value=fake_stub),
+            patch.object(worker_runner, "sync_rules_version"),
+            patch.object(worker_runner, "snapshot_rules", return_value=RulesSnapshot("v1", {})),
+            patch.object(
+                worker_runner,
+                "process_request",
+                side_effect=lambda **_kw: (call_order.append("process_request"), {"results": []})[
+                    1
+                ],
+            ),
+        ):
+            worker_runner._execute_job(
+                {
+                    "job_id": "j_imm_1",
+                    "task": "pipeline",
+                    "domain": "market",
+                    "skus": [{"name": "A"}],
+                }
+            )
+
+        self.assertEqual(call_order[0], "progress:embedding:0.0")
+        self.assertLess(
+            call_order.index("progress:embedding:0.0"), call_order.index("process_request")
+        )
+
+    @pytest.mark.usefixtures("loopback")
+    def test_ready_probe_and_job_sse_stream(self):
+        """GET /ready reflects model readiness (503 vs 200) and /jobs/{id}/stream streams SSE frames."""
+        from unittest.mock import MagicMock
+
+        from fastapi.testclient import TestClient
+
+        from backend.app import grpc_server as be_grpc
+        from backend.main import app
+
+        # Verify Redis-backed progress store + Pub/Sub publish + eviction
+        published: list[tuple[str, dict]] = []
+        fake_hash: dict[str, dict[str, str]] = {}
+
+        class _FakeSyncPipe:
+            def hset(self, k, mapping):
+                fake_hash.setdefault(k, {}).update(mapping)
+
+            def expire(self, _k, _ttl):
+                pass
+
+            def execute(self):
+                pass
+
+        class _FakeSyncRedis:
+            def pipeline(self):
+                return _FakeSyncPipe()
+
+            def hmget(self, k, *fields):
+                d = fake_hash.get(k, {})
+                return [d.get(f) for f in fields]
+
+            def publish(self, ch, data):
+                published.append((ch, json.loads(data)))
+
+            def delete(self, k):
+                fake_hash.pop(k, None)
+
+        with patch.object(be_grpc, "_progress_redis", return_value=_FakeSyncRedis()):
+            be_grpc.set_job_progress("j_redis_1", pct=42.5, eta=9, stage="reranking")
+            self.assertEqual(be_grpc.get_job_progress_state("j_redis_1"), (42.5, 9))
+            be_grpc.publish_job_event({"id": "j_redis_1", "status": "running"})
+            self.assertEqual(
+                published, [("matchops:jobs:events", {"id": "j_redis_1", "status": "running"})]
+            )
+            be_grpc.clear_job_progress("j_redis_1")
+            self.assertEqual(be_grpc.get_job_progress_state("j_redis_1"), (0.0, None))
+
+        fake_conn_ctx = MagicMock()
+        fake_db_engine = MagicMock()
+        fake_db_engine.connect.return_value = fake_conn_ctx
+        mock_r = MagicMock()
+        mock_r.ping.return_value = True
+
+        client = TestClient(app)
+        with (
+            patch("backend.app.api.routes.get_engine", return_value=fake_db_engine),
+            patch("redis.Redis.from_url", return_value=mock_r),
+            patch(
+                "backend.app.api.routes.get_engine_health",
+                return_value={"status": "ok", "all_models_ready": False},
+            ),
+        ):
+            r_not_ready = client.get("/ready")
+            self.assertEqual(r_not_ready.status_code, 503)
+            self.assertEqual(r_not_ready.json()["status"], "not_ready")
+
+        with (
+            patch("backend.app.api.routes.get_engine", return_value=fake_db_engine),
+            patch("redis.Redis.from_url", return_value=mock_r),
+            patch(
+                "backend.app.api.routes.get_engine_health",
+                return_value={"status": "ok", "all_models_ready": True},
+            ),
+        ):
+            r_ready = client.get("/ready")
+            self.assertEqual(r_ready.status_code, 200)
+            self.assertEqual(r_ready.json()["status"], "ready")
+
+        with patch("backend.app.api.endpoints.jobs._single_job", return_value=None):
+            self.assertEqual(client.get("/jobs/nonexistent_sse_job/stream").status_code, 404)
+
+        job_snapshot = {
+            "id": "test_sse_job_202",
+            "status": "completed",
+            "current_stage": "done",
+            "progress_pct": 100.0,
+            "eta_seconds": 0,
+        }
+
+        class _FakePubSub:
+            async def subscribe(self, _ch):
+                return None
+
+            async def get_message(self, **_kw):
+                return None
+
+            async def aclose(self):
+                return None
+
+        class _FakeAsyncRedis:
+            def pubsub(self, **_kw):
+                return _FakePubSub()
+
+            async def aclose(self):
+                return None
+
+        with (
+            patch("backend.app.api.endpoints.jobs._single_job", return_value=job_snapshot),
+            patch(
+                "backend.app.api.endpoints.jobs._open_job_pubsub",
+                return_value=(_FakeAsyncRedis(), _FakePubSub()),
+            ),
+        ):
+            resp = client.get("/jobs/test_sse_job_202/stream")
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(resp.headers["content-type"].startswith("text/event-stream"))
+            lines = [ln for ln in resp.text.splitlines() if ln.startswith("data: ")]
+            self.assertEqual(len(lines), 1)
+            frame = json.loads(lines[0][6:])
+            self.assertEqual(frame["id"], "test_sse_job_202")
+            self.assertEqual(frame["status"], "completed")
+            self.assertEqual(frame["progress_pct"], 100.0)
 
 
 if __name__ == "__main__":
