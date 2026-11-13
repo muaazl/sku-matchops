@@ -19,6 +19,7 @@ _RULES_CACHE = None
 _RULES_VERSION = "none"
 # Guards swapping (_RULES_CACHE, _RULES_VERSION) as one unit
 _STATE_LOCK = threading.Lock()
+_REDIS_LOCK = threading.Lock()
 
 # --- Cross-process rule distribution & invalidation via Redis ---
 RULES_DATA_KEY = "matchops:rules:data"
@@ -26,6 +27,8 @@ RULES_VERSION_KEY = "matchops:rules:version"
 RULES_INVALIDATE_CHANNEL = "matchops:rules:invalidate"
 
 _redis_client = None
+_redis_url: str | None = None
+_invalidation_thread: threading.Thread | None = None
 
 
 class Rule:
@@ -53,14 +56,24 @@ def _fingerprint(rules: list) -> str:
 
 def _redis():
     """Shared Redis client with short timeouts, so a Redis outage degrades instead of stalling."""
-    global _redis_client
-    if _redis_client is None:
-        import redis
+    global _redis_client, _redis_url
+    url = config.REDIS_URL
+    with _REDIS_LOCK:
+        if _redis_client is not None and _redis_url != url:
+            try:
+                _redis_client.close()
+            except Exception:
+                pass
+            _redis_client = None
+            _redis_url = None
+        if _redis_client is None:
+            import redis
 
-        _redis_client = redis.Redis.from_url(
-            config.REDIS_URL, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
-        )
-    return _redis_client
+            _redis_client = redis.Redis.from_url(
+                url, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
+            )
+            _redis_url = url
+        return _redis_client
 
 
 def set_rules_from_dicts(rules_data: list[dict], version: str | None = None) -> None:
@@ -257,18 +270,22 @@ def sync_rules_version() -> str:
     return _RULES_VERSION
 
 
-def start_invalidation_listener() -> threading.Thread:
+def start_invalidation_listener(stop_event: threading.Event | None = None) -> threading.Thread:
     """Engine side: daemon thread that reloads rules as soon as an invalidation is published."""
+    global _invalidation_thread
 
     def _listen():
         import redis
 
         backoff = 1.0
-        while True:
+        while not (stop_event and stop_event.is_set()):
+            client = None
+            pubsub = None
             try:
                 client = redis.Redis.from_url(
                     config.REDIS_URL,
                     socket_connect_timeout=1,
+                    socket_timeout=5,
                     health_check_interval=30,
                     decode_responses=True,
                 )
@@ -276,15 +293,38 @@ def start_invalidation_listener() -> threading.Thread:
                 pubsub.subscribe(RULES_INVALIDATE_CHANNEL)
                 backoff = 1.0
                 sync_rules_version()
-                while True:
-                    msg = pubsub.get_message(timeout=30)
+                while not (stop_event and stop_event.is_set()):
+                    msg = pubsub.get_message(timeout=1.0)
                     if msg and msg.get("data"):
                         refresh_rules_cache()
                         logger.info(f"[RULES] Reloaded rules (version {_RULES_VERSION}).")
             except Exception as e:
                 logger.debug(f"[RULES] Invalidation listener disconnected: {e}")
-                time.sleep(backoff)
+                if stop_event and stop_event.wait(backoff):
+                    break
+                if not stop_event:
+                    time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+            finally:
+                if pubsub is not None:
+                    try:
+                        pubsub.close()
+                    except Exception:
+                        pass
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+
+    if stop_event is None:
+        with _REDIS_LOCK:
+            if _invalidation_thread is not None and _invalidation_thread.is_alive():
+                return _invalidation_thread
+            thread = threading.Thread(target=_listen, name="rules-invalidation", daemon=True)
+            thread.start()
+            _invalidation_thread = thread
+            return thread
 
     thread = threading.Thread(target=_listen, name="rules-invalidation", daemon=True)
     thread.start()

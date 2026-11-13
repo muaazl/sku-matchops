@@ -1,55 +1,70 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
 
 from backend.app.core.security import Principal
 
 
+@pytest.mark.usefixtures("pg")
 class TestDatabaseIntegrityAndReliability(unittest.TestCase):
     def test_startup_batch_reconciliation_logic(self):
-        """DAT-01: Batches are reconciled based on whether any active jobs remain for that batch."""
-        mock_conn = MagicMock()
-        executed_sqls = []
+        """DAT-01: startup_event marks orphaned queued/running jobs and batches failed while keeping live jobs."""
+        from backend.app.db.session import get_engine
+        from backend.main import startup_event
 
-        def fake_execute(statement, params=None):
-            executed_sqls.append(str(statement.text))
-            res = MagicMock()
-            res.rowcount = 3
-            return res
+        with get_engine().begin() as conn:
+            conn.execute(text("TRUNCATE processed_skus, jobs, batches CASCADE"))
+            conn.execute(
+                text(
+                    "INSERT INTO batches (id, filename, status, total_skus) "
+                    "VALUES ('b_dead', 'dead.csv', 'running', 5), "
+                    "('b_alive', 'alive.csv', 'running', 5)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO jobs (id, domain, type, status, current_stage, batch_id) "
+                    "VALUES ('job_dead', 'food', 'matcher', 'running', 'processing', 'b_dead'), "
+                    "('job_live', 'food', 'matcher', 'queued', 'queued', 'b_alive')"
+                )
+            )
 
-        mock_conn.execute.side_effect = fake_execute
+        fake_queue = MagicMock()
+        fake_queue.tracked_job_ids.return_value = ["job_live"]
 
-        # Simulate startup reconciliation block
-        live_job_ids = ["job_live_1"]
-        mock_conn.execute(
-            text("""
-            UPDATE jobs SET
-                status = 'failed',
-                current_stage = 'failed',
-                error_message = 'Interrupted by a service restart. Use Retry to resubmit.',
-                completed_at = now()
-            WHERE status IN ('queued', 'running') AND NOT (id = ANY(:live))
-            """),
-            {"live": live_job_ids},
-        )
-        mock_conn.execute(
-            text("""
-            UPDATE batches SET status = 'failed', completed_at = now()
-            WHERE status IN ('queued', 'running')
-              AND id NOT IN (
-                  SELECT DISTINCT batch_id FROM jobs
-                  WHERE status IN ('queued', 'running')
-                    AND batch_id IS NOT NULL
-              )
-            """)
-        )
+        try:
+            with (
+                patch("backend.main.ensure_backend_grpc_server"),
+                patch("backend.main.init_db"),
+                patch("backend.main.sync_rules_everywhere"),
+                patch("backend.main.get_task_queue", return_value=fake_queue),
+            ):
+                startup_event()
 
-        # Verify batch query references batch_id rather than erroneously equating batch_id to job_id
-        batch_query = next((q for q in executed_sqls if "UPDATE batches" in q), "")
-        self.assertIn("SELECT DISTINCT batch_id FROM jobs", batch_query)
-        self.assertNotIn("id = ANY(:live)", batch_query)
+            with get_engine().connect() as conn:
+                jobs = {
+                    row[0]: (row[1], row[2], row[3])
+                    for row in conn.execute(
+                        text("SELECT id, status, current_stage, error_message FROM jobs")
+                    ).fetchall()
+                }
+                batches = {
+                    row[0]: row[1]
+                    for row in conn.execute(text("SELECT id, status FROM batches")).fetchall()
+                }
+
+            self.assertEqual(jobs["job_dead"][0], "failed")
+            self.assertEqual(jobs["job_dead"][1], "failed")
+            self.assertIn("Use Retry", jobs["job_dead"][2])
+            self.assertEqual(jobs["job_live"][0], "queued")
+            self.assertEqual(batches["b_dead"], "failed")
+            self.assertEqual(batches["b_alive"], "running")
+        finally:
+            with get_engine().begin() as conn:
+                conn.execute(text("TRUNCATE processed_skus, jobs, batches CASCADE"))
 
     def test_streaming_export_manages_internal_connection(self):
         """DAT-02: /processed-skus/export creates and closes connection inside generator."""

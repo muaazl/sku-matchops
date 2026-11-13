@@ -228,6 +228,7 @@ def test_golden_dataset_shape():
     assert {c["domain"] for c in cases} == {"food", "market"}
 
 
+@pytest.mark.live_models
 def test_golden_regression(golden_rules):
     import os
 

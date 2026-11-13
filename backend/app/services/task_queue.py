@@ -141,11 +141,12 @@ class TaskQueue:
 
 
 _queue: TaskQueue | None = None
+_queue_url: str | None = None
 _client_lock = threading.Lock()
 
 
 def get_task_queue() -> TaskQueue | None:
-    global _queue
+    global _queue, _queue_url
     import sys
 
     task_queue_enabled = getattr(config, "TASK_QUEUE_ENABLED", True)
@@ -163,8 +164,9 @@ def get_task_queue() -> TaskQueue | None:
 
     with _client_lock:
         if _queue is not None:
-            if not _queue.ping():
+            if _queue_url != redis_url or not _queue.ping():
                 _queue = None
+                _queue_url = None
 
         if _queue is None:
             try:
@@ -178,6 +180,7 @@ def get_task_queue() -> TaskQueue | None:
                 )
                 client.ping()
                 _queue = TaskQueue(client)
+                _queue_url = redis_url
             except Exception as e:
                 logger.warning(f"[QUEUE] Could not connect to Redis TaskQueue ({redis_url}): {e}")
                 return None

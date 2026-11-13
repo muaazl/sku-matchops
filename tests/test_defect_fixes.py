@@ -32,6 +32,7 @@ def _require_synced_pipeline(domain: str = "food") -> None:
 
 @pytest.mark.usefixtures("pg")
 class TestDefectFixes:
+    @pytest.mark.live_models
     def test_bypass_score_normalization_at_source(self):
         """Verify exact and fuzzy bypass paths write 1.0 instead of 100.0."""
         _require_synced_pipeline("food")
@@ -62,6 +63,7 @@ class TestDefectFixes:
                 "raw_cross_score logit sentinel should remain 100.0"
             )
 
+    @pytest.mark.live_models
     def test_fallback_variable_scoping_no_cross_sku_leak(self):
         """Verify that fallback candidate from SKU 1 never leaks to SKU 2 in the same chunk."""
         _require_synced_pipeline("food")
@@ -91,6 +93,7 @@ class TestDefectFixes:
         assert res.iloc[0]["Input Raw"] == "ZzzNonExistentDishXyz123"
         assert res.iloc[1]["Input Raw"] == "QqqAnotherFakeDish987"
 
+    @pytest.mark.live_models
     def test_zero_candidate_sku_preserves_positional_alignment(self):
         """Verify that when a SKU produces 0 candidates, a placeholder row is appended and positions do not shift."""
         _require_synced_pipeline("food")
@@ -127,6 +130,7 @@ class TestDefectFixes:
         ]:
             assert col in res.columns
 
+    @pytest.mark.live_models
     def test_classifier_reasoning_generation_and_escalation_chaining(self):
         """Verify classifier produces reasoning and pipeline escalation chains matcher note + classifier reasoning."""
         _require_synced_pipeline("food")
@@ -197,23 +201,24 @@ class TestDefectFixes:
             assert pip_res2.get("bt_confidence") is not None
             assert 0.0 <= pip_res2["bt_confidence"] <= 1.0
 
-    def test_cross_encoder_empty_pairs_and_sentinel_handling(self):
-        """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if models fail."""
-        embed = EmbeddingEngine.__new__(EmbeddingEngine)
-        embed.cross_session = None
-        embed.rerank_tokenizer = None
-        embed.cross_encoder_fallback = None
 
-        # 1. Empty pairs returns empty array
-        empty_res = embed.score_cross_encoder([])
-        assert len(empty_res) == 0
-        assert isinstance(empty_res, np.ndarray)
+def test_cross_encoder_empty_pairs_and_sentinel_handling():
+    """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if models fail."""
+    embed = EmbeddingEngine.__new__(EmbeddingEngine)
+    embed.cross_session = None
+    embed.rerank_tokenizer = None
+    embed.cross_encoder_fallback = None
 
-        # 2. When sessions are None, returns -10.0 sentinel
-        with (
-            patch.object(embed, "cross_session", None),
-            patch.object(embed, "cross_encoder_fallback", None),
-        ):
-            sentinel_res = embed.score_cross_encoder([["query", "doc1"], ["query", "doc2"]])
-            assert len(sentinel_res) == 2
-            assert np.all(sentinel_res == -10.0), f"Expected -10.0 sentinels, got {sentinel_res}"
+    # 1. Empty pairs returns empty array
+    empty_res = embed.score_cross_encoder([])
+    assert len(empty_res) == 0
+    assert isinstance(empty_res, np.ndarray)
+
+    # 2. When sessions are None, returns -10.0 sentinel
+    with (
+        patch.object(embed, "cross_session", None),
+        patch.object(embed, "cross_encoder_fallback", None),
+    ):
+        sentinel_res = embed.score_cross_encoder([["query", "doc1"], ["query", "doc2"]])
+        assert len(sentinel_res) == 2
+        assert np.all(sentinel_res == -10.0), f"Expected -10.0 sentinels, got {sentinel_res}"

@@ -343,11 +343,19 @@ def test_completing_after_lease_was_lost_does_not_duplicate_bookkeeping(redis_cl
 
 @pytest.fixture
 def unreachable_redis(monkeypatch):
+    from backend.app.services import task_queue as backend_task_queue
+
     monkeypatch.setattr(config, "REDIS_URL", "redis://localhost:1/0")
     monkeypatch.setattr(config, "TASK_QUEUE_ENABLED", True)
     monkeypatch.setattr(task_queue, "_queue", None)
+    monkeypatch.setattr(task_queue, "_queue_url", None)
+    monkeypatch.setattr(backend_task_queue, "_queue", None)
+    monkeypatch.setattr(backend_task_queue, "_queue_url", None)
     yield
     task_queue._queue = None
+    task_queue._queue_url = None
+    backend_task_queue._queue = None
+    backend_task_queue._queue_url = None
 
 
 def _fake_grpc(monkeypatch, module):
@@ -439,3 +447,86 @@ def test_queued_job_errors_propagate_for_retry(monkeypatch):
     monkeypatch.setattr(worker_runner, "get_task_queue", lambda: None)
     with pytest.raises(ConnectionError):
         worker_runner._run_queued_job(_payload("retry-me"))
+
+
+def test_engine_get_task_queue_is_thread_safe_and_recreates_on_url_change(monkeypatch):
+    import redis
+
+    created_urls = []
+
+    def fake_from_url(url, **_kwargs):
+        created_urls.append(url)
+        return SimpleNamespace(url=url, register_script=lambda _script: lambda **_kw: None)
+
+    monkeypatch.setattr(config, "TASK_QUEUE_ENABLED", True)
+    monkeypatch.setattr(config, "REDIS_URL", "redis://localhost:6379/14")
+    monkeypatch.setattr(task_queue, "_queue", None)
+    monkeypatch.setattr(task_queue, "_queue_url", None)
+    monkeypatch.setattr(redis.Redis, "from_url", staticmethod(fake_from_url))
+
+    try:
+        results = []
+        barrier = threading.Barrier(4)
+
+        def call_get():
+            barrier.wait(timeout=2)
+            results.append(task_queue.get_task_queue())
+
+        threads = [threading.Thread(target=call_get) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert len(created_urls) == 1
+        assert len({id(q) for q in results}) == 1
+
+        monkeypatch.setattr(config, "REDIS_URL", "redis://localhost:6379/15")
+        q2 = task_queue.get_task_queue()
+        assert q2 is not results[0]
+        assert created_urls == ["redis://localhost:6379/14", "redis://localhost:6379/15"]
+    finally:
+        task_queue._queue = None
+        task_queue._queue_url = None
+
+
+def test_start_queue_worker_is_idempotent_and_replaces_only_dead_workers(monkeypatch):
+    from engine.pipeline import worker_runner
+
+    class _FakeThread:
+        def __init__(self, target=None, args=(), kwargs=None, name=None, daemon=None):
+            self.name = name
+            self._alive = True
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self._alive
+
+    spawned = []
+
+    def make_thread(*args, **kwargs):
+        t = _FakeThread(*args, **kwargs)
+        spawned.append(t)
+        return t
+
+    monkeypatch.setattr(worker_runner, "get_task_queue", lambda: SimpleNamespace())
+    monkeypatch.setattr(worker_runner, "_queue_workers", [])
+    monkeypatch.setattr(worker_runner.threading, "Thread", make_thread)
+
+    try:
+        worker_runner.start_queue_worker()
+        assert [t.name for t in spawned] == ["queue-worker-0", "queue-worker-1"]
+
+        # Both alive: reload must not spawn duplicates
+        worker_runner.start_queue_worker()
+        assert len(spawned) == 2
+
+        # Only worker-1 dies: only slot 1 is respawned
+        spawned[1]._alive = False
+        worker_runner.start_queue_worker()
+        assert [t.name for t in spawned] == ["queue-worker-0", "queue-worker-1", "queue-worker-1"]
+    finally:
+        worker_runner._queue_workers = []
+        worker_runner._worker_stop.clear()

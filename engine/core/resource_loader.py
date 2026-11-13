@@ -485,9 +485,8 @@ def _bg_load_models(reload: bool = False) -> None:
             logger.info("[ENGINE] All ML models loaded and cached successfully.")
             from engine.pipeline.worker_runner import start_queue_worker
 
-            # Only take queued jobs once models are ready; until then other workers can serve them
-            if _queue_worker is None or not _queue_worker.is_alive():
-                _queue_worker = start_queue_worker()
+            # Idempotent: ensures 2 consumer threads are running once models are ready
+            _queue_worker = start_queue_worker()
         except Exception as e:
             logger.error(f"[ENGINE] Background model loading failed: {e}")
             reset_statuses()

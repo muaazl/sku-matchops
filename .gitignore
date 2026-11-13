@@ -97,6 +97,8 @@ frontend/.pnp
 frontend/.pnp.js
 frontend/.pnpm-store/
 frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*

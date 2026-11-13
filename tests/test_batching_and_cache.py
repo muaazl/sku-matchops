@@ -467,6 +467,8 @@ REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
 
 
 def test_pubsub_listener_reloads_immediately(rule_db, monkeypatch):
+    import threading
+
     import redis
 
     try:
@@ -478,24 +480,64 @@ def test_pubsub_listener_reloads_immediately(rule_db, monkeypatch):
     monkeypatch.setattr(loader, "_redis_client", None)
     rules_service.sync_rules_everywhere()
     loader.get_rules("market")
-    loader.start_invalidation_listener()
+    stop_event = threading.Event()
+    listener_thread = loader.start_invalidation_listener(stop_event=stop_event)
 
-    _set_priority(rule_db.engine, rule_db.rule_id, 11)
-    updated_rules = rules_service.load_active_rules_from_db()
-    publisher = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    publisher.set(loader.RULES_DATA_KEY, json.dumps(updated_rules, default=str))
-    publisher.set(loader.RULES_VERSION_KEY, "new-version")
+    try:
+        _set_priority(rule_db.engine, rule_db.rule_id, 11)
+        updated_rules = rules_service.load_active_rules_from_db()
+        publisher = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        publisher.set(loader.RULES_DATA_KEY, json.dumps(updated_rules, default=str))
+        publisher.set(loader.RULES_VERSION_KEY, "new-version")
 
-    # Publish the way the gateway does, without mutating this process's in-memory cache directly
-    deadline = time.time() + 5
-    rule = next(r for r in loader.get_rules("market") if r.rule_id == rule_db.rule_id)
-    while time.time() < deadline:
-        publisher.publish(loader.RULES_INVALIDATE_CHANNEL, "new-version")
-        time.sleep(0.2)
+        # Publish the way the gateway does, without mutating this process's in-memory cache directly
+        deadline = time.time() + 5
         rule = next(r for r in loader.get_rules("market") if r.rule_id == rule_db.rule_id)
-        if rule.priority == 11:
-            break
-    assert rule.priority == 11
+        while time.time() < deadline:
+            publisher.publish(loader.RULES_INVALIDATE_CHANNEL, "new-version")
+            time.sleep(0.2)
+            rule = next(r for r in loader.get_rules("market") if r.rule_id == rule_db.rule_id)
+            if rule.priority == 11:
+                break
+        assert rule.priority == 11
+    finally:
+        stop_event.set()
+        listener_thread.join(timeout=3)
+
+
+def test_start_invalidation_listener_singleton_reuses_live_thread(monkeypatch):
+    class _FakeThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            self.name = name
+            self._alive = True
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return self._alive
+
+    spawned = []
+
+    def make_thread(*args, **kwargs):
+        t = _FakeThread(*args, **kwargs)
+        spawned.append(t)
+        return t
+
+    monkeypatch.setattr(loader.threading, "Thread", make_thread)
+    monkeypatch.setattr(loader, "_invalidation_thread", None)
+    try:
+        t1 = loader.start_invalidation_listener()
+        t2 = loader.start_invalidation_listener()
+        assert t1 is t2
+        assert len(spawned) == 1
+
+        t1._alive = False
+        t3 = loader.start_invalidation_listener()
+        assert t3 is not t1
+        assert len(spawned) == 2
+    finally:
+        loader._invalidation_thread = None
 
 
 # ---------------------------------------------------------------- evaluator
@@ -519,12 +561,14 @@ def flavors(monkeypatch):
         {
             "flavors_dict": {
                 "chicken": "chicken",
+                "chicken breast": "chicken",
                 "chk": "chicken",
                 "prawn": "prawn",
                 "veg": "veg",
+                "spinach": "spinach",
             },
             "meat_flavors": {"chicken", "prawn"},
-            "vegetable_flavors": {"veg"},
+            "vegetable_flavors": {"veg", "spinach"},
             "seafood_flavors": {"prawn"},
         },
     )
@@ -628,6 +672,7 @@ def test_missing_condition_value_is_treated_as_false():
     "sku, cond, expected",
     [
         ("Chicken Fried Rice", _c("flavor_contains", "chicken"), True),
+        ("Tasty Chicken Breast Soup", _c("flavor_contains", "chicken"), True),  # multi-word alias
         ("Chk Kottu", _c("flavor_contains", "chicken"), True),  # alias -> canonical
         ("Chk Kottu", _c("flavor_contains", "chk"), True),  # target alias canonicalised
         ("Chickenfried Rice", _c("flavor_contains", "chicken"), False),  # word boundary
@@ -635,6 +680,8 @@ def test_missing_condition_value_is_treated_as_false():
         ("Prawn Fried Rice", _c("flavor_is", "meat"), False),  # seafood excluded from meat
         ("Prawn Fried Rice", _c("flavor_is", "seafood"), True),
         ("Veg Fried Rice", _c("flavor_is", "veg"), True),
+        ("Spinach Noodles 500g", _c("flavor_is", "vegetable"), True),  # "vegetable" alias
+        ("Spinach Noodles 500g", _c("flavor_contains", "spinach"), True),
         ("Veg Fried Rice", _c("flavor_is", "dessert"), False),  # unknown category
         ("", _c("flavor_contains", "chicken"), False),
     ],

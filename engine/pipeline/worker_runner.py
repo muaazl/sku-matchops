@@ -30,8 +30,10 @@ from engine.rules_engine.loader import pinned_rules, snapshot_rules, sync_rules_
 logger = logging.getLogger("matchops.engine.worker")
 
 _batch_queue = queue.Queue()
+_state_lock = threading.Lock()
 _cancelled_jobs: set[str] = set()
 _worker_threads: list[threading.Thread] = []
+_queue_workers: list[threading.Thread] = []
 
 # Persistent HTTP session used exclusively for external Google Apps Script webhook delivery.
 # Apps Script /exec randomly hangs ~30% of requests; doPost overwrites the same cells, so re-POSTing is safe.
@@ -103,11 +105,13 @@ def _get_backend_stub(target: str | None = None) -> pb2_grpc.BackendCallbackServ
 
 def cancel_job(job_id: str) -> bool:
     """Marks a job as cancelled so processing aborts immediately (on any worker, via Redis)."""
-    _cancelled_jobs.add(str(job_id))
+    jid = str(job_id)
+    with _state_lock:
+        _cancelled_jobs.add(jid)
     try:
         task_q = get_task_queue()
         if task_q is not None:
-            task_q.request_cancel(str(job_id))
+            task_q.request_cancel(jid)
     except Exception as e:
         logger.debug(f"[ENGINE WORKER] Could not broadcast cancellation of {job_id}: {e}")
     logger.info(f"[ENGINE WORKER] Job {job_id} cancellation requested.")
@@ -116,22 +120,25 @@ def cancel_job(job_id: str) -> bool:
 
 def is_job_cancelled(job_id: str) -> bool:
     jid = str(job_id)
-    if jid in _cancelled_jobs:
-        return True
-    if jid not in _queue_jobs:
-        return False
+    with _state_lock:
+        if jid in _cancelled_jobs:
+            return True
+        if jid not in _queue_jobs:
+            return False
+        checked_at, prev_cancelled = _cancel_checked.get(jid, (0.0, False))
     # Queued jobs can be cancelled through any gateway/engine: check Redis, at most once a second
-    checked_at, cancelled = _cancel_checked.get(jid, (0.0, False))
     if time.time() - checked_at >= 1.0:
         try:
             task_q = get_task_queue()
             cancelled = task_q.is_cancelled(jid) if task_q is not None else False
         except Exception:
             cancelled = False
-        _cancel_checked[jid] = (time.time(), cancelled)
-        if cancelled:
-            _cancelled_jobs.add(jid)
-    return cancelled
+        with _state_lock:
+            _cancel_checked[jid] = (time.time(), cancelled)
+            if cancelled:
+                _cancelled_jobs.add(jid)
+        return cancelled
+    return prev_cancelled
 
 
 def enqueue_batch_job(payload: dict[str, Any]) -> dict[str, Any]:
@@ -139,16 +146,18 @@ def enqueue_batch_job(payload: dict[str, Any]) -> dict[str, Any]:
     could not reach the Redis queue and dispatched over gRPC)."""
     global _worker_threads
     job_id = str(payload.get("job_id", ""))
-    _cancelled_jobs.discard(job_id)
+    with _state_lock:
+        _cancelled_jobs.discard(job_id)
     _batch_queue.put(payload)
 
-    _worker_threads = [t for t in _worker_threads if t.is_alive()]
-    while len(_worker_threads) < 2:
-        t = threading.Thread(
-            target=_worker_loop, name=f"batch-worker-{len(_worker_threads)}", daemon=True
-        )
-        t.start()
-        _worker_threads.append(t)
+    with _state_lock:
+        _worker_threads = [t for t in _worker_threads if t.is_alive()]
+        while len(_worker_threads) < 2:
+            t = threading.Thread(
+                target=_worker_loop, name=f"batch-worker-{len(_worker_threads)}", daemon=True
+            )
+            t.start()
+            _worker_threads.append(t)
 
     logger.info(f"[ENGINE WORKER] Enqueued job {job_id} ({len(payload.get('skus', []))} SKUs)")
     return {"status": "accepted", "job_id": job_id}
@@ -161,24 +170,28 @@ def shutdown_workers() -> None:
 
 
 def start_queue_worker() -> threading.Thread | None:
-    """Starts Redis queue consumers (2 threads gated by _exec_lock so webhook I/O overlaps with next job's CPU run)."""
+    """Ensures 2 Redis queue consumer threads are running (gated by _exec_lock); restarts only dead workers."""
+    global _queue_workers
     task_q = get_task_queue()
     if task_q is None:
         return None
-    _worker_stop.clear()
-    threads: list[threading.Thread] = []
-    for idx in range(2):
-        thread = threading.Thread(
-            target=run_worker,
-            args=(task_q, _run_queued_job),
-            kwargs={"lock": _exec_lock, "stop": _worker_stop},
-            name=f"queue-worker-{idx}",
-            daemon=True,
-        )
-        thread.start()
-        threads.append(thread)
-    logger.info("[ENGINE WORKER] Redis queue consumers started.")
-    return threads[0]
+    with _state_lock:
+        _worker_stop.clear()
+        _queue_workers = [t for t in _queue_workers if t.is_alive()]
+        while len(_queue_workers) < 2:
+            existing_names = {t.name for t in _queue_workers}
+            slot = next(i for i in range(2) if f"queue-worker-{i}" not in existing_names)
+            thread = threading.Thread(
+                target=run_worker,
+                args=(task_q, _run_queued_job),
+                kwargs={"lock": _exec_lock, "stop": _worker_stop},
+                name=f"queue-worker-{slot}",
+                daemon=True,
+            )
+            thread.start()
+            _queue_workers.append(thread)
+        logger.info("[ENGINE WORKER] Redis queue consumers started.")
+        return _queue_workers[0] if _queue_workers else None
 
 
 def _worker_loop():
@@ -202,7 +215,8 @@ def _run_legacy_job(payload: dict[str, Any]) -> None:
     job_id = str(payload.get("job_id", ""))
     if is_job_cancelled(job_id):
         logger.info(f"[ENGINE WORKER] Skipped job {job_id} because it was already cancelled.")
-        _cancelled_jobs.discard(job_id)
+        with _state_lock:
+            _cancelled_jobs.discard(job_id)
         return
 
     t0 = time.time()
@@ -218,15 +232,17 @@ def _run_legacy_job(payload: dict[str, Any]) -> None:
         logger.error(f"[ENGINE WORKER] Job {job_id} failed after {duration}m: {e}", exc_info=True)
         _notify_failure(payload, str(e))
     finally:
-        _cancelled_jobs.discard(job_id)
-        _cancel_checked.pop(job_id, None)
+        with _state_lock:
+            _cancelled_jobs.discard(job_id)
+            _cancel_checked.pop(job_id, None)
 
 
 def _run_queued_job(payload: dict[str, Any]) -> None:
     """Redis queue job: raising hands the error to the queue, which retries or dead-letters it."""
     with trace_context(payload.get("trace_id")):
         job_id = str(payload.get("job_id", ""))
-        _queue_jobs.add(job_id)
+        with _state_lock:
+            _queue_jobs.add(job_id)
         try:
             if _worker_stop.is_set():
                 raise InterruptedError("Worker shutting down")
@@ -250,9 +266,10 @@ def _run_queued_job(payload: dict[str, Any]) -> None:
                 logger.error(f"[ENGINE WORKER] Job {job_id} attempt failed: {e}", exc_info=True)
                 raise
         finally:
-            _queue_jobs.discard(job_id)
-            _cancelled_jobs.discard(job_id)
-            _cancel_checked.pop(job_id, None)
+            with _state_lock:
+                _queue_jobs.discard(job_id)
+                _cancelled_jobs.discard(job_id)
+                _cancel_checked.pop(job_id, None)
 
 
 def _execute_job(payload: dict[str, Any]) -> None:

@@ -23,6 +23,7 @@ TEST_DATABASE_URL = os.getenv(
 backend_config.DATABASE_URL = TEST_DATABASE_URL
 # Isolated Redis DB so tests never enqueue into (or read) the app's real queues
 config.REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
+backend_config.REDIS_URL = config.REDIS_URL
 # Tests expect dev-mode auth by default unless opted in via monkeypatch (e.g. `auth_on`)
 os.environ["AUTH_ENABLED"] = "false"
 backend_config.AUTH_ENABLED = False

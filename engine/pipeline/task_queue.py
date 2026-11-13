@@ -291,6 +291,8 @@ class TaskQueue:
 
 
 _queue: TaskQueue | None = None
+_queue_url: str | None = None
+_queue_lock = threading.Lock()
 _active_lock = threading.Lock()
 _active_tasks: dict[str, tuple[TaskQueue, dict]] = {}
 
@@ -312,17 +314,23 @@ def release_active_tasks() -> int:
 def get_task_queue() -> TaskQueue | None:
     """Process-wide queue, or None when TASK_QUEUE_ENABLED is off (callers use direct gRPC dispatch).
     Redis connectivity errors surface on first use so callers can fall back."""
-    global _queue
+    global _queue, _queue_url
     if not config.TASK_QUEUE_ENABLED:
         return None
-    if _queue is None:
-        import redis
+    redis_url = config.REDIS_URL
+    with _queue_lock:
+        if _queue is not None and _queue_url != redis_url:
+            _queue = None
+            _queue_url = None
+        if _queue is None:
+            import redis
 
-        client = redis.Redis.from_url(
-            config.REDIS_URL, socket_connect_timeout=1, socket_timeout=5, decode_responses=True
-        )
-        _queue = TaskQueue(client)
-    return _queue
+            client = redis.Redis.from_url(
+                redis_url, socket_connect_timeout=1, socket_timeout=5, decode_responses=True
+            )
+            _queue = TaskQueue(client)
+            _queue_url = redis_url
+        return _queue
 
 
 def run_worker(

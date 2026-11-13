@@ -86,59 +86,82 @@ def test_build_processed_sku_rows_pipeline_task_inferred():
     assert rows_fallback[0]["match_source"] == "Matcher"
 
 
-def test_jobs_source_query_syntax():
+def test_jobs_dashboard_stats_normalizes_match_source(pg):
+    from fastapi.testclient import TestClient
     from sqlalchemy import text
 
-    where_str = "domain = :domain"
-    source_query = f"""
-        SELECT
-            CASE
-                WHEN LOWER(TRIM(COALESCE(match_source, ''))) IN ('matcher', 'catalogue') THEN 'Matcher'
-                WHEN LOWER(TRIM(COALESCE(match_source, ''))) = 'classifier' THEN 'Classifier'
-                WHEN matched_catalog_name IS NOT NULL AND TRIM(matched_catalog_name) != '' THEN 'Matcher'
-                WHEN (bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0) THEN 'Classifier'
-                ELSE 'Matcher'
-            END as normalized_source,
-            COUNT(*) as count
-        FROM processed_skus
-        WHERE {where_str}
-        GROUP BY normalized_source
-        ORDER BY count DESC
-    """
-    stmt = text(source_query)
-    assert stmt is not None
+    from backend.main import app
 
-
-def test_history_where_clause_syntax():
-    from sqlalchemy import text
-
-    where = "WHERE domain = :domain"
-    m_where = (
-        where
-        + """ AND (
-        LOWER(TRIM(COALESCE(match_source, ''))) IN ('matcher', 'catalogue')
-        OR (
-            (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
-            AND NOT (
-                (matched_catalog_name IS NULL OR TRIM(matched_catalog_name) = '')
-                AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
+    with pg.begin() as conn:
+        conn.execute(text("TRUNCATE processed_skus, jobs, batches CASCADE"))
+        conn.execute(
+            text(
+                "INSERT INTO jobs (id, domain, type, status) VALUES ('j_src_1', 'food', 'pipeline', 'completed')"
             )
         )
-    )"""
-    )
-    stmt = text(f"SELECT * FROM processed_skus {m_where}")
-    assert stmt is not None
-
-    c_where = (
-        where
-        + """ AND (
-        LOWER(TRIM(COALESCE(match_source, ''))) = 'classifier'
-        OR (
-            (match_source IS NULL OR TRIM(match_source) = '' OR LOWER(TRIM(match_source)) = 'unknown')
-            AND (matched_catalog_name IS NULL OR TRIM(matched_catalog_name) = '')
-            AND ((bt IS NOT NULL AND TRIM(bt) != '') OR (bt_confidence IS NOT NULL AND bt_confidence > 0))
+        conn.execute(
+            text(
+                """
+                INSERT INTO processed_skus (id, batch_id, sku_index, sku_name, domain, match_source, matched_catalog_name, bt, bt_confidence, confidence)
+                VALUES
+                    ('ps_src_1', 'j_src_1', 0, 'SKU A', 'food', 'Catalogue', 'Cat A', '', 0.0, 0.90),
+                    ('ps_src_2', 'j_src_1', 1, 'SKU B', 'food', 'unknown', '', 'Kotthu', 0.85, 0.85),
+                    ('ps_src_3', 'j_src_1', 2, 'SKU C', 'food', '', '', '', 0.0, 0.50)
+                """
+            )
         )
-    )"""
-    )
-    stmt2 = text(f"SELECT * FROM processed_skus {c_where}")
-    assert stmt2 is not None
+
+    client = TestClient(app)
+    try:
+        res = client.get("/jobs/dashboard-stats", params={"domain": "food", "timeframe": "30d"})
+        assert res.status_code == 200
+        sources = {item["source"]: item["count"] for item in res.json()["matchSourceDistribution"]}
+        assert sources["Matcher"] == 2
+        assert sources["Classifier"] == 1
+    finally:
+        with pg.begin() as conn:
+            conn.execute(text("TRUNCATE processed_skus, jobs, batches CASCADE"))
+
+
+def test_history_match_source_filter_executes_real_sql(pg):
+    from fastapi.testclient import TestClient
+    from sqlalchemy import text
+
+    from backend.main import app
+
+    with pg.begin() as conn:
+        conn.execute(text("TRUNCATE processed_skus, jobs, batches CASCADE"))
+        conn.execute(
+            text(
+                "INSERT INTO jobs (id, domain, type, status) VALUES ('j_src_2', 'food', 'pipeline', 'completed')"
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO processed_skus (id, batch_id, sku_index, sku_name, domain, match_source, matched_catalog_name, bt, bt_confidence, confidence)
+                VALUES
+                    ('ps_src_4', 'j_src_2', 0, 'Explicit Catalogue', 'food', 'Catalogue', 'Burger', '', 0.0, 0.95),
+                    ('ps_src_5', 'j_src_2', 1, 'Inferred Classifier', 'food', 'unknown', '', 'Noodles', 0.80, 0.80),
+                    ('ps_src_6', 'j_src_2', 2, 'Explicit Classifier', 'food', 'Classifier', '', 'Rice', 0.88, 0.88)
+                """
+            )
+        )
+
+    client = TestClient(app)
+    try:
+        m_res = client.get("/processed-skus", params={"domain": "food", "match_source": "matcher"})
+        assert m_res.status_code == 200
+        assert [row["sku_name"] for row in m_res.json()] == ["Explicit Catalogue"]
+
+        c_res = client.get(
+            "/processed-skus", params={"domain": "food", "match_source": "classifier"}
+        )
+        assert c_res.status_code == 200
+        assert {row["sku_name"] for row in c_res.json()} == {
+            "Inferred Classifier",
+            "Explicit Classifier",
+        }
+    finally:
+        with pg.begin() as conn:
+            conn.execute(text("TRUNCATE processed_skus, jobs, batches CASCADE"))

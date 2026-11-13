@@ -110,12 +110,9 @@ def test_prometheus_http_metrics_recorded():
         )._value.get()
         assert after_count == before_count + 1
 
-    # Run the coroutine with a clean mock or asyncio runner
-    coro = _test()
-    try:
-        coro.send(None)
-    except StopIteration:
-        pass
+    import asyncio
+
+    asyncio.run(_test())
 
 
 def test_readiness_probe_success():
