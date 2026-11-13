@@ -158,7 +158,7 @@ If you prefer running the Python and Node services directly on your host machine
 ### 1. Prerequisites
 - Python 3.10+ (Python 3.11 recommended)
 - `uv` (recommended for ultra-fast pip installs) or `pip`
-- Node.js 18+ and `pnpm` (install via `npm install -g pnpm`)
+- Node.js 22+ and `pnpm` (install via `npm install -g pnpm`)
 - Running instances of **PostgreSQL** (`localhost:5432`), **Redis** (`localhost:6379`, job queue + rule cache), **Qdrant** (`localhost:6333`). You can start just these containers using Docker:
   ```bash
   docker compose up -d postgres redis qdrant
