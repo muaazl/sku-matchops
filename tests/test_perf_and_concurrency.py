@@ -16,24 +16,25 @@ from backend.app.db.schema import processed_skus as processed_skus_table
 
 def test_async_redis_pool_singleton():
     """Verify get_async_redis_pool creates and returns a singleton pool with max_connections=50."""
+    import backend.app.api.endpoints.jobs as jobs_mod
+
     with patch("redis.asyncio.ConnectionPool.from_url") as mock_from_url:
         mock_pool = MagicMock()
         mock_from_url.return_value = mock_pool
 
-        # Reset global
-        import backend.app.api.endpoints.jobs as jobs_mod
-
         jobs_mod._async_redis_pool = None
+        try:
+            pool1 = get_async_redis_pool()
+            pool2 = get_async_redis_pool()
 
-        pool1 = get_async_redis_pool()
-        pool2 = get_async_redis_pool()
-
-        assert pool1 is pool2
-        mock_from_url.assert_called_once()
-        _, kwargs = mock_from_url.call_args
-        assert kwargs.get("max_connections") == 50
-        assert kwargs.get("socket_connect_timeout") == 2.0
-        assert kwargs.get("decode_responses") is True
+            assert pool1 is pool2
+            mock_from_url.assert_called_once()
+            _, kwargs = mock_from_url.call_args
+            assert kwargs.get("max_connections") == 50
+            assert kwargs.get("socket_connect_timeout") == 2.0
+            assert kwargs.get("decode_responses") is True
+        finally:
+            jobs_mod._async_redis_pool = None
 
 
 def test_catalog_build_distributed_redis_lock():

@@ -45,3 +45,6 @@ indent-style = "space"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "live_models: tests that require unversioned local ONNX models, catalog caches, or a populated Qdrant collection",
+]

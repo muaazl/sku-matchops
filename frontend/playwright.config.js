@@ -18,7 +18,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'pnpm run start --host 127.0.0.1 --port 5173',
+    command: process.env.CI
+      ? 'pnpm run serve --host 127.0.0.1 --port 5173'
+      : 'pnpm run start --host 127.0.0.1 --port 5173',
     url: 'http://127.0.0.1:5173',
     reuseExistingServer: !process.env.CI,
     timeout: 120 * 1000,

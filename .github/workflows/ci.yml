@@ -55,27 +55,29 @@ jobs:
             pytest pytest-cov ruff
 
       - name: Run Ruff linter
-        run: .venv/bin/ruff check backend/ engine/ tests/
+        run: .venv/bin/ruff check backend/ engine/ tests/ conftest.py scripts/
 
       - name: Run Ruff format check
-        run: .venv/bin/ruff format --check backend/ engine/ tests/
+        run: .venv/bin/ruff format --check backend/ engine/ tests/ conftest.py scripts/
 
       - name: Verify database initialization
         env:
           PYTHONPATH: .
           DATABASE_URL: postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test
+          MATCHOPS_API_KEY: ci-test-api-key
         run: |
           .venv/bin/python -c "from backend.app.db.init import init_db; init_db()"
 
       - name: Run Pytest with Coverage
         env:
           PYTHONPATH: .
+          MATCHOPS_API_KEY: ci-test-api-key
           TEST_DATABASE_URL: postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test
           TEST_REDIS_URL: redis://localhost:6379/15
-        run: .venv/bin/pytest -v --cov=backend --cov=engine --cov-report=xml
+        run: .venv/bin/pytest -rs -v -m "not live_models" --cov=backend --cov=engine --cov-report=term --cov-report=xml --cov-fail-under=55
 
   frontend-lint-and-test:
-    name: Frontend (ESLint + Prettier + Vitest)
+    name: Frontend (ESLint + Prettier + Vitest + E2E)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -107,6 +109,15 @@ jobs:
 
       - name: Run Vitest Unit Tests
         run: pnpm run test:run
+
+      - name: Build Production Bundle
+        run: pnpm run build
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright E2E Smoke Tests
+        run: pnpm run test:e2e
 
   docker-compose-check:
     name: Docker Compose Config Check

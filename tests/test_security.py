@@ -6,6 +6,15 @@ from backend.app.schemas.models import RuleModel
 
 
 class TestSecurityHardening(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        from backend.app.core import config
+
+        self._orig_auth_enabled = config.AUTH_ENABLED
+        self._orig_environment = config.ENVIRONMENT
+        self._orig_internal_secret = config.INTERNAL_GRPC_SECRET
+        self._orig_database_url = config.DATABASE_URL
+
     def test_pydantic_rule_validation_valid(self):
         # Valid rule schema should not raise validation errors
         valid_payload = {
@@ -100,43 +109,30 @@ class TestSecurityHardening(unittest.TestCase):
             RuleModel(**invalid_payload)
 
     def tearDown(self):
-        super().tearDown()
         from backend.app.core import config
-        from conftest import TEST_DATABASE_URL
 
-        config.AUTH_ENABLED = False
-        config.ENVIRONMENT = "development"
-        config.JWT_SECRET = ""
-        config.INTERNAL_GRPC_SECRET = ""
-        config.DATABASE_URL = TEST_DATABASE_URL
+        config.AUTH_ENABLED = self._orig_auth_enabled
+        config.ENVIRONMENT = self._orig_environment
+        config.INTERNAL_GRPC_SECRET = self._orig_internal_secret
+        config.DATABASE_URL = self._orig_database_url
+        super().tearDown()
 
     def test_config_rejects_empty_api_key(self):
         """SEC-01: Empty MATCHOPS_API_KEY must raise RuntimeError."""
-        import importlib
         import os
-        from unittest.mock import patch
+        import subprocess
+        import sys
 
-        try:
-            with patch.dict(
-                os.environ,
-                {
-                    "MATCHOPS_API_KEY": "",
-                },
-            ):
-                from backend.app.core import config
-
-                with self.assertRaises(RuntimeError) as ctx:
-                    importlib.reload(config)
-                self.assertIn("non-empty MATCHOPS_API_KEY", str(ctx.exception))
-        finally:
-            from backend.app.core import config
-            from conftest import TEST_DATABASE_URL
-
-            config.AUTH_ENABLED = False
-            config.ENVIRONMENT = "production"
-            config.JWT_SECRET = ""
-            config.INTERNAL_GRPC_SECRET = ""
-            config.DATABASE_URL = TEST_DATABASE_URL
+        env = os.environ.copy()
+        env["MATCHOPS_API_KEY"] = ""
+        proc = subprocess.run(
+            [sys.executable, "-c", "import backend.app.core.config"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("non-empty MATCHOPS_API_KEY", proc.stderr)
 
     def test_api_key_empty_rejected(self):
         """SEC-01: Empty or unset config.API_KEY must reject incoming API key even if empty."""

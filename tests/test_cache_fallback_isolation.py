@@ -39,49 +39,47 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         config.CACHE_DIR = self.test_dir
         config.STAGING_DIR = os.path.join(self.test_dir, "staged")
 
-        conn = get_engine().connect()
-        conn.execute(text(f"TRUNCATE {_CATALOG_TABLES} RESTART IDENTITY"))
+        with get_engine().begin() as conn:
+            conn.execute(text(f"TRUNCATE {_CATALOG_TABLES} RESTART IDENTITY"))
 
-        # Seed minimal catalog and brand records for 'market' domain in PostgreSQL
-        conn.execute(
-            text("""
-            INSERT INTO catalog_items (domain, name, brand, category, basictype, generic_keywords, price, clean_text, row_hash)
-            VALUES ('market', 'Anchor Butter 200g', 'Anchor', 'Dairy', 'Butter', 'Dairy, Butter', 850.0, 'anchor butter 200g', 'hash_market_1')
-            """)
-        )
-        conn.execute(
-            text("""
-            INSERT INTO brand_flavors (domain, name, aliases, is_weak, row_hash)
-            VALUES ('market', 'Anchor', 'anchor,anchr', 0, 'hash_brand_1')
-            """)
-        )
-        # Seed minimal records for 'food' domain in PostgreSQL
-        conn.execute(
-            text("""
-            INSERT INTO catalog_items (domain, name, flavor, region, basictype, generic_keywords, price, clean_text, row_hash)
-            VALUES ('food', 'Chicken Fried Rice', 'Chicken', 'Sri Lankan', 'Fried Rice', 'Rice, Fried Rice', 1200.0, 'chicken fried rice', 'hash_food_1')
-            """)
-        )
-        conn.execute(
-            text("""
-            INSERT INTO brand_flavors (domain, name, aliases, is_meat, is_vegetable, is_seafood, row_hash)
-            VALUES ('food', 'Chicken', 'chk,chick', 1, 0, 0, 'hash_flavor_1')
-            """)
-        )
-        conn.execute(
-            text("""
-            INSERT INTO classifier_dictionaries (domain, tag_type, tag, catalog_count)
-            VALUES ('market', 'bt', 'Butter', 1), ('market', 'gk', 'Dairy', 1)
-            """)
-        )
-        conn.execute(
-            text("""
-            INSERT INTO bt_gk_map (domain, basictype, generic_keywords, catalog_count, gk_count)
-            VALUES ('market', 'Butter', 'Dairy, Butter', 1, 2)
-            """)
-        )
-        conn.commit()
-        conn.close()
+            # Seed minimal catalog and brand records for 'market' domain in PostgreSQL
+            conn.execute(
+                text("""
+                INSERT INTO catalog_items (domain, name, brand, category, basictype, generic_keywords, price, clean_text, row_hash)
+                VALUES ('market', 'Anchor Butter 200g', 'Anchor', 'Dairy', 'Butter', 'Dairy, Butter', 850.0, 'anchor butter 200g', 'hash_market_1')
+                """)
+            )
+            conn.execute(
+                text("""
+                INSERT INTO brand_flavors (domain, name, aliases, is_weak, row_hash)
+                VALUES ('market', 'Anchor', 'anchor,anchr', 0, 'hash_brand_1')
+                """)
+            )
+            # Seed minimal records for 'food' domain in PostgreSQL
+            conn.execute(
+                text("""
+                INSERT INTO catalog_items (domain, name, flavor, region, basictype, generic_keywords, price, clean_text, row_hash)
+                VALUES ('food', 'Chicken Fried Rice', 'Chicken', 'Sri Lankan', 'Fried Rice', 'Rice, Fried Rice', 1200.0, 'chicken fried rice', 'hash_food_1')
+                """)
+            )
+            conn.execute(
+                text("""
+                INSERT INTO brand_flavors (domain, name, aliases, is_meat, is_vegetable, is_seafood, row_hash)
+                VALUES ('food', 'Chicken', 'chk,chick', 1, 0, 0, 'hash_flavor_1')
+                """)
+            )
+            conn.execute(
+                text("""
+                INSERT INTO classifier_dictionaries (domain, tag_type, tag, catalog_count)
+                VALUES ('market', 'bt', 'Butter', 1), ('market', 'gk', 'Dairy', 1)
+                """)
+            )
+            conn.execute(
+                text("""
+                INSERT INTO bt_gk_map (domain, basictype, generic_keywords, catalog_count, gk_count)
+                VALUES ('market', 'Butter', 'Dairy, Butter', 1, 2)
+                """)
+            )
 
         DataIngestion.clear_mem_cache()
         clear_flavor_cache()
@@ -154,20 +152,30 @@ class TestCacheFallbackIsolation(unittest.TestCase):
 
     @patch("requests.get")
     def test_force_fetch_calls_network(self, mock_get):
-        """Verify that force_fetch=True does attempt to fetch from Google Sheets."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = "Name,Price\nItem 1,10.0\n"
-        mock_get.return_value = mock_resp
+        """Verify that force_fetch=True downloads fresh CSVs and rebuilds Feather caches."""
+        cat_resp = MagicMock()
+        cat_resp.status_code = 200
+        cat_resp.text = (
+            "Name,Price,Brand,Category,BasicType,GenericKeywords\n"
+            "Anchor Butter 200g,850.0,Anchor,Dairy,Butter,Dairy\n"
+        )
+        cat_resp.content = cat_resp.text.encode("utf-8")
 
-        try:
-            DataIngestion.load_catalog(
-                "fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=True
-            )
-        except Exception:
-            pass
+        brands_resp = MagicMock()
+        brands_resp.status_code = 200
+        brands_resp.text = "Brand Name,Aliases,Is_Weak\nAnchor,anchor,0\n"
+        brands_resp.content = brands_resp.text.encode("utf-8")
 
-        self.assertTrue(mock_get.called, "requests.get SHOULD be called when force_fetch=True!")
+        mock_get.side_effect = [cat_resp, brands_resp]
+
+        cat_df, brands_df = DataIngestion.load_catalog(
+            "fake_sheet_id", domain=config.DOMAIN_MARKET, force_fetch=True
+        )
+
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(cat_df.iloc[0]["Name"], "Anchor Butter 200g")
+        self.assertEqual(brands_df.iloc[0]["Brand Name"], "Anchor")
+        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "market_catalog_mmap.feather")))
 
     @patch("requests.get")
     def test_get_classifier_dicts_uses_database_without_network(self, mock_get):
