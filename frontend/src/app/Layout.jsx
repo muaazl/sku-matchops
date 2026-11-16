@@ -13,6 +13,7 @@ import { useSnackbar } from 'notistack';
 
 function getPageName(pathname) {
   if (pathname === '/dashboard') return 'Dashboard';
+  if (pathname === '/guide') return 'Guide';
   if (pathname === '/jobs') return 'Jobs';
   if (pathname.startsWith('/jobs/')) return 'Job Detail';
   if (pathname === '/requests') return 'Requests';

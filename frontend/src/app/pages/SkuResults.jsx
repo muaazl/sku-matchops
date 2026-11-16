@@ -640,7 +640,7 @@ export default function SkuResults() {
         />
       </StyledTableContainer>
 
-      <SideDrawer open={!!selectedSku} onClose={() => setSelectedSku(null)} title={selectedSku?.sku_name}>
+      <SideDrawer open={!!selectedSku} onClose={() => setSelectedSku(null)} title={selectedSku?.sku_name || ''}>
         {selectedSku && (
           <Box>
             <Typography variant="caption" color="text.secondary">

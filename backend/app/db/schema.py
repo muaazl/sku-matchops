@@ -51,6 +51,7 @@ conditions = Table(
     Column("condition_type", Text, nullable=False),
     Column("value", Text, nullable=False),
     Column("negate", Integer, nullable=False, server_default="0"),
+    Column("operator", Text, nullable=False, server_default="AND"),
 )
 
 actions = Table(

@@ -66,6 +66,22 @@ def evaluate_rule_conditions(rule_dict: dict[str, Any], record: dict[str, Any]) 
     if not conditions:
         return True
 
+    if any(c.get("operator") is not None for c in conditions):
+        rule_logic = str(rule_dict.get("condition_logic") or "AND").upper()
+        or_groups: list[list[dict[str, Any]]] = []
+        for idx, c in enumerate(conditions):
+            op = str(c.get("operator") or "AND").upper()
+            group_changed = (
+                idx > 0
+                and rule_logic == "OR"
+                and c.get("condition_group", 1) != conditions[idx - 1].get("condition_group", 1)
+            )
+            if idx == 0 or op == "OR" or group_changed:
+                or_groups.append([c])
+            else:
+                or_groups[-1].append(c)
+        return any(all(_evaluate_single_condition(c, record) for c in grp) for grp in or_groups)
+
     groups: dict[int, list[dict[str, Any]]] = {}
     for c in conditions:
         cg = c.get("condition_group", 1)
@@ -129,13 +145,6 @@ def apply_rule_actions(rule_dict: dict[str, Any], record: dict[str, Any]) -> lis
                 if record.get("category") != val:
                     record["category"] = val
                     changes.append(f"Category changed to '{val}'")
-            elif atype == "normalize_sku":
-                sku = str(record.get("sku_name") or "")
-                if "|" in val:
-                    old_s, new_s = val.split("|", 1)
-                    if old_s in sku:
-                        record["sku_name"] = sku.replace(old_s, new_s)
-                        changes.append(f"Normalized SKU substring '{old_s}' to '{new_s}'")
         except Exception as e:
             logger.debug(f"Action application error for {action}: {e}")
     return changes

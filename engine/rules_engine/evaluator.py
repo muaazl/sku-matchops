@@ -16,7 +16,40 @@ def evaluate_conditions(rule, record: dict) -> bool:
     if not rule.conditions:
         return True  # If no conditions, it always fires
 
-    # Group conditions by condition_group
+    if any(cond.get("operator") is not None for cond in rule.conditions):
+        rule_logic = str(getattr(rule, "condition_logic", "AND") or "AND").upper()
+        or_groups: list[list[dict]] = []
+        for idx, cond in enumerate(rule.conditions):
+            op = str(cond.get("operator") or "AND").upper()
+            group_changed = (
+                idx > 0
+                and rule_logic == "OR"
+                and cond.get("condition_group", 1)
+                != rule.conditions[idx - 1].get("condition_group", 1)
+            )
+            if idx == 0 or op == "OR" or group_changed:
+                or_groups.append([cond])
+            else:
+                or_groups[-1].append(cond)
+
+        for group in or_groups:
+            group_passed = True
+            for cond in group:
+                try:
+                    if not _evaluate_single_condition(cond, record):
+                        group_passed = False
+                        break
+                except Exception as e:
+                    logger.warning(
+                        f"Error evaluating condition {cond} for rule {rule.rule_id}: {e}"
+                    )
+                    group_passed = False
+                    break
+            if group_passed:
+                return True
+        return False
+
+    # Legacy fallback: group conditions by condition_group with rule-level condition_logic
     groups = {}
     for cond in rule.conditions:
         cg = cond.get("condition_group", 1)

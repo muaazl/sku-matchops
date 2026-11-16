@@ -185,6 +185,7 @@ class RuleConditionModel(BaseModel):
     ]
     value: str = Field(..., max_length=200)
     negate: int = Field(default=0, ge=0, le=1)
+    operator: Literal["AND", "OR"] = "AND"
 
 
 class RuleActionModel(BaseModel):
@@ -194,8 +195,6 @@ class RuleActionModel(BaseModel):
         "remove_gk",
         "set_region",
         "set_category",
-        "set_visibility",
-        "normalize_sku",
     ]
     value: str = Field(..., max_length=200)
 

@@ -122,7 +122,7 @@ def load_active_rules_from_db(
         cond_rows = (
             conn.execute(
                 text(
-                    "SELECT rule_id, condition_group, condition_type, value, negate "
+                    "SELECT rule_id, condition_group, condition_type, value, negate, operator "
                     "FROM conditions WHERE rule_id = ANY(:ids) ORDER BY id"
                 ),
                 {"ids": rule_ids},
@@ -153,6 +153,7 @@ def load_active_rules_from_db(
                 "condition_type": c["condition_type"],
                 "value": c["value"],
                 "negate": bool(c["negate"]),
+                "operator": c.get("operator", "AND"),
             }
         )
 
@@ -198,8 +199,8 @@ def _insert_conditions_and_actions(db: Connection, rule_id: str, rule: RuleModel
     if rule.conditions:
         db.execute(
             text("""
-            INSERT INTO conditions (rule_id, condition_group, condition_type, value, negate)
-            VALUES (:rule_id, :condition_group, :condition_type, :value, :negate)
+            INSERT INTO conditions (rule_id, condition_group, condition_type, value, negate, operator)
+            VALUES (:rule_id, :condition_group, :condition_type, :value, :negate, :operator)
             """),
             [{"rule_id": rule_id, **cond.model_dump()} for cond in rule.conditions],
         )
@@ -247,7 +248,8 @@ def get_rules_list(db: Connection, domain: str | None = None) -> list[dict[str, 
     cond_rows = (
         db.execute(
             text(
-                "SELECT rule_id, condition_group, condition_type, value, negate FROM conditions WHERE rule_id = ANY(:ids) ORDER BY id"
+                "SELECT rule_id, condition_group, condition_type, value, negate, operator "
+                "FROM conditions WHERE rule_id = ANY(:ids) ORDER BY id"
             ),
             {"ids": rule_ids},
         )
@@ -305,7 +307,8 @@ def get_rule_by_id(db: Connection, rule_id: str) -> dict[str, Any] | None:
     conds = (
         db.execute(
             text(
-                "SELECT condition_group, condition_type, value, negate FROM conditions WHERE rule_id = :rule_id ORDER BY id"
+                "SELECT condition_group, condition_type, value, negate, operator "
+                "FROM conditions WHERE rule_id = :rule_id ORDER BY id"
             ),
             params,
         )

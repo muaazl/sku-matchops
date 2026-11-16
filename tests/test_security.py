@@ -90,23 +90,24 @@ class TestSecurityHardening(unittest.TestCase):
             RuleModel(**invalid_payload)
 
     def test_pydantic_rule_validation_invalid_action_type(self):
-        # Invalid action type should be rejected
-        invalid_payload = {
-            "rule_id": "rule_123",
-            "domain": "market",
-            "priority": 100,
-            "description": "Description",
-            "reasoning": "Reasoning",
-            "conditions": [],
-            "actions": [
-                {
-                    "action_type": "invalid_action",  # Rejected
-                    "value": "test",
-                }
-            ],
-        }
-        with self.assertRaises(ValidationError):
-            RuleModel(**invalid_payload)
+        # Invalid or removed action types should be rejected
+        for bad_action in ("invalid_action", "set_visibility", "normalize_sku"):
+            invalid_payload = {
+                "rule_id": "rule_123",
+                "domain": "market",
+                "priority": 100,
+                "description": "Description",
+                "reasoning": "Reasoning",
+                "conditions": [],
+                "actions": [
+                    {
+                        "action_type": bad_action,  # Rejected
+                        "value": "test",
+                    }
+                ],
+            }
+            with self.assertRaises(ValidationError):
+                RuleModel(**invalid_payload)
 
     def tearDown(self):
         from backend.app.core import config

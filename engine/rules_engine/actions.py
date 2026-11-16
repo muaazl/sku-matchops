@@ -58,23 +58,6 @@ def apply_actions(rule, record: dict) -> str:
                     record["category"] = val
                     changes.append(f"Category changed to '{val}'")
 
-            elif atype == "set_visibility":
-                old_vis = record.get("visibility")
-                if old_vis != val:
-                    record["visibility"] = val
-                    changes.append(f"Visibility set to '{val}'")
-
-            elif atype == "normalize_sku":
-                sku = str(record.get("sku_name") or "")
-                # Assuming val is in the format "old_str|new_str"
-                if "|" in val:
-                    old_s, new_s = val.split("|", 1)
-                    if old_s in sku:
-                        record["sku_name"] = sku.replace(old_s, new_s)
-                        changes.append(f"Normalized SKU substring '{old_s}' to '{new_s}'")
-                else:
-                    logger.warning(f"Invalid normalize_sku value format (expected old|new): {val}")
-
         except Exception as e:
             logger.warning(f"Error applying action {action} for rule {rule.rule_id}: {e}")
 

@@ -305,7 +305,15 @@ export default function Jobs() {
                       <TableCell sx={{ fontFamily: 'monospace', fontWeight: 600, fontSize: '0.85rem' }}>
                         {row.id}
                       </TableCell>
-                      <TableCell sx={{ fontWeight: 500, maxWidth: 220 }} noWrap>
+                      <TableCell
+                        sx={{
+                          fontWeight: 500,
+                          maxWidth: 220,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
                         <Tooltip title={row.target_sheet || row.sheet_name || 'N/A'}>
                           <span>{row.target_sheet || row.sheet_name || 'N/A'}</span>
                         </Tooltip>

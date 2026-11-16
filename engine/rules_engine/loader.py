@@ -100,6 +100,11 @@ def set_rules_from_dicts(rules_data: list[dict], version: str | None = None) -> 
                 "condition_type": c["condition_type"],
                 "value": c["value"],
                 "negate": bool(c.get("negate", False)),
+                **(
+                    {"operator": c["operator"]}
+                    if "operator" in c and c["operator"] is not None
+                    else {}
+                ),
             }
             for c in r.get("conditions", [])
         ]

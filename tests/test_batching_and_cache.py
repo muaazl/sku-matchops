@@ -688,3 +688,87 @@ def test_missing_condition_value_is_treated_as_false():
 )
 def test_flavor_conditions(flavors, sku, cond, expected):
     assert evaluate_conditions(_rule([cond]), {"sku_name": sku}) is expected
+
+
+def _op(ctype, value, operator="AND", negate=False):
+    return {
+        "condition_group": 1,
+        "operator": operator,
+        "condition_type": ctype,
+        "value": value,
+        "negate": negate,
+    }
+
+
+def test_per_condition_operators_and_precedence():
+    from backend.app.core.rules_evaluator import evaluate_rule_conditions
+
+    # (bt_is="Cheese" AND sku_contains="anchor") OR region_is="Western" -> False OR True -> True
+    conds = [
+        _op("bt_is", "cheese", operator="AND"),
+        _op("sku_contains", "anchor", operator="AND"),
+        _op("region_is", "western", operator="OR"),
+    ]
+    assert evaluate_conditions(_rule(conds), RECORD) is True
+    assert evaluate_rule_conditions({"conditions": conds}, RECORD) is True
+
+    # (sku_contains="anchor" AND bt_is="Butter") OR (sku_contains="milk" AND region_is="Central") -> True
+    conds2 = [
+        _op("sku_contains", "anchor", operator="AND"),
+        _op("bt_is", "butter", operator="AND"),
+        _op("sku_contains", "milk", operator="OR"),
+        _op("region_is", "central", operator="AND"),
+    ]
+    assert evaluate_conditions(_rule(conds2), RECORD) is True
+    assert evaluate_rule_conditions({"conditions": conds2}, RECORD) is True
+
+    # (sku_contains="anchor" AND bt_is="Cheese") OR (sku_contains="anchor" AND NOT region_is="Western") -> False
+    conds3 = [
+        _op("sku_contains", "anchor", operator="AND"),
+        _op("bt_is", "cheese", operator="AND"),
+        _op("sku_contains", "anchor", operator="OR"),
+        _op("region_is", "western", operator="AND", negate=True),
+    ]
+    assert evaluate_conditions(_rule(conds3), RECORD) is False
+    assert evaluate_rule_conditions({"conditions": conds3}, RECORD) is False
+
+    # Legacy DB rule migrated with default operator="AND", condition_logic="OR", condition_group=1,2
+    legacy_or_conds = [
+        {
+            "condition_group": 1,
+            "operator": "AND",
+            "condition_type": "bt_is",
+            "value": "cheese",
+            "negate": 0,
+        },
+        {
+            "condition_group": 2,
+            "operator": "AND",
+            "condition_type": "bt_is",
+            "value": "butter",
+            "negate": 0,
+        },
+    ]
+    assert evaluate_conditions(_rule(legacy_or_conds, logic="OR"), RECORD) is True
+    assert (
+        evaluate_rule_conditions({"condition_logic": "OR", "conditions": legacy_or_conds}, RECORD)
+        is True
+    )
+
+
+def test_per_condition_operator_same_type_uses_and():
+    from backend.app.core.rules_evaluator import evaluate_rule_conditions
+
+    # Same condition_type joined with explicit AND must require BOTH to match (not OR)
+    conds_pass = [
+        _op("sku_contains", "anchor", operator="AND"),
+        _op("sku_contains", "butter", operator="AND"),
+    ]
+    conds_fail = [
+        _op("sku_contains", "anchor", operator="AND"),
+        _op("sku_contains", "cheese", operator="AND"),
+    ]
+    assert evaluate_conditions(_rule(conds_pass), RECORD) is True
+    assert evaluate_rule_conditions({"conditions": conds_pass}, RECORD) is True
+    assert evaluate_conditions(_rule(conds_fail), RECORD) is False
+    assert evaluate_rule_conditions({"conditions": conds_fail}, RECORD) is False

@@ -12,15 +12,27 @@ export const CONDITION_TYPES = [
   'flavor_is',
 ];
 
-export const ACTION_TYPES = [
-  'set_bt',
-  'add_gk',
-  'remove_gk',
-  'set_region',
-  'set_category',
-  'set_visibility',
-  'normalize_sku',
-];
+export const CONDITION_LABELS = {
+  sku_contains: 'SKU Name contains',
+  bt_is: 'Basic Type (BT) is',
+  gk_contains: 'Generic Keyword (GK) has',
+  category_contains: 'Category contains',
+  region_is: 'Region is',
+  price_below: 'Price is below',
+  price_above: 'Price is above',
+  flavor_contains: 'Flavor contains',
+  flavor_is: 'Flavor type is',
+};
+
+export const ACTION_TYPES = ['set_bt', 'add_gk', 'remove_gk', 'set_region', 'set_category'];
+
+export const ACTION_LABELS = {
+  set_bt: 'Set Basic Type (BT)',
+  add_gk: 'Add Generic Keyword (GK)',
+  remove_gk: 'Remove Generic Keyword (GK)',
+  set_region: 'Set Region',
+  set_category: 'Set Category',
+};
 
 export const JOB_STAGES = [
   'queued',

@@ -89,53 +89,23 @@ class TestRulesActions(unittest.TestCase):
         self.assertEqual(record["category"], "Frozen")
         self.assertIn("Category changed to 'Frozen'", changes_cat)
 
-    def test_set_visibility(self):
-        rule = self._create_rule([{"action_type": "set_visibility", "value": "hidden"}])
-        record = {"visibility": "visible"}
-        changes = apply_actions(rule, record)
-        self.assertEqual(record["visibility"], "hidden")
-        self.assertIn("Visibility set to 'hidden'", changes)
-
-    def test_normalize_sku(self):
-        rule = self._create_rule([{"action_type": "normalize_sku", "value": "Icecream|Ice Cream"}])
-
-        record = {"sku_name": "Vanilla Icecream 1L"}
-        changes = apply_actions(rule, record)
-        self.assertEqual(record["sku_name"], "Vanilla Ice Cream 1L")
-        self.assertIn("Normalized SKU substring 'Icecream' to 'Ice Cream'", changes)
-
-        # Substring not found
-        record_noop = {"sku_name": "Vanilla Ice Cream 1L"}
-        changes_noop = apply_actions(rule, record_noop)
-        self.assertEqual(changes_noop, "")
-
-        # None sku_name
-        record_none = {"sku_name": None}
-        changes_none = apply_actions(rule, record_none)
-        self.assertEqual(changes_none, "")
-
-        # Malformed action value without pipe
-        rule_bad = self._create_rule([{"action_type": "normalize_sku", "value": "Icecream"}])
-        changes_bad = apply_actions(rule_bad, record)
-        self.assertEqual(changes_bad, "")
-
     def test_compound_actions(self):
         rule = self._create_rule(
             [
                 {"action_type": "set_bt", "value": "Ice Cream Tub"},
                 {"action_type": "add_gk", "value": "Dessert"},
-                {"action_type": "set_visibility", "value": "visible"},
+                {"action_type": "set_region", "value": "Colombo"},
             ]
         )
-        record = {"bt": "Cone", "gk": ["Dairy"], "visibility": "draft"}
+        record = {"bt": "Cone", "gk": ["Dairy"], "region": "Kandy"}
         changes = apply_actions(rule, record)
 
         self.assertEqual(record["bt"], "Ice Cream Tub")
         self.assertEqual(record["gk"], ["Dairy", "Dessert"])
-        self.assertEqual(record["visibility"], "visible")
+        self.assertEqual(record["region"], "Colombo")
         self.assertEqual(
             changes,
-            "BT changed to 'Ice Cream Tub'; Added GK 'Dessert'; Visibility set to 'visible'",
+            "BT changed to 'Ice Cream Tub'; Added GK 'Dessert'; Region changed to 'Colombo'",
         )
 
 
@@ -158,7 +128,7 @@ class TestRulesEngineOrchestrator(unittest.TestCase):
             r.rule_id = rid
             r.description = f"Desc for {rid}"
             r.reasoning = f"Reason for {rid}"
-            r.actions = [{"action_type": "set_visibility", "value": rid}]
+            r.actions = [{"action_type": "set_bt", "value": rid}]
             return r
 
         mock_get_rules.return_value = [make_rule(rid) for rid in rule_ids_in_order]

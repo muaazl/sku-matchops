@@ -4050,9 +4050,7 @@
               "add_gk",
               "remove_gk",
               "set_region",
-              "set_category",
-              "set_visibility",
-              "normalize_sku"
+              "set_category"
             ],
             "title": "Action Type"
           },
@@ -4102,6 +4100,15 @@
             "minimum": 0.0,
             "title": "Negate",
             "default": 0
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "AND",
+              "OR"
+            ],
+            "title": "Operator",
+            "default": "AND"
           }
         },
         "type": "object",
