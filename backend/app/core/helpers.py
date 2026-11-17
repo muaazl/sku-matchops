@@ -11,11 +11,9 @@ from typing import Any
 
 import pandas as pd
 
-from backend.app.core.constants import DOMAIN_FOOD, DOMAIN_MARKET
+from backend.app.core.constants import CACHE_SALT, DOMAIN_FOOD, DOMAIN_MARKET
 
 logger = logging.getLogger("matchops.helpers")
-
-CACHE_SALT = "sku-matchops-v1-salt"
 
 
 def clean_price(val: Any) -> float | None:

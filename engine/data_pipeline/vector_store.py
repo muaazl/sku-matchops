@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import math
 import os
 import socket
 import time
@@ -368,6 +369,8 @@ class VectorStore:
             k_str = str(k).strip()
             if not k_str or any(k_str.startswith(p) for p in junk_prefixes):
                 continue
+            if v is pd.NA or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+                v = None
             cleaned[k_str] = v
 
         # Clean price: retain numerical 'price' (float), remove redundant raw 'Price' string
@@ -390,7 +393,9 @@ class VectorStore:
         w_val = cleaned.get("weight_val")
         if domain == config.DOMAIN_FOOD or w_val in (
             [None, None, None],
+            (None, None, None),
             "[null, null, null]",
+            "(None, None, None)",
             None,
         ):
             cleaned.pop("weight_val", None)
