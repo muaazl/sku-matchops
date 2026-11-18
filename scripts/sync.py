@@ -1694,6 +1694,7 @@ def train_bt_arcface(
     import onnxruntime as ort
     from sklearn.preprocessing import LabelEncoder, StandardScaler
     from torch.utils.data import DataLoader, TensorDataset
+    from tqdm import tqdm
 
     from engine import config
     from engine.classification.models.arcface_bt import BTArcFaceNet, FocalLoss
@@ -1744,7 +1745,8 @@ def train_bt_arcface(
     )
 
     model.train()
-    for epoch in range(1, epochs + 1):
+    epoch_bar = tqdm(range(1, epochs + 1), desc=f"[{domain.upper()}] ArcFace", unit="epoch")
+    for epoch in epoch_bar:
         epoch_loss = 0.0
         batches = 0
         for batch_x, batch_y in dataloader:
@@ -1759,8 +1761,9 @@ def train_bt_arcface(
             epoch_loss += loss.item()
             batches += 1
         scheduler.step()
+        avg_loss = epoch_loss / max(batches, 1)
+        epoch_bar.set_postfix(loss=f"{avg_loss:.4f}", lr=f"{scheduler.get_last_lr()[0]:.1e}")
         if epoch == 1 or epoch % max(1, epochs // 5) == 0 or epoch == epochs:
-            avg_loss = epoch_loss / max(batches, 1)
             logger.info(
                 f"[{domain.upper()}] Epoch {epoch:2d}/{epochs:2d} - Focal Loss: {avg_loss:.4f} "
                 f"(lr: {scheduler.get_last_lr()[0]:.6f})"

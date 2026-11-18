@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import joblib
 import numpy as np
 import onnxruntime as ort
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from engine import config
@@ -299,7 +300,17 @@ class EmbeddingEngine:
             all_bm25: list[dict[int, float]] = []
             all_learned_sparse: list[dict[int, float] | None] = []
 
-            for i in range(0, len(missing_texts), batch_size):
+            batch_starts = range(0, len(missing_texts), batch_size)
+            if len(missing_texts) > batch_size:
+                batch_starts = tqdm(
+                    batch_starts,
+                    desc=f"[EMBED] Encoding ({len(missing_texts)} texts)",
+                    unit="batch",
+                    mininterval=1.0,
+                    leave=False,
+                )
+
+            for i in batch_starts:
                 batch = missing_texts[i : i + batch_size]
                 inputs = self.tokenizer(
                     batch, padding=True, truncation=True, max_length=512, return_tensors="np"
