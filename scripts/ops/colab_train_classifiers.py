@@ -220,10 +220,168 @@ def _load_gpu_embedding_engine(batch_size: int):
     return GpuEmbeddingEngine()
 
 
+def _fit_multiclass_logreg_gpu(
+    X: np.ndarray,
+    y: np.ndarray,
+    C: float = 5.0,
+    balanced: bool = False,
+    epochs: int = 180,
+    batch_size: int = 4096,
+    desc: str = "LogReg GPU",
+):
+    """Fits multinomial LogisticRegression on CUDA GPU and returns a standard sklearn LogisticRegression."""
+    import torch.nn.functional as F
+    from sklearn.linear_model import LogisticRegression
+
+    n_samples, n_features = X.shape
+    num_classes = int(np.max(y)) + 1
+    if num_classes < 2:
+        return LogisticRegression(max_iter=1000, C=C).fit(X, y)
+
+    device = torch.device("cuda")
+    X_t = torch.from_numpy(np.asarray(X, dtype=np.float32))
+    y_t = torch.from_numpy(np.asarray(y, dtype=np.int64))
+
+    class_weights_t = None
+    if balanced:
+        counts = np.bincount(y, minlength=num_classes).astype(np.float32)
+        counts = np.maximum(counts, 1.0)
+        weights = n_samples / (num_classes * counts)
+        class_weights_t = torch.from_numpy(weights).to(device)
+
+    W = torch.zeros((num_classes, n_features), device=device, dtype=torch.float32, requires_grad=True)
+    b = torch.zeros(num_classes, device=device, dtype=torch.float32, requires_grad=True)
+    optimizer = torch.optim.AdamW([W, b], lr=0.05, weight_decay=0.0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)
+    reg_coeff = 0.5 / (C * n_samples)
+
+    pbar = tqdm(range(epochs), desc=desc, unit="epoch", mininterval=0.5)
+    for _ in pbar:
+        perm = torch.randperm(n_samples)
+        last_loss = 0.0
+        for start in range(0, n_samples, batch_size):
+            idx = perm[start : start + batch_size]
+            xb = X_t[idx].to(device, non_blocking=True)
+            yb = y_t[idx].to(device, non_blocking=True)
+
+            optimizer.zero_grad(set_to_none=True)
+            logits = xb @ W.T + b
+            data_loss = F.cross_entropy(logits, yb, weight=class_weights_t, reduction="mean")
+            loss = data_loss + reg_coeff * (W * W).sum()
+            loss.backward()
+            optimizer.step()
+            last_loss = float(loss.item())
+        scheduler.step()
+        pbar.set_postfix(loss=f"{last_loss:.4f}")
+
+    W_np = W.detach().cpu().numpy().astype(np.float64)
+    b_np = b.detach().cpu().numpy().astype(np.float64)
+
+    clf = LogisticRegression(
+        max_iter=1000, C=C, class_weight="balanced" if balanced else None
+    )
+    clf.classes_ = np.arange(num_classes)
+    clf.n_features_in_ = n_features
+    if num_classes == 2:
+        clf.coef_ = (W_np[1:2] - W_np[0:1]).copy()
+        clf.intercept_ = (b_np[1:2] - b_np[0:1]).copy()
+    else:
+        clf.coef_ = W_np
+        clf.intercept_ = b_np
+    return clf
+
+
+def _fit_ovr_logreg_gpu(
+    X: np.ndarray,
+    y_bin: np.ndarray,
+    C: float = 5.0,
+    epochs: int = 140,
+    batch_size: int = 2048,
+    desc: str = "GK OneVsRest GPU",
+):
+    """Fits OneVsRestClassifier(LogisticRegression(class_weight='balanced')) simultaneously on CUDA GPU."""
+    import torch.nn.functional as F
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.multiclass import OneVsRestClassifier, _ConstantPredictor
+    from sklearn.preprocessing import LabelBinarizer
+
+    n_samples, n_features = X.shape
+    n_tags = y_bin.shape[1]
+    pos_counts = y_bin.sum(axis=0).astype(np.float32)
+    neg_counts = float(n_samples) - pos_counts
+    const_mask = (pos_counts <= 0) | (neg_counts <= 0)
+    active_indices = np.where(~const_mask)[0]
+
+    W_full = np.zeros((n_tags, n_features), dtype=np.float64)
+    b_full = np.zeros(n_tags, dtype=np.float64)
+
+    if len(active_indices) > 0:
+        device = torch.device("cuda")
+        X_t = torch.from_numpy(np.asarray(X, dtype=np.float32))
+        y_act = np.asarray(y_bin[:, active_indices], dtype=np.uint8)
+        n_act = len(active_indices)
+
+        w_pos = (n_samples / (2.0 * pos_counts[active_indices])).astype(np.float32)
+        w_neg = (n_samples / (2.0 * neg_counts[active_indices])).astype(np.float32)
+        w_pos_t = torch.from_numpy(w_pos).to(device)
+        w_neg_t = torch.from_numpy(w_neg).to(device)
+
+        W = torch.zeros((n_act, n_features), device=device, dtype=torch.float32, requires_grad=True)
+        b = torch.zeros(n_act, device=device, dtype=torch.float32, requires_grad=True)
+        optimizer = torch.optim.AdamW([W, b], lr=0.05, weight_decay=0.0)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)
+        reg_coeff = 0.5 / (C * n_samples)
+
+        pbar = tqdm(range(epochs), desc=desc, unit="epoch", mininterval=0.5)
+        for _ in pbar:
+            perm = np.random.permutation(n_samples)
+            last_loss = 0.0
+            for start in range(0, n_samples, batch_size):
+                idx = perm[start : start + batch_size]
+                xb = X_t[torch.from_numpy(idx)].to(device, non_blocking=True)
+                yb = torch.from_numpy(y_act[idx]).to(device=device, dtype=torch.float32, non_blocking=True)
+
+                optimizer.zero_grad(set_to_none=True)
+                logits = xb @ W.T + b
+                bce = F.binary_cross_entropy_with_logits(logits, yb, reduction="none")
+                weights = torch.where(yb > 0.5, w_pos_t, w_neg_t)
+                data_loss = (bce * weights).sum() / len(idx)
+                loss = data_loss + reg_coeff * (W * W).sum()
+                loss.backward()
+                optimizer.step()
+                last_loss = float(loss.item())
+            scheduler.step()
+            pbar.set_postfix(loss=f"{last_loss / max(n_act, 1):.4f}")
+
+        W_full[active_indices] = W.detach().cpu().numpy().astype(np.float64)
+        b_full[active_indices] = b.detach().cpu().numpy().astype(np.float64)
+
+    estimators = []
+    binary_classes = np.array([0, 1])
+    for j in range(n_tags):
+        if const_mask[j]:
+            estimators.append(_ConstantPredictor().fit(X[:1], y_bin[:1, j]))
+        else:
+            est = LogisticRegression(max_iter=250, C=C, class_weight="balanced")
+            est.classes_ = binary_classes
+            est.n_features_in_ = n_features
+            est.coef_ = W_full[j : j + 1].copy()
+            est.intercept_ = b_full[j : j + 1].copy()
+            estimators.append(est)
+
+    ovr = OneVsRestClassifier(LogisticRegression(max_iter=250, C=C, class_weight="balanced"))
+    ovr.classes_ = np.arange(n_tags)
+    ovr.label_binarizer_ = LabelBinarizer(sparse_output=True).fit(ovr.classes_)
+    ovr.n_features_in_ = n_features
+    ovr.estimators_ = estimators
+    return ovr
+
+
 def _train_domain_sklearn_and_caches(
     domain: str,
     sheet_id: str,
     gpu_embedder,
+    use_gpu_sklearn: bool = True,
 ) -> None:
     """Builds Feather caches, BT-GK map, tag incremental caches, sklearn classifiers & centroids."""
     import json
@@ -285,7 +443,59 @@ def _train_domain_sklearn_and_caches(
         if tag_list:
             gpu_embedder.embed_dictionary_incremental(domain, dict_type, tag_list)
 
-    clf = ZeroShotClassifier(
+    class ColabZeroShotClassifier(ZeroShotClassifier):
+        """Uses CUDA GPU solvers for BT, Third-Tag, and GK classifiers when available."""
+
+        def _fit_classifiers(
+            self,
+            X,
+            y_bt,
+            y_third_tag,
+            y_gk,
+            target_col,
+            old_bt_clf,
+            old_bt_enc,
+            old_third_tag_clf,
+            old_third_tag_enc,
+            LogisticRegression,
+            OneVsRestClassifier,
+        ):
+            if not (use_gpu_sklearn and torch.cuda.is_available()):
+                return super()._fit_classifiers(
+                    X,
+                    y_bt,
+                    y_third_tag,
+                    y_gk,
+                    target_col,
+                    old_bt_clf,
+                    old_bt_enc,
+                    old_third_tag_clf,
+                    old_third_tag_enc,
+                    LogisticRegression,
+                    OneVsRestClassifier,
+                )
+
+            logger.info(
+                f"[GPU-TRAIN] [{self.domain.upper()}] Fitting BT ({len(self._bt_enc.classes_)} classes), "
+                f"{target_col.capitalize()} ({len(self._third_tag_enc.classes_)} classes), "
+                f"and GK ({len(self._gk_enc.classes_)} tags) on CUDA GPU..."
+            )
+            bt_clf = _fit_multiclass_logreg_gpu(
+                X, y_bt, C=5.0, balanced=False, desc=f"[GPU] {self.domain} BT LogReg"
+            )
+            third_tag_clf = _fit_multiclass_logreg_gpu(
+                X,
+                y_third_tag,
+                C=5.0,
+                balanced=True,
+                desc=f"[GPU] {self.domain} {target_col.capitalize()} LogReg",
+            )
+            gk_clf = _fit_ovr_logreg_gpu(
+                X, y_gk, C=5.0, desc=f"[GPU] {self.domain} GK OneVsRest"
+            )
+            return bt_clf, third_tag_clf, gk_clf
+
+    clf = ColabZeroShotClassifier(
         gpu_embedder,
         domain,
         descriptions,
@@ -408,6 +618,11 @@ def main() -> None:
         default="",
         help="Optional override for EMBEDDING_MODEL (defaults to .env / config).",
     )
+    parser.add_argument(
+        "--cpu-sklearn",
+        action="store_true",
+        help="Force CPU scikit-learn instead of GPU PyTorch solver for classifiers.",
+    )
     args = parser.parse_args()
 
     domains = ["market", "food"] if args.domain == "all" else [args.domain]
@@ -440,7 +655,12 @@ def main() -> None:
     for domain in domains:
         logger.info(f"\n{'=' * 60}\nTRAINING DOMAIN: {domain.upper()}\n{'=' * 60}")
         if not args.skip_sklearn:
-            _train_domain_sklearn_and_caches(domain, args.sheet_id or "STAGED", gpu_embedder)
+            _train_domain_sklearn_and_caches(
+                domain,
+                args.sheet_id or "STAGED",
+                gpu_embedder,
+                use_gpu_sklearn=not args.cpu_sklearn,
+            )
 
         if not args.skip_arcface:
             sync_mod.train_bt_arcface(

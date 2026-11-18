@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import json
 import logging
@@ -6,6 +7,7 @@ import os
 import joblib
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from engine import config
 from engine.core.observability import ONNX_INFERENCE_SECONDS
@@ -13,6 +15,25 @@ from engine.data_pipeline.cache_manager import calculate_df_hash
 from engine.utils.flavor_utils import build_food_flavors_info
 
 logger = logging.getLogger("matchops.classifier")
+
+
+@contextlib.contextmanager
+def _tqdm_joblib(total: int, desc: str):
+    """Context manager to attach a tqdm progress bar to joblib parallel tasks."""
+    pbar = tqdm(total=total, desc=desc, unit="clf", mininterval=1.0, leave=True)
+
+    class _TqdmBatchCallback(joblib.parallel.BatchCompletionCallBack):
+        def __call__(self, *args, **kwargs):
+            pbar.update(n=self.batch_size)
+            return super().__call__(*args, **kwargs)
+
+    old_cb = joblib.parallel.BatchCompletionCallBack
+    joblib.parallel.BatchCompletionCallBack = _TqdmBatchCallback
+    try:
+        yield pbar
+    finally:
+        joblib.parallel.BatchCompletionCallBack = old_cb
+        pbar.close()
 
 
 class ZeroShotClassifier:
@@ -399,64 +420,33 @@ class ZeroShotClassifier:
             scaled_prices = self._preprocess_prices(prices_list, is_training=True)
             X = np.hstack([X, scaled_prices])
 
-            # ── BT classifier ──────────────────────────────────
-            # NOTE: class_weight="balanced" is intentionally NOT used here.
-            # With ~1530 BT classes and only ~6 samples/class, lbfgs silently
-            # converges to all-zero weights under balanced weighting, causing
-            # every SKU to predict class index 0 (the first alphabetically).
             bt_raw = df["basictype"].str.strip().tolist()
             self._bt_enc = LabelEncoder().fit(bt_raw)
             y_bt = self._bt_enc.transform(bt_raw)
 
-            # Check if we can warm start BT classifier (LogisticRegression)
-            can_warm_start_bt = False
-            if (
-                old_bt_clf is not None
-                and old_bt_enc is not None
-                and hasattr(old_bt_clf, "coef_")
-                and list(old_bt_enc.classes_) == list(self._bt_enc.classes_)
-            ):
-                can_warm_start_bt = True
-
-            if can_warm_start_bt:
-                self._bt_clf = old_bt_clf
-                self._bt_clf.warm_start = True
-                self._bt_clf.fit(X, y_bt)
-            else:
-                self._bt_clf = LogisticRegression(max_iter=1000, C=5.0).fit(X, y_bt)
-
-            # ── Third Tag classifier ──────────────────────────────
             third_tag_raw = df[target_col].str.strip().tolist()
             self._third_tag_enc = LabelEncoder().fit(third_tag_raw)
             y_third_tag = self._third_tag_enc.transform(third_tag_raw)
 
-            # Check if we can warm start Third Tag classifier (LogisticRegression)
-            can_warm_start_third = False
-            if (
-                old_third_tag_clf is not None
-                and old_third_tag_enc is not None
-                and hasattr(old_third_tag_clf, "coef_")
-                and list(old_third_tag_enc.classes_) == list(self._third_tag_enc.classes_)
-            ):
-                can_warm_start_third = True
-
-            if can_warm_start_third:
-                self._third_tag_clf = old_third_tag_clf
-                self._third_tag_clf.warm_start = True
-                self._third_tag_clf.fit(X, y_third_tag)
-            else:
-                self._third_tag_clf = LogisticRegression(
-                    max_iter=1000, C=5.0, class_weight="balanced"
-                ).fit(X, y_third_tag)
-
-            # ── GK classifier (Multi-label) ───────────────────────
             gk_raw = [
                 [tag.strip() for tag in tags.split(",") if tag.strip()] for tags in df[COL_GK]
             ]
             self._gk_enc = MultiLabelBinarizer()
             y_gk = self._gk_enc.fit_transform(gk_raw)
-            base_clf = LogisticRegression(max_iter=250, C=5.0, class_weight="balanced")
-            self._gk_clf = OneVsRestClassifier(base_clf).fit(X, y_gk)
+
+            self._bt_clf, self._third_tag_clf, self._gk_clf = self._fit_classifiers(
+                X=X,
+                y_bt=y_bt,
+                y_third_tag=y_third_tag,
+                y_gk=y_gk,
+                target_col=target_col,
+                old_bt_clf=old_bt_clf,
+                old_bt_enc=old_bt_enc,
+                old_third_tag_clf=old_third_tag_clf,
+                old_third_tag_enc=old_third_tag_enc,
+                LogisticRegression=LogisticRegression,
+                OneVsRestClassifier=OneVsRestClassifier,
+            )
 
             n_bt = len(set(bt_raw))
             n_third_tag = len(set(third_tag_raw))
@@ -501,6 +491,74 @@ class ZeroShotClassifier:
             logger.error(
                 f"[TRAIN] ⚠ Classifier training failed: {e} — using zero-shot", exc_info=True
             )
+
+    def _fit_classifiers(
+        self,
+        X: np.ndarray,
+        y_bt: np.ndarray,
+        y_third_tag: np.ndarray,
+        y_gk: np.ndarray,
+        target_col: str,
+        old_bt_clf,
+        old_bt_enc,
+        old_third_tag_clf,
+        old_third_tag_enc,
+        LogisticRegression,
+        OneVsRestClassifier,
+    ):
+        """Fits BT, Third-Tag, and GK sklearn classifiers with progress logging."""
+        # NOTE: class_weight="balanced" is intentionally NOT used for BT.
+        # With ~1530 BT classes and only ~6 samples/class, lbfgs silently
+        # converges to all-zero weights under balanced weighting, causing
+        # every SKU to predict class index 0 (the first alphabetically).
+        logger.info(
+            f"[TRAIN] [{self.domain.upper()}] Fitting BT LogisticRegression ({len(self._bt_enc.classes_)} classes)..."
+        )
+        can_warm_start_bt = (
+            old_bt_clf is not None
+            and old_bt_enc is not None
+            and hasattr(old_bt_clf, "coef_")
+            and list(old_bt_enc.classes_) == list(self._bt_enc.classes_)
+        )
+        if can_warm_start_bt:
+            bt_clf = old_bt_clf
+            bt_clf.warm_start = True
+            bt_clf.fit(X, y_bt)
+        else:
+            bt_clf = LogisticRegression(max_iter=1000, C=5.0).fit(X, y_bt)
+
+        logger.info(
+            f"[TRAIN] [{self.domain.upper()}] Fitting {target_col.capitalize()} LogisticRegression "
+            f"({len(self._third_tag_enc.classes_)} classes)..."
+        )
+        can_warm_start_third = (
+            old_third_tag_clf is not None
+            and old_third_tag_enc is not None
+            and hasattr(old_third_tag_clf, "coef_")
+            and list(old_third_tag_enc.classes_) == list(self._third_tag_enc.classes_)
+        )
+        if can_warm_start_third:
+            third_tag_clf = old_third_tag_clf
+            third_tag_clf.warm_start = True
+            third_tag_clf.fit(X, y_third_tag)
+        else:
+            third_tag_clf = LogisticRegression(
+                max_iter=1000, C=5.0, class_weight="balanced"
+            ).fit(X, y_third_tag)
+
+        n_gk_tags = len(self._gk_enc.classes_)
+        logger.info(
+            f"[TRAIN] [{self.domain.upper()}] Fitting GK OneVsRestClassifier "
+            f"({n_gk_tags} tags, n_jobs={config.MAX_CPU_CORES})..."
+        )
+        base_clf = LogisticRegression(max_iter=250, C=5.0, class_weight="balanced")
+        with (
+            joblib.parallel_backend("threading", n_jobs=config.MAX_CPU_CORES),
+            _tqdm_joblib(n_gk_tags, desc=f"[TRAIN] {self.domain} GK OneVsRest"),
+        ):
+            gk_clf = OneVsRestClassifier(base_clf, n_jobs=config.MAX_CPU_CORES).fit(X, y_gk)
+
+        return bt_clf, third_tag_clf, gk_clf
 
     # ── Public API ────────────────────────────────────────────
 
