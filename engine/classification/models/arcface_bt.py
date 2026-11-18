@@ -89,12 +89,12 @@ class BTArcFaceNet(nn.Module):
     """
     Deep Metric Learning PyTorch model for SKU BasicType (BT) classification.
 
-    Input Dimension: 1025
-      - 1024-D dense BGE-M3 text embedding (Name, Description, Category)
+    Input Dimension: EMBEDDING_DIM + 1
+      - D-dimensional dense embedding (Name, Description, Category) from the configured EMBEDDING_MODEL
       - 1-D scaled log-price: StandardScaler(np.log1p(price))
 
     Architecture:
-      - 1025 -> 512 dense projection
+      - (EMBEDDING_DIM + 1) -> 512 dense projection
       - LayerNorm(512)
       - GELU activation
       - Dropout(0.2)

@@ -7,8 +7,8 @@ DOMAIN_MARKET = "market"
 DOMAIN_FOOD = "food"
 DOMAINS = (DOMAIN_MARKET, DOMAIN_FOOD)
 
-AUTO_THRESHOLD = 0.85
-REVIEW_THRESHOLD = 0.60
+AUTO_THRESHOLD = 0.80
+REVIEW_THRESHOLD = 0.50
 CACHE_SALT = "MatchOps_v2"
 
 FOOD_CATALOG_SHEET = "Food Catalog"
@@ -18,6 +18,7 @@ CATALOG_COL_MAP_FOOD = {
     "Dish Name": "Name",
     "Item Name": "Name",
     "Description": "Description",
+    "GenericKeywords": "Generic keywords",
     "Generic Keywords": "Generic keywords",
     "Generic keywords": "Generic keywords",
     "BasicType": "basictype",
@@ -34,6 +35,7 @@ CATALOG_COL_MAP_MARKET = {
     "Item Name": "Name",
     "Name": "Name",
     "Description": "Description",
+    "GenericKeywords": "Generic keywords",
     "Generic Keywords": "Generic keywords",
     "Generic keywords": "Generic keywords",
     "BasicType": "basictype",

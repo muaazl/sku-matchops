@@ -40,7 +40,7 @@ class TestTextWeightPriorityMatching:
             input_clean=input_clean,
             input_entities=input_entities,
             match_row=cand_spicy_bite,
-            raw_ai_score=2.0,  # cross encoder score
+            raw_ai_score=0.60,  # cosine reranker score
             input_price=0.0,
             input_w_data=input_w_data,
             input_no_weights=input_no_weights,
@@ -48,9 +48,9 @@ class TestTextWeightPriorityMatching:
         )
 
         # "smak hot spicy mixture" vs "smak spicy bite" has token_sort_ratio < 65
-        # It should NOT receive the +2.0 boost into high confidence
+        # It should NOT receive the +0.10 weight boost into high confidence
         assert "Low Text Sim" in reasons_sb
-        # Since raw score was 2.0 and no boost was added, score should remain 2.0 (prob < 0.8)
+        # Since raw score was 0.60 and no boost was added, score remains 0.60 (< 0.75 High threshold)
         assert status_sb != "High Confidence"
 
         # Candidate 2: Similar product name with matching weight
@@ -68,14 +68,14 @@ class TestTextWeightPriorityMatching:
             input_clean=input_clean,
             input_entities=input_entities,
             match_row=cand_spicy_mix,
-            raw_ai_score=2.0,
+            raw_ai_score=0.60,
             input_price=0.0,
             input_w_data=input_w_data,
             input_no_weights=input_no_weights,
             domain="market",
         )
 
-        # Token sort ratio is 100%, so it should receive the +2.0 boost
+        # Token sort ratio is 100%, so it should receive the +0.10 boost
         assert "Weight Match (150)" in reasons_sm
         assert "Low Text Sim" not in reasons_sm
 
@@ -100,7 +100,7 @@ class TestTextWeightPriorityMatching:
             input_clean=input_clean,
             input_entities=input_entities,
             match_row=cand_200g,
-            raw_ai_score=3.0,
+            raw_ai_score=0.70,
             input_price=0.0,
             input_w_data=input_w_data,
             input_no_weights=input_no_weights,
@@ -170,3 +170,85 @@ class TestTextWeightPriorityMatching:
         res_noweight = matcher.process_inputs(pd.DataFrame([{"Name": "Smak Hot & Spicy Mixture"}]))
         assert "Smak Hot & Spicy Mixture" in res_noweight.iloc[0]["Matched Catalog Name"]
         assert "Fuzzy Match (100%)" in res_noweight.iloc[0]["Logic Notes"]
+
+    def test_fractional_unit_standardization_and_reranker_nan_sanitization(self):
+        """Ensure sub-unit scaling keeps decimals (500mg -> 0.5g) and NaNs never leak into rerank prompts."""
+        from engine.nlp.text_cleaner import TextPipeline
+
+        assert "0.5g" in TextPipeline.standardize_units("Vitamin C 500mg")
+        assert "0.25g" in TextPipeline.standardize_units("Folic Acid 250mg")
+
+        prompt = TextPipeline.format_matcher_rerank_text(
+            name=float("nan"),
+            seller_category=float("nan"),
+            brand_or_flavor="nan",
+            description=None,
+            domain="market",
+        )
+        assert prompt == "Name: "
+
+        cat_prompt = TextPipeline.format_catalog_row_for_reranker(
+            {
+                "Name": "Kraft Cheese 200g",
+                "Brand": float("nan"),
+                "entities": {"brand": {"kraft"}},
+                "Description": "nan",
+                "Categories": float("nan"),
+            },
+            domain="market",
+        )
+        assert "Brand: kraft" in cat_prompt
+        assert "| Description:" not in cat_prompt
+        assert "SellerCategory:" not in cat_prompt
+
+    def test_food_unspecified_flavor_cap_after_bt_bump_and_lowercase_category(self, logic_gates):
+        """Ensure food unspecified-flavor cap runs after BT bump and market category gate reads lowercase key."""
+        food_gates = LogicGates(
+            embed_engine=MagicMock(),
+            brands_df=pd.DataFrame([{"Flavor Name": "chocolate", "Aliases": "", "Is_Weak": False}]),
+        )
+        cand_food = {
+            "Name": "Chocolate Waffle",
+            "clean_text": "chocolate waffle",
+            "clean_no_weights": "chocolate waffle",
+            "weight_val": (None, None, None),
+            "entities": {"flavor": {"chocolate"}},
+            "basictype": "Waffle",
+        }
+        score, status, _ = food_gates.apply_logic_gates(
+            input_clean="plain waffle",
+            input_entities={},
+            match_row=cand_food,
+            raw_ai_score=0.90,
+            input_price=0.0,
+            input_w_data=(None, None, None),
+            input_no_weights="plain waffle",
+            domain="food",
+            predicted_bt="Waffle",
+        )
+        from engine import config
+
+        assert score < config.CONFIDENCE_THRESHOLD_HIGH
+        assert status != "High Confidence"
+
+        cand_market = {
+            "Name": "Sample Cola 500ml",
+            "clean_text": "sample cola 500 ml",
+            "clean_no_weights": "sample cola",
+            "weight_val": (500.0, "ml", "liquid"),
+            "entities": {"brand": {"sample"}},
+            "basictype": "Soft Drink",
+            "category": "Cold Beverages",
+        }
+        _, _, reasons = logic_gates.apply_logic_gates(
+            input_clean="sample cola 500 ml",
+            input_entities={"brand": {"sample"}},
+            match_row=cand_market,
+            raw_ai_score=0.70,
+            input_price=0.0,
+            input_w_data=(500.0, "ml", "liquid"),
+            input_no_weights="sample cola",
+            domain="market",
+            input_category="beverages",
+        )
+        assert "Category Match Bonus" in reasons

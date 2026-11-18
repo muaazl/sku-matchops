@@ -162,16 +162,18 @@ class SKUMatcher:
     def search_candidates(
         self,
         input_vec_dense: np.ndarray,
-        input_vec_sparse: dict[str, float],
+        input_vec_sparse: dict[str, float] | None = None,
         bt_filter: str | None = None,
+        input_vec_bm25: dict[str, float] | None = None,
     ) -> pd.DataFrame:
-        """Retrieves top-K candidates from the vector store using hybrid search, optionally filtered by BT."""
+        """Retrieves top-K candidates from the vector store using hybrid RRF search, optionally filtered by BT."""
         hits = self.vector_store.search_from_vectors(
             dense_vec=input_vec_dense,
             sparse_vec_dict=input_vec_sparse,
             domain=self.domain,
             top_k=config.TOP_K_RETRIEVAL,
             bt_filter=bt_filter,
+            bm25_vec_dict=input_vec_bm25,
         )
         return pd.DataFrame(hits) if hits else pd.DataFrame()
 
@@ -368,7 +370,8 @@ class SKUMatcher:
 
         # Step 1B: Batch encode & predict BT only for ambiguous multi-BT bypasses and non-bypassed SKUs
         input_dense_embs: dict[int, np.ndarray] = {}
-        input_sparse_embs: dict[int, dict[str, float]] = {}
+        input_bm25_embs: dict[int, dict[str, float]] = {}
+        input_sparse_embs: dict[int, dict[str, float] | None] = {}
         bt_filters: list[str | None] = [None] * len(raw_names)
 
         if needs_bt_or_ai_indices:
@@ -379,10 +382,12 @@ class SKUMatcher:
                 sub_clean, sub_descs, sub_cats, weights=config.MATCHER_WEIGHTS
             )
             sub_dense = encoded["dense"]
-            sub_sparse = encoded["sparse"]
+            sub_bm25 = encoded.get("bm25") or []
+            sub_sparse = encoded.get("sparse") or []
             for pos, orig_idx in enumerate(needs_bt_or_ai_indices):
                 input_dense_embs[orig_idx] = sub_dense[pos]
-                input_sparse_embs[orig_idx] = sub_sparse[pos]
+                input_bm25_embs[orig_idx] = sub_bm25[pos] if pos < len(sub_bm25) else {}
+                input_sparse_embs[orig_idx] = sub_sparse[pos] if pos < len(sub_sparse) else None
 
             if self.classifier:
                 sub_prices = [prices[idx] for idx in needs_bt_or_ai_indices]
@@ -464,6 +469,7 @@ class SKUMatcher:
 
         # 3B. Batch Qdrant Queries
         search_dense = []
+        search_bm25 = []
         search_sparse = []
         search_filters = []
         search_map = []  # stores (sku_index, query_type) e.g. (i, 'filtered'), (i, 'unfiltered'), (i, 'stripped')
@@ -492,6 +498,7 @@ class SKUMatcher:
                     stripped_batch_indices.append(i)
 
         stripped_embs_dense = {}
+        stripped_embs_bm25 = {}
         stripped_embs_sparse = {}
         if stripped_batch_texts:
             try:
@@ -501,24 +508,33 @@ class SKUMatcher:
                     stripped_batch_cats,
                     weights=config.MATCHER_WEIGHTS,
                 )
+                str_bm25 = stripped_encoded.get("bm25") or []
+                str_sparse = stripped_encoded.get("sparse") or []
                 for idx, orig_idx in enumerate(stripped_batch_indices):
                     stripped_embs_dense[orig_idx] = stripped_encoded["dense"][idx]
-                    stripped_embs_sparse[orig_idx] = stripped_encoded["sparse"][idx]
+                    stripped_embs_bm25[orig_idx] = str_bm25[idx] if idx < len(str_bm25) else {}
+                    stripped_embs_sparse[orig_idx] = (
+                        str_sparse[idx] if idx < len(str_sparse) else None
+                    )
             except Exception as e:
                 logger.warning(f"Batch brand-stripped search setup failed: {e}")
 
         for i in ai_indices:
-            dense, sparse = input_dense_embs[i], input_sparse_embs[i]
+            dense = input_dense_embs[i]
+            bm25 = input_bm25_embs.get(i, {})
+            sparse = input_sparse_embs.get(i)
 
             # BT-filtered query
             if bt_filters[i]:
                 search_dense.append(dense)
+                search_bm25.append(bm25)
                 search_sparse.append(sparse)
                 search_filters.append(bt_filters[i])
                 search_map.append((i, "filtered"))
 
             # Unfiltered query
             search_dense.append(dense)
+            search_bm25.append(bm25)
             search_sparse.append(sparse)
             search_filters.append(None)
             search_map.append((i, "unfiltered"))
@@ -526,7 +542,8 @@ class SKUMatcher:
             # Brand-stripped query
             if i in stripped_embs_dense:
                 search_dense.append(stripped_embs_dense[i])
-                search_sparse.append(stripped_embs_sparse[i])
+                search_bm25.append(stripped_embs_bm25.get(i, {}))
+                search_sparse.append(stripped_embs_sparse.get(i))
                 search_filters.append(None)
                 search_map.append((i, "stripped"))
 
@@ -536,7 +553,11 @@ class SKUMatcher:
         }
         if search_dense:
             all_candidates = self.vector_store.search_batch_from_vectors(
-                search_dense, search_sparse, search_filters, domain=self.domain
+                search_dense,
+                search_sparse,
+                search_filters,
+                domain=self.domain,
+                bm25_vec_dicts=search_bm25,
             )
             for res_idx, candidates_list in enumerate(all_candidates):
                 sku_idx, q_type = search_map[res_idx]
@@ -547,10 +568,20 @@ class SKUMatcher:
 
         # 3C. Batch Cross-Encoder Scoring
         cross_pairs = []
-        pair_map = []  # stores (sku_index, clean_text)
+        pair_map = []  # stores (sku_index, candidate_key)
 
         for i in ai_indices:
             clean_in_no_w = input_no_weights_list[i]
+            in_ents = ai_entities.get(i) or {}
+            in_bf_key = "flavor" if self.domain == config.DOMAIN_FOOD else "brand"
+            in_brand_or_flavor = ", ".join(sorted(str(x) for x in in_ents.get(in_bf_key, []) if x))
+            formatted_query = TextPipeline.format_matcher_rerank_text(
+                name=clean_in_no_w,
+                seller_category=categories[i],
+                brand_or_flavor=in_brand_or_flavor,
+                description=descriptions[i],
+                domain=self.domain,
+            )
 
             all_cands_list: list[dict[str, Any]] = []
             for q_type in ("filtered", "unfiltered", "stripped"):
@@ -562,19 +593,19 @@ class SKUMatcher:
                 key=lambda c: (-c.get("_qdrant_score_", 0.0), c.get("clean_text", ""))
             )
 
-            seen_texts = set()
-            rerank_limit = getattr(config, "MATCHER_RERANK_CANDIDATES", 15)
+            seen_keys = set()
+            rerank_limit = getattr(config, "MATCHER_RERANK_CANDIDATES", 30)
             for cand_row in all_cands_list:
-                if len(seen_texts) >= rerank_limit:
+                if len(seen_keys) >= rerank_limit:
                     break
-                txt = cand_row.get("clean_text", "")
-                if txt not in seen_texts:
-                    seen_texts.add(txt)
-                    txt_no_w = str(
-                        cand_row.get("clean_no_weights") or TextPipeline.strip_weights(txt)
-                    ).strip()
-                    cross_pairs.append([clean_in_no_w, txt_no_w])
-                    pair_map.append((i, txt))
+                cand_key = cand_row.get("db_uid") or cand_row.get("clean_text", "")
+                if cand_key not in seen_keys:
+                    seen_keys.add(cand_key)
+                    formatted_cand = TextPipeline.format_catalog_row_for_reranker(
+                        cand_row, domain=self.domain
+                    )
+                    cross_pairs.append([formatted_query, formatted_cand])
+                    pair_map.append((i, cand_key))
 
         cross_scores_list = []
         if cross_pairs:
@@ -584,8 +615,8 @@ class SKUMatcher:
             progress_callback(75.0)
 
         sku_scored_cands: dict[int, dict[Any, float]] = {i: {} for i in ai_indices}
-        for pair_idx, (sku_idx, txt) in enumerate(pair_map):
-            sku_scored_cands[sku_idx][txt] = float(cross_scores_list[pair_idx])
+        for pair_idx, (sku_idx, cand_key) in enumerate(pair_map):
+            sku_scored_cands[sku_idx][cand_key] = float(cross_scores_list[pair_idx])
 
         def score_candidates(
             cands: list[dict[str, Any]], sku_idx: int
@@ -593,7 +624,10 @@ class SKUMatcher:
             if not cands:
                 return []
             s_map = sku_scored_cands[sku_idx]
-            scored = [(float(s_map.get(c.get("clean_text", ""), -10.0)), c) for c in cands]
+            scored = [
+                (float(s_map.get(c.get("db_uid") or c.get("clean_text", ""), -10.0)), c)
+                for c in cands
+            ]
             scored.sort(
                 key=lambda item: (
                     -float(np.round(item[0], 3)),

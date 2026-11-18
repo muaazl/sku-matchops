@@ -111,6 +111,11 @@ class TextPipeline:
         # Remove ranges (e.g., '100g - 200g') as they confuse matching
         text = re.sub(r"(\d+(\.\d+)?)\s*[a-z]+\s*-\s*(\d+(\.\d+)?)\s*[a-z]+", "", text)
 
+        def _fmt_num(x: float) -> str:
+            if abs(x - round(x)) < 1e-9:
+                return str(int(round(x)))
+            return f"{round(x, 4):.4f}".rstrip("0").rstrip(".")
+
         def calc_multipack(match: re.Match, reverse: bool = False) -> str:
             count_grp, size_grp, unit_grp = (1, 2, 4) if not reverse else (4, 1, 3)
             count = float(match.group(count_grp))
@@ -120,8 +125,8 @@ class TextPipeline:
             normalized = UnitUtils.normalize_value(total, unit)
             if normalized:
                 val, base_unit, _ = normalized
-                return f"{int(val)}{base_unit} "
-            return f"{int(total)}{unit} "
+                return f"{_fmt_num(val)}{base_unit} "
+            return f"{_fmt_num(total)}{unit} "
 
         # Resolve '4 x 100g' and '100g x 4'
         text = re.sub(r"(\d+)\s*[xX]\s*(\d+(\.\d+)?)\s*([a-z]+)", calc_multipack, text)
@@ -137,7 +142,7 @@ class TextPipeline:
             normalized = UnitUtils.normalize_value(val, unit)
             if normalized:
                 norm_val, base_unit, _ = normalized
-                return f"{int(norm_val)}{base_unit}"
+                return f"{_fmt_num(norm_val)}{base_unit}"
             return match.group(0)
 
         # Normalize all remaining units to base units
@@ -205,3 +210,102 @@ class TextPipeline:
         if category and str(category).lower() not in ("nan", "none", "<na>"):
             full_text += f" {category}"
         return full_text
+
+    @staticmethod
+    def _clean_prompt_val(val) -> str:
+        if val is None:
+            return ""
+        s = str(val).strip()
+        return "" if s.lower() in ("", "nan", "none", "<na>", "null") else s
+
+    @staticmethod
+    def format_matcher_rerank_text(
+        name: str,
+        seller_category: str = "",
+        brand_or_flavor: str = "",
+        description: str = "",
+        domain: str = config.DOMAIN_MARKET,
+    ) -> str:
+        """Formats SKU or catalog metadata for Stage-2 SKU-to-Catalog reranking, omitting empty segments."""
+        parts = [f"Name: {TextPipeline._clean_prompt_val(name)}"]
+        cat_clean = TextPipeline._clean_prompt_val(seller_category)
+        if cat_clean:
+            parts.append(f"SellerCategory: {cat_clean}")
+
+        attr_clean = TextPipeline._clean_prompt_val(brand_or_flavor)
+        if attr_clean:
+            attr_label = "Flavor" if domain == config.DOMAIN_FOOD else "Brand"
+            parts.append(f"{attr_label}: {attr_clean}")
+
+        desc_clean = TextPipeline._clean_prompt_val(description)
+        if desc_clean:
+            parts.append(f"Description: {desc_clean}")
+
+        return " | ".join(parts)
+
+    @staticmethod
+    def format_catalog_row_for_reranker(row: dict, domain: str = config.DOMAIN_MARKET) -> str:
+        """Extracts catalog row fields and formats them for Stage-2 SKU-to-Catalog reranking."""
+        cand_name = (
+            TextPipeline._clean_prompt_val(row.get("clean_no_weights"))
+            or TextPipeline._clean_prompt_val(
+                TextPipeline.strip_weights(TextPipeline._clean_prompt_val(row.get("clean_text")))
+            )
+            or TextPipeline._clean_prompt_val(row.get("Name"))
+        )
+        cand_cat = (
+            TextPipeline._clean_prompt_val(row.get("SellerCategory"))
+            or TextPipeline._clean_prompt_val(row.get("Seller_Category"))
+            or TextPipeline._clean_prompt_val(row.get("category"))
+            or TextPipeline._clean_prompt_val(row.get("Categories"))
+            or TextPipeline._clean_prompt_val(row.get("region"))
+        )
+        cand_ents = row.get("entities") if isinstance(row.get("entities"), dict) else {}
+        attr_key = "flavor" if domain == config.DOMAIN_FOOD else "brand"
+        raw_attr = TextPipeline._clean_prompt_val(row.get(attr_key.capitalize())) or (
+            TextPipeline._clean_prompt_val(row.get(attr_key))
+        )
+        cand_bf = raw_attr or ", ".join(sorted(str(x) for x in cand_ents.get(attr_key, []) if x))
+        cand_desc = TextPipeline._clean_prompt_val(row.get("Description")) or (
+            TextPipeline._clean_prompt_val(row.get("description"))
+        )
+        return TextPipeline.format_matcher_rerank_text(
+            name=cand_name,
+            seller_category=cand_cat,
+            brand_or_flavor=cand_bf,
+            description=cand_desc,
+            domain=domain,
+        )
+
+    @staticmethod
+    def resolve_food_mixed_suffix(sku_name: str, flavor_set: set[str], ner_engine) -> str:
+        """Returns 'mixed' when multiple land meats or meat+seafood appear and name lacks 'mix'."""
+        if not ner_engine or not flavor_set:
+            return ""
+        seafood_set = getattr(ner_engine, "seafood_flavors", set())
+        meat_set = getattr(ner_engine, "meat_flavors", set())
+        veg_set = getattr(ner_engine, "vegetable_flavors", set())
+        has_seafood = any(f in seafood_set for f in flavor_set)
+        # Exclude meta-categories ('mixed') and special protein ('egg') from land meats
+        land_meats = [
+            f
+            for f in flavor_set
+            if f in meat_set and f not in seafood_set and f not in ("egg", "mixed")
+        ]
+        meat_count = len(land_meats)
+        has_other_protein = meat_count > 0 or has_seafood
+        has_egg = ("egg" in flavor_set) and ("egg" in meat_set)
+        has_veg = any(f in veg_set for f in flavor_set)
+
+        # Egg priority logic: lone egg (or egg+veg) counts as 1 protein; with other meat/seafood it does not
+        if has_egg and not has_other_protein:
+            meat_count = 1
+            has_meat = True
+        else:
+            has_meat = meat_count > 0
+
+        if ((has_meat and has_seafood) or meat_count >= 2) and "mix" not in sku_name.lower():
+            return "mixed"
+        if not has_seafood and not has_meat and has_veg:
+            return ""
+        return ""

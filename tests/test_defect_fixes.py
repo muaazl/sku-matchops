@@ -17,7 +17,7 @@ from engine.pipeline.processor import process_request
 def _require_synced_pipeline(domain: str = "food") -> None:
     meta_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_metadata.pkl")
     if (
-        not os.path.exists(config.BI_ENCODER_ONNX)
+        not os.path.exists(config.EMBEDDING_ONNX)
         or not os.path.exists(config.get_bt_arcface_onnx_path(domain))
         or not os.path.exists(meta_path)
     ):
@@ -148,7 +148,13 @@ class TestDefectFixes:
         embs = embed_engine.embed_weighted_sku(
             ["Fish Curry"], [""], [""], weights=config.CLASSIFIER_WEIGHTS
         )
-        query_embeddings = [{"dense": embs["dense"][0], "sparse": embs["sparse"][0]}]
+        query_embeddings = [
+            {
+                "dense": embs["dense"][0],
+                "bm25": (embs.get("bm25") or [{}])[0],
+                "sparse": (embs.get("sparse") or [None])[0],
+            }
+        ]
 
         clf_results = tag_all_skus(
             sku_names=["Fish Curry"],
@@ -203,11 +209,10 @@ class TestDefectFixes:
 
 
 def test_cross_encoder_empty_pairs_and_sentinel_handling():
-    """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if models fail."""
+    """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if session is uninitialized."""
     embed = EmbeddingEngine.__new__(EmbeddingEngine)
     embed.cross_session = None
     embed.rerank_tokenizer = None
-    embed.cross_encoder_fallback = None
 
     # 1. Empty pairs returns empty array
     empty_res = embed.score_cross_encoder([])
@@ -215,10 +220,7 @@ def test_cross_encoder_empty_pairs_and_sentinel_handling():
     assert isinstance(empty_res, np.ndarray)
 
     # 2. When sessions are None, returns -10.0 sentinel
-    with (
-        patch.object(embed, "cross_session", None),
-        patch.object(embed, "cross_encoder_fallback", None),
-    ):
+    with patch.object(embed, "cross_session", None):
         sentinel_res = embed.score_cross_encoder([["query", "doc1"], ["query", "doc2"]])
         assert len(sentinel_res) == 2
         assert np.all(sentinel_res == -10.0), f"Expected -10.0 sentinels, got {sentinel_res}"

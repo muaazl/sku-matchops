@@ -1,4 +1,3 @@
-import math
 import re
 
 from rapidfuzz import fuzz
@@ -213,6 +212,7 @@ class LogicGates:
         if not catalog_flavors_resolved and match_row.get("clean_text"):
             catalog_flavors_resolved = self._resolve_flavors({match_row["clean_text"]})
 
+        unspecified_input_flavor = False
         if input_flavors_resolved and catalog_flavors_resolved:
             if input_flavors_resolved.isdisjoint(catalog_flavors_resolved):
                 return (
@@ -224,12 +224,12 @@ class LogicGates:
                 )
         elif catalog_flavors_resolved and not input_flavors_resolved:
             is_fuzzy_bypass = False
-            score = min(score, 3.5)
+            unspecified_input_flavor = True
             reasons.append(
                 f"Flavor Mismatch: catalog has {sorted(catalog_flavors_resolved)}, input unspecified"
             )
         elif input_flavors_resolved and not catalog_flavors_resolved:
-            score -= 2.0
+            score -= 0.10
             reasons.append(
                 f"Flavor Mismatch: input has {sorted(input_flavors_resolved)}, catalog unspecified"
             )
@@ -243,14 +243,18 @@ class LogicGates:
             )
             if cand_bt:
                 if cand_bt == predicted_bt.strip().lower():
-                    score += 2.0
+                    score += 0.10
                     reasons.append(f"BasicType Match ({predicted_bt})")
                 else:
                     is_fuzzy_bypass = False
-                    score -= 3.0
+                    score -= 0.15
                     reasons.append(
                         f"BasicType Mismatch: catalog has '{cand_bt}' vs predicted '{predicted_bt}'"
                     )
+
+        # Cap after BT bump so unspecified-flavor inputs never reach High Confidence
+        if unspecified_input_flavor:
+            score = min(score, max(0.0, config.CONFIDENCE_THRESHOLD_HIGH - 0.05))
 
         # Determine status
         status = (
@@ -263,14 +267,13 @@ class LogicGates:
             )
         )
 
-        # Map score to probability fraction (0.0 to 1.0)
+        # Clamp cosine confidence score to [0.0, 1.0]
         if score == -10.0:
             prob_score = 0.0
         elif is_fuzzy_bypass or score >= 90.0:
             prob_score = min(1.0, score / 100.0)
         else:
-            p = 1 / (1 + math.exp(-config.LOGIC_GATE_SIGMOID_SCALE * score))
-            prob_score = float(round(p, 4))
+            prob_score = float(round(min(1.0, max(0.0, score)), 4))
 
         return prob_score, status, "; ".join(reasons)
 
@@ -370,7 +373,12 @@ class LogicGates:
         cat_g_keywords = str(
             match_row.get("Generic keywords", match_row.get("GenericKeywords", ""))
         ).lower()
-        cat_categories = str(match_row.get("Categories", "")).lower()
+        cat_categories = str(
+            match_row.get("category")
+            or match_row.get("Categories")
+            or match_row.get("Category")
+            or ""
+        ).lower()
         is_ic_catalog = any(
             config.IC_TRIGGER_KEYWORD in s for s in [cat_clean, cat_g_keywords, cat_categories]
         )
@@ -433,7 +441,7 @@ class LogicGates:
                     attr,
                 )
                 if attr_check == "Conflict":
-                    score -= 3.0
+                    score -= 0.15
                     reasons.append(
                         f"{attr.capitalize()} Penalty: {in_ents.get(attr)} vs {cat_entities.get(attr)}"
                     )
@@ -444,7 +452,7 @@ class LogicGates:
             in_val, cat_val = input_w_data[0], catalog_w_data[0]
             max_val = max(in_val, cat_val)
             if max_val == 0:
-                score += 2.0
+                score += 0.10
                 reasons.append("Weight Match (0)")
                 weight_matched = True
             else:
@@ -452,7 +460,7 @@ class LogicGates:
                 if diff_pct < 1.0:
                     text_ratio = fuzz.token_sort_ratio(input_no_weights, cat_no_weights)
                     if is_fuzzy_bypass or text_ratio >= config.FUZZY_BYPASS_TYPO_RATIO:
-                        score += 2.0
+                        score += 0.10
                         reasons.append(f"Weight Match ({int(in_val)})")
                         weight_matched = True
                     else:
@@ -461,27 +469,36 @@ class LogicGates:
                     reasons.append(f"Weight Mismatch ({int(in_val)} vs {int(cat_val)})")
 
         # 6. Price Validation
-        if score < 6.0 and weight_matched:
+        if score < 0.85 and weight_matched:
             try:
                 p_input = float(input_price)
                 p_catalog = float(match_row.get("Price", 0))
                 if p_input > 0 and p_catalog > 0:
                     if abs(p_input - p_catalog) <= 75:
-                        score += 3.0
+                        score += 0.15
                         reasons.append(f"Price Match: {p_input} vs {p_catalog}")
                     else:
-                        score -= 2.0
+                        score -= 0.10
                         reasons.append(f"Price Mismatch: {p_input} vs {p_catalog}")
             except Exception:
                 pass
 
-        # 7. Category Match Bonus (+1)
+        # 7. Category Match Bonus (+0.05)
         # If the input SKU has a category and it matches the catalog's Categories field, boost the score.
         in_cat = str(input_category).strip().lower() if input_category else ""
         if in_cat and in_cat not in ("", "nan"):
-            catalog_cat = str(match_row.get("Categories", "")).strip().lower()
+            catalog_cat = (
+                str(
+                    match_row.get("category")
+                    or match_row.get("Categories")
+                    or match_row.get("Category")
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
             if catalog_cat and in_cat in catalog_cat:
-                score += 1.0
+                score += 0.05
                 reasons.append("Category Match Bonus")
 
         # 8. Predicted BT Alignment Boost
@@ -509,8 +526,8 @@ class LogicGates:
                 b_check = self.compare_entity_sets(in_b, cat_b, input_clean, cat_clean, "brand")
                 f_check = self.compare_entity_sets(in_f, cat_f, input_clean, cat_clean, "flavor")
                 if b_check != "Conflict" and f_check != "Conflict":
-                    score += 3.5
-                    reasons.append(f"Predicted BT Alignment Boost (+3.5: {predicted_bt})")
+                    score += 0.18
+                    reasons.append(f"Predicted BT Alignment Boost (+0.18: {predicted_bt})")
 
         # Determine status
         status = (
@@ -523,13 +540,12 @@ class LogicGates:
             )
         )
 
-        # Map score to probability fraction (0.0 to 1.0)
+        # Clamp cosine confidence score to [0.0, 1.0]
         if score == -10.0:
             prob_score = 0.0
         elif is_fuzzy_bypass or score >= 90.0:
             prob_score = min(1.0, score / 100.0)
         else:
-            p = 1 / (1 + math.exp(-config.LOGIC_GATE_SIGMOID_SCALE * score))
-            prob_score = float(round(p, 4))
+            prob_score = float(round(min(1.0, max(0.0, score)), 4))
 
         return prob_score, status, "; ".join(reasons)

@@ -31,7 +31,9 @@ logger = logging.getLogger("matchops.catalog_sync")
 
 def _get_staged_path(sheet_name: str) -> str:
     staging_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        ),
         "data",
         "staged_sheets",
     )

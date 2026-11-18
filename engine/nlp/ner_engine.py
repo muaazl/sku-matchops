@@ -1,6 +1,7 @@
 import functools
 import logging
 import re
+import threading
 import time
 import warnings
 from collections import OrderedDict
@@ -64,6 +65,7 @@ class NEREngine:
         # cleanly whenever this NEREngine instance is replaced on catalog reload.
         self._ner_cache: OrderedDict[str, list[dict]] = OrderedDict()
         self._ner_cache_max = 50000
+        self._cache_lock = threading.RLock()
 
     # ─────────────────────────────────────────────────────────────
     # Model Loading
@@ -74,47 +76,26 @@ class NEREngine:
 
         from gliner import GLiNER
 
-        # 1. Try loading from local ONNX directory if model.onnx exists
-        if os.path.exists(config.GLINER_ONNX):
-            try:
-                self.model = GLiNER.from_pretrained(
-                    config.GLINER_MODEL,
-                    load_onnx_model=True,
-                    fix_mistral_regex=True,
-                )
-                logger.info("[NER] GLiNER loaded successfully in ONNX mode.")
-                return
-            except Exception as e:
-                logger.warning(f"[NER] Local ONNX load failed: {e}")
+        onnx_path = config.GLINER_ONNX
+        if not os.path.exists(onnx_path):
+            raise FileNotFoundError(
+                f"[FAIL-FAST] Required GLiNER ONNX model missing at '{onnx_path}'. "
+                f"Run 'python -m scripts.sync --models sync --model-target gliner' first."
+            )
 
-        # 2. Try downloading ONNX model on demand if missing
         try:
-            from scripts.ml.export_onnx import export_gliner
-
-            logger.info("[NER] GLiNER ONNX model not found locally. Downloading ONNX model...")
-            export_gliner()
             self.model = GLiNER.from_pretrained(
                 config.GLINER_MODEL,
                 load_onnx_model=True,
+                onnx_model_file=os.path.basename(onnx_path),
+                local_files_only=True,
                 fix_mistral_regex=True,
             )
-            logger.info("[NER] GLiNER loaded successfully in ONNX mode.")
-            return
+            logger.info(f"[NER] GLiNER ONNX loaded strictly from {onnx_path}.")
         except Exception as e:
-            logger.warning(
-                f"[NER] Auto-export/download of GLiNER ONNX failed: {e}; falling back to Hugging Face PyTorch..."
-            )
-
-        # 3. Fallback to direct PyTorch model from Hugging Face Hub
-        try:
-            self.model = GLiNER.from_pretrained(
-                "urchade/gliner_medium-v2.1",
-                fix_mistral_regex=True,
-            )
-            logger.info("[NER] GLiNER loaded successfully from Hugging Face Hub.")
-        except Exception as e2:
-            logger.error(f"[NER] All GLiNER load attempts failed: {e2}")
-            self.model = None
+            raise RuntimeError(
+                f"[FAIL-FAST] Failed to load GLiNER ONNX model from '{onnx_path}': {e}"
+            ) from e
 
     def warmup(self):
         if self.model:
@@ -245,18 +226,25 @@ class NEREngine:
 
     def _run_ner(self, text: str) -> list[dict]:
         cache = getattr(self, "_ner_cache", None)
-        if cache is not None and text in cache:
-            cache.move_to_end(text)
-            return cache[text]
+        lock = getattr(self, "_cache_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._cache_lock = lock
+        with lock:
+            if cache is not None and text in cache:
+                cache.move_to_end(text)
+                return cache[text]
         try:
             if self.model:
                 res = self.model.predict_entities(
                     text, self.labels, threshold=config.NER_CONFIDENCE_THRESHOLD
                 )
-                if cache is not None:
-                    cache[text] = res
-                    if len(cache) > getattr(self, "_ner_cache_max", 50000):
-                        cache.popitem(last=False)
+                with lock:
+                    if cache is not None:
+                        cache[text] = res
+                        cache.move_to_end(text)
+                        if len(cache) > getattr(self, "_ner_cache_max", 50000):
+                            cache.popitem(last=False)
                 return res
             logger.warning(f"[NER] No model available for '{text}'.")
             return []
@@ -321,19 +309,24 @@ class NEREngine:
 
         # Batch NER for texts that got no dict hit (with per-instance cache + batch deduplication)
         cache = getattr(self, "_ner_cache", None)
+        lock = getattr(self, "_cache_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._cache_lock = lock
         cache_max = getattr(self, "_ner_cache_max", 50000)
         resolved_raw: dict[str, list[dict]] = {}
         missing_texts: list[str] = []
         missing_seen: set[str] = set()
 
-        for idx in fallback_indices:
-            txt = valid_texts[idx]
-            if cache is not None and txt in cache:
-                cache.move_to_end(txt)
-                resolved_raw[txt] = cache[txt]
-            elif txt not in missing_seen:
-                missing_seen.add(txt)
-                missing_texts.append(txt)
+        with lock:
+            for idx in fallback_indices:
+                txt = valid_texts[idx]
+                if cache is not None and txt in cache:
+                    cache.move_to_end(txt)
+                    resolved_raw[txt] = cache[txt]
+                elif txt not in missing_seen:
+                    missing_seen.add(txt)
+                    missing_texts.append(txt)
 
         t_ner = time.perf_counter()
         try:
@@ -355,7 +348,11 @@ class NEREngine:
                         )
                     else:
                         raw_list = [
-                            self.model.predict_entities(t, self.labels, threshold=0.25) if t else []
+                            self.model.predict_entities(
+                                t, self.labels, threshold=config.NER_CONFIDENCE_THRESHOLD
+                            )
+                            if t
+                            else []
                             for t in missing_texts
                         ]
                 else:
@@ -365,13 +362,15 @@ class NEREngine:
                     raw_list = [[] for _ in missing_texts]
                 ONNX_INFERENCE_SECONDS.labels(model="ner").observe(time.perf_counter() - t_ner)
 
-                for txt, ents_raw in zip(missing_texts, raw_list):
-                    resolved_raw[txt] = ents_raw
-                    if cache is not None and self.model is not None:
-                        cache[txt] = ents_raw
-                if cache is not None:
-                    while len(cache) > cache_max:
-                        cache.popitem(last=False)
+                with lock:
+                    for txt, ents_raw in zip(missing_texts, raw_list):
+                        resolved_raw[txt] = ents_raw
+                        if cache is not None and self.model is not None:
+                            cache[txt] = ents_raw
+                            cache.move_to_end(txt)
+                    if cache is not None:
+                        while len(cache) > cache_max:
+                            cache.popitem(last=False)
 
             for original_idx in fallback_indices:
                 for entity in resolved_raw.get(valid_texts[original_idx], ()):

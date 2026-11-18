@@ -772,3 +772,416 @@ def test_per_condition_operator_same_type_uses_and():
     assert evaluate_rule_conditions({"conditions": conds_pass}, RECORD) is True
     assert evaluate_conditions(_rule(conds_fail), RECORD) is False
     assert evaluate_rule_conditions({"conditions": conds_fail}, RECORD) is False
+
+
+def test_format_matcher_rerank_text_omits_empty_fields():
+    from engine.nlp.text_cleaner import TextPipeline
+
+    full_market = TextPipeline.format_matcher_rerank_text(
+        name="Acme Almond Milk",
+        seller_category="Dairy",
+        brand_or_flavor="Acme",
+        description="Unsweetened 1L",
+        domain="market",
+    )
+    assert (
+        full_market
+        == "Name: Acme Almond Milk | SellerCategory: Dairy | Brand: Acme | Description: Unsweetened 1L"
+    )
+
+    partial_food = TextPipeline.format_matcher_rerank_text(
+        name="Chicken Fried Rice",
+        seller_category="",
+        brand_or_flavor="Chicken",
+        description="nan",
+        domain="food",
+    )
+    assert partial_food == "Name: Chicken Fried Rice | Flavor: Chicken"
+
+
+def test_bm25_tf_and_last_token_dense_only_encode():
+    tf1 = EmbeddingEngine.compute_bm25_tf("Red Bull Energy Drink 250ml")
+    tf2 = EmbeddingEngine.compute_bm25_tf("Red Bull Energy Drink 250ml")
+    assert tf1 and tf1 == tf2
+    assert all(isinstance(k, int) and k > 0 and v > 0 for k, v in tf1.items())
+
+    eng = EmbeddingEngine.__new__(EmbeddingEngine)
+    eng.tokenizer = FakeTokenizer()
+    eng._emb_pooling = "last_token"
+
+    def last_token_hidden(inputs):
+        ids = inputs["input_ids"]
+        bsz = len(ids)
+        hidden = np.zeros((bsz, 1, 4), dtype=np.float32)
+        hidden[:, 0, 0] = 3.0
+        hidden[:, 0, 1] = 4.0
+        return [hidden]
+
+    eng.bi_session = FakeSession(last_token_hidden)
+    out = eng.encode(["101", "202"])
+    assert out["dense"].shape == (2, 4)
+    np.testing.assert_allclose(out["dense"][0], [0.6, 0.8, 0.0, 0.0], atol=1e-6)
+    assert len(out["bm25"]) == 2 and all(isinstance(s, dict) and len(s) > 0 for s in out["bm25"])
+    assert out["sparse"] == []
+
+
+def test_listwise_lbnl_reranker_groups_by_query_and_extracts_cosine():
+    class ListwiseTokenizer:
+        def encode(self, text):
+            return [1]
+
+        def __call__(self, prompts, **_kw):
+            prompt = prompts[0]
+            ids = []
+            for tok in prompt.replace("\n", " ").split(" "):
+                if "<|embed_token|>" in tok:
+                    ids.extend([10, 151670])
+                elif "<|rerank_token|>" in tok:
+                    ids.extend([10, 151671])
+                elif tok:
+                    ids.append(10)
+            arr = np.array([ids], dtype=np.int64)
+            return {"input_ids": arr, "attention_mask": np.ones_like(arr)}
+
+    eng = EmbeddingEngine.__new__(EmbeddingEngine)
+    eng._cross_arch = "listwise_lbnl"
+    eng._score_activation = "identity"
+    eng._doc_embed_token = "<|embed_token|>"
+    eng._query_embed_token = "<|rerank_token|>"
+    eng._doc_embed_token_id = 151670
+    eng._query_embed_token_id = 151671
+    eng.rerank_tokenizer = ListwiseTokenizer()
+
+    def lbnl_proj(inputs):
+        ids = inputs["input_ids"][0]
+        seq_len = len(ids)
+        emb = np.zeros((1, seq_len, 2), dtype=np.float32)
+        doc_positions = np.where(ids == 151670)[0]
+        q_positions = np.where(ids == 151671)[0]
+        for idx, pos in enumerate(doc_positions):
+            emb[0, pos] = [1.0, 0.0] if idx == 0 else [0.0, 1.0]
+        emb[0, q_positions[-1]] = [1.0, 0.0]
+        return [emb]
+
+    eng.cross_session = FakeSession(lbnl_proj)
+    pairs = [["Query A", "Doc 1"], ["Query A", "Doc 2"], ["Query B", "Doc 3"]]
+    scores = eng.score_cross_encoder(pairs, batch_size=30)
+
+    assert eng.cross_session.batch_sizes == [1, 1]
+    np.testing.assert_allclose(scores, [1.0, 0.0, 1.0], atol=1e-6)
+
+
+def test_config_folder_slug_and_strict_onnx_fail_fast(monkeypatch, tmp_path):
+    import pytest as _pytest
+
+    assert config.model_id_to_folder_name("BAAI/bge-m3") == "bge-m3"
+    assert (
+        config.model_id_to_folder_name("sentence-transformers/all-mpnet-base-v2")
+        == "all-mpnet-base-v2"
+    )
+    assert config.model_id_to_folder_name("jinaai/jina-reranker-v3.5") == "jina-reranker-v3.5"
+
+    missing = str(tmp_path / "missing_int8.onnx")
+    monkeypatch.setattr(config, "EMBEDDING_ONNX", missing)
+    with _pytest.raises(FileNotFoundError, match="FAIL-FAST"):
+        EmbeddingEngine()
+
+    import pandas as pd
+
+    from engine.nlp.ner_engine import NEREngine
+
+    monkeypatch.setattr(config, "GLINER_ONNX", missing)
+    with _pytest.raises(FileNotFoundError, match="FAIL-FAST"):
+        NEREngine(pd.DataFrame(), domain="market")
+
+
+def test_embedding_and_reranker_onnx_wrappers_cover_all_pooling_and_archs():
+    import torch
+
+    from scripts.sync import EmbeddingONNXWrapper, RerankerONNXWrapper
+
+    class _DummyEnc(torch.nn.Module):
+        def forward(self, input_ids, attention_mask, return_dict=True):
+            bsz, seq = input_ids.shape
+            hidden = torch.zeros((bsz, seq, 2), dtype=torch.float32)
+            hidden[:, 0, :] = torch.tensor([1.0, 0.0])  # CLS token
+            hidden[:, 1, :] = torch.tensor([0.0, 3.0])  # Real token 2
+            hidden[:, 2, :] = torch.tensor([99.0, 99.0])  # Padded token (masked out)
+            return type("Out", (), {"last_hidden_state": hidden})()
+
+    ids = torch.tensor([[10, 20, 0]], dtype=torch.long)
+    mask = torch.tensor([[1, 1, 0]], dtype=torch.long)
+
+    out_cls = EmbeddingONNXWrapper(_DummyEnc(), pooling="cls")(ids, mask)
+    np.testing.assert_allclose(out_cls.numpy(), [[1.0, 0.0]], atol=1e-6)
+
+    out_mean = EmbeddingONNXWrapper(_DummyEnc(), pooling="mean")(ids, mask)
+    np.testing.assert_allclose(out_mean.numpy(), [[0.5, 1.5]], atol=1e-6)
+
+    out_last = EmbeddingONNXWrapper(_DummyEnc(), pooling="last_token")(ids, mask)
+    np.testing.assert_allclose(out_last.numpy(), [[0.0, 3.0]], atol=1e-6)
+
+    sparse_head = torch.nn.Linear(2, 1, bias=False)
+    with torch.no_grad():
+        sparse_head.weight.copy_(torch.tensor([[1.0, 2.0]]))
+    out_d, out_s = EmbeddingONNXWrapper(_DummyEnc(), pooling="cls", sparse_linear=sparse_head)(
+        ids, mask
+    )
+    assert out_d.shape == (1, 2)
+    assert out_s.shape == (1, 3)
+
+    class _DummyCE(torch.nn.Module):
+        def forward(self, input_ids, attention_mask, return_dict=True):
+            return type("Out", (), {"logits": torch.tensor([[0.0], [2.0]])})()
+
+    logits = RerankerONNXWrapper(_DummyCE(), arch_type="cross_encoder")(ids[:1], mask[:1])
+    assert logits.shape == (2, 1)
+
+
+def test_unified_sync_cli_parser_and_stage_modes():
+    from scripts.sync import build_parser, resolve_stage_modes
+
+    parser = build_parser()
+
+    assert resolve_stage_modes(parser.parse_args([])) == {
+        "models": "sync",
+        "db": "sync",
+        "cache": "sync",
+        "qdrant": "sync",
+        "arcface": "sync",
+    }
+    assert resolve_stage_modes(parser.parse_args(["--rebuild"])) == {
+        "models": "rebuild",
+        "db": "rebuild",
+        "cache": "rebuild",
+        "qdrant": "rebuild",
+        "arcface": "rebuild",
+    }
+    assert resolve_stage_modes(parser.parse_args(["--sample"])) == {
+        "models": "rebuild",
+        "db": "rebuild",
+        "cache": "rebuild",
+        "qdrant": "rebuild",
+        "arcface": "rebuild",
+    }
+
+    args_emb = parser.parse_args(["--models", "rebuild", "--model-target", "embedding"])
+    assert args_emb.model_target == "embedding"
+    assert resolve_stage_modes(args_emb) == {
+        "models": "rebuild",
+        "db": None,
+        "cache": None,
+        "qdrant": None,
+        "arcface": None,
+    }
+
+    args_mixed = parser.parse_args(["--models", "export", "--rebuild"])
+    assert resolve_stage_modes(args_mixed) == {
+        "models": "export",
+        "db": "rebuild",
+        "cache": "rebuild",
+        "qdrant": "rebuild",
+        "arcface": "rebuild",
+    }
+
+    args_arc = parser.parse_args(["--arcface", "rebuild", "--epochs", "7"])
+    assert args_arc.epochs == 7
+    assert resolve_stage_modes(args_arc) == {
+        "models": None,
+        "db": None,
+        "cache": None,
+        "qdrant": None,
+        "arcface": "rebuild",
+    }
+
+
+def test_refresh_model_config_updates_paths_and_dim(tmp_path, monkeypatch):
+    import json
+    import os
+
+    from engine import config
+
+    model_dir = tmp_path / "all-mpnet-base-v2"
+    model_dir.mkdir()
+    (model_dir / "model_manifest.json").write_text(
+        json.dumps({"embedding_dim": 768, "pooling": "mean", "has_learned_sparse": False}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config, "EMBEDDING_ROOT_DIR", str(tmp_path))
+    monkeypatch.setenv("EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2")
+    monkeypatch.setenv("EMBEDDING_POOLING", "mean")
+    try:
+        config.refresh_model_config()
+        assert config.EMBEDDING_MODEL == "sentence-transformers/all-mpnet-base-v2"
+        assert config.EMBEDDING_DIM == 768
+        assert config.EMBEDDING_ONNX == os.path.join(str(model_dir), "model_int8.onnx")
+        assert config.has_learned_sparse() is False
+    finally:
+        monkeypatch.undo()
+        config.refresh_model_config()
+
+
+def test_thresholds_adapt_to_reranker_arch(tmp_path, monkeypatch):
+    import json
+
+    from engine import config
+
+    lbnl_dir = tmp_path / "jina-reranker-v3.5"
+    lbnl_dir.mkdir()
+    (lbnl_dir / "model_manifest.json").write_text(
+        json.dumps({"arch_type": "listwise_lbnl"}), encoding="utf-8"
+    )
+
+    ce_dir = tmp_path / "bge-reranker-v2-m3"
+    ce_dir.mkdir()
+    (ce_dir / "model_manifest.json").write_text(
+        json.dumps({"arch_type": "cross_encoder"}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(config, "RERANKER_ROOT_DIR", str(tmp_path))
+    try:
+        monkeypatch.setenv("RERANKER_MODEL", "jinaai/jina-reranker-v3.5")
+        config.refresh_model_config()
+        assert (
+            config.CONFIDENCE_THRESHOLD_HIGH,
+            config.CONFIDENCE_THRESHOLD_MEDIUM,
+            config.RERANKER_THRESHOLD,
+            config.RERANKER_MARGIN,
+        ) == (0.62, 0.35, 0.30, 0.40)
+
+        monkeypatch.setenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+        config.refresh_model_config()
+        assert (
+            config.CONFIDENCE_THRESHOLD_HIGH,
+            config.CONFIDENCE_THRESHOLD_MEDIUM,
+            config.RERANKER_THRESHOLD,
+            config.RERANKER_MARGIN,
+        ) == (0.75, 0.45, 0.45, 0.15)
+    finally:
+        monkeypatch.undo()
+        config.refresh_model_config()
+
+
+def test_refresh_model_config_resets_when_env_unset(monkeypatch, tmp_path):
+    from engine import config
+
+    monkeypatch.setattr(config, "EMBEDDING_ROOT_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "RERANKER_ROOT_DIR", str(tmp_path))
+    monkeypatch.setenv("EMBEDDING_MODEL", "custom/emb-x")
+    monkeypatch.setenv("EMBEDDING_POOLING", "cls")
+    monkeypatch.setenv("RERANKER_MODEL", "custom/rerank-x")
+    try:
+        config.refresh_model_config()
+        assert config.EMBEDDING_MODEL == "custom/emb-x"
+        assert config.EMBEDDING_POOLING == "cls"
+        assert config.RERANKER_MODEL == "custom/rerank-x"
+
+        monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+        monkeypatch.delenv("EMBEDDING_POOLING", raising=False)
+        monkeypatch.delenv("RERANKER_MODEL", raising=False)
+        config.refresh_model_config()
+        assert config.EMBEDDING_MODEL == config._DEFAULT_EMBEDDING_MODEL
+        assert config.EMBEDDING_POOLING == config._DEFAULT_EMBEDDING_POOLING
+        assert config.RERANKER_MODEL == config._DEFAULT_RERANKER_MODEL
+    finally:
+        monkeypatch.undo()
+        config.refresh_model_config()
+
+
+def test_embedding_engine_empty_and_left_padded_pooling():
+    import threading
+    from collections import OrderedDict
+    from unittest.mock import MagicMock
+
+    eng = EmbeddingEngine.__new__(EmbeddingEngine)
+    eng.has_learned_sparse = False
+    eng.pooling = "last_token"
+    eng._cache_lock = threading.RLock()
+    eng._str_cache = OrderedDict()
+
+    seen_batches = []
+
+    def _tok(texts, **_kw):
+        seen_batches.append(list(texts))
+        n = len(texts)
+        return {
+            "input_ids": np.ones((n, 3), dtype=np.int64),
+            "attention_mask": np.array([[1, 1, 0]] * n, dtype=np.int64),
+        }
+
+    eng.tokenizer = _tok
+    fake_sess = MagicMock()
+    fake_sess.get_inputs.return_value = [
+        SimpleNamespace(name="input_ids"),
+        SimpleNamespace(name="attention_mask"),
+    ]
+    fake_sess.run.side_effect = lambda _out, inp: [
+        np.ones((inp["input_ids"].shape[0], 3, 4), dtype=np.float32) * 2.0
+    ]
+    eng.bi_session = fake_sess
+
+    res = eng.encode(["", "   ", "hello world"])
+    assert seen_batches == [["hello world"]]
+    assert np.allclose(res["dense"][0], 0.0)
+    assert np.allclose(res["dense"][1], 0.0)
+    assert np.isclose(np.linalg.norm(res["dense"][2]), 1.0, atol=1e-4)
+    assert "" not in eng._str_cache
+    assert "   " not in eng._str_cache
+    assert "hello world" in eng._str_cache
+
+    hidden = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+    # Row 0 left-padded [0, 1, 1] -> token index 2; Row 1 right-padded [1, 1, 0] -> token index 1
+    attn = np.array([[0, 1, 1], [1, 1, 0]], dtype=np.int64)
+    pooled = EmbeddingEngine._pool_hidden_states(hidden, attn, "last_token")
+    assert np.allclose(pooled[0], hidden[0, 2])
+    assert np.allclose(pooled[1], hidden[1, 1])
+
+
+def test_reranker_wrapper_listwise_lbnl():
+    torch = pytest.importorskip("torch")
+    nn = pytest.importorskip("torch.nn")
+    from scripts.sync import RerankerONNXWrapper
+
+    class _FakeBackbone(nn.Module):
+        def forward(self, input_ids, attention_mask, return_dict=True):
+            b, s = input_ids.shape
+            return SimpleNamespace(last_hidden_state=torch.ones(b, s, 4, dtype=torch.float32))
+
+    class _FakeLBNLModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = _FakeBackbone()
+            self.projector = nn.Linear(4, 2, bias=False)
+            nn.init.constant_(self.projector.weight, 0.5)
+
+    wrapper = RerankerONNXWrapper(_FakeLBNLModel(), arch_type="listwise_lbnl")
+    wrapper.eval()
+    out = wrapper(torch.ones((1, 3), dtype=torch.long), torch.ones((1, 3), dtype=torch.long))
+    assert out.shape == (1, 3, 2)
+    assert torch.allclose(out, torch.full((1, 3, 2), 2.0))
+
+
+def test_sync_models_single_target_subprocess_and_cache_wipe(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+
+    import scripts.sync as sync_mod
+    from engine import config
+
+    monkeypatch.setattr(config, "RERANKER_ONNX_INT8", str(tmp_path / "missing_rerank_int8.onnx"))
+    monkeypatch.setattr(sync_mod, "export_reranker", MagicMock(return_value=True))
+    monkeypatch.setattr(sync_mod, "export_embedding", MagicMock(return_value=False))
+    monkeypatch.setattr(sync_mod, "export_gliner", MagicMock())
+    monkeypatch.setattr(sync_mod, "wipe_embedding_caches", MagicMock())
+    monkeypatch.setattr(config, "refresh_model_config", MagicMock())
+    mock_sub = MagicMock()
+    monkeypatch.setattr(sync_mod.subprocess, "run", mock_sub)
+
+    sync_mod.sync_models(mode="rebuild", target="reranker")
+
+    mock_sub.assert_called_once()
+    cmd = mock_sub.call_args.args[0]
+    assert "--models" in cmd
+    assert cmd[cmd.index("--models") + 1] == "quantize"
+    assert cmd[cmd.index("--model-target") + 1] == "reranker"
+    sync_mod.wipe_embedding_caches.assert_not_called()

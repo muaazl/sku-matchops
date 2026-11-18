@@ -141,6 +141,11 @@ class TextPipeline:
         text = re.sub(r"(\d+)([a-z]+)", r"\1 \2", text)
         text = re.sub(r"(\d+(\.\d+)?)\s*[a-z]+\s*-\s*(\d+(\.\d+)?)\s*[a-z]+", "", text)
 
+        def _fmt_num(x: float) -> str:
+            if abs(x - round(x)) < 1e-9:
+                return str(int(round(x)))
+            return f"{round(x, 4):.4f}".rstrip("0").rstrip(".")
+
         def calc_multipack(match: re.Match, reverse: bool = False) -> str:
             count_grp, size_grp, unit_grp = (1, 2, 4) if not reverse else (4, 1, 3)
             count = float(match.group(count_grp))
@@ -150,8 +155,8 @@ class TextPipeline:
             normalized = UnitUtils.normalize_value(total, unit)
             if normalized:
                 val, base_unit, _ = normalized
-                return f"{int(val)}{base_unit} "
-            return f"{int(total)}{unit} "
+                return f"{_fmt_num(val)}{base_unit} "
+            return f"{_fmt_num(total)}{unit} "
 
         text = re.sub(r"(\d+)\s*[xX]\s*(\d+(\.\d+)?)\s*([a-z]+)", calc_multipack, text)
         text = re.sub(
@@ -166,7 +171,7 @@ class TextPipeline:
             normalized = UnitUtils.normalize_value(val, unit)
             if normalized:
                 norm_val, base_unit, _ = normalized
-                return f"{int(norm_val)}{base_unit}"
+                return f"{_fmt_num(norm_val)}{base_unit}"
             return match.group(0)
 
         text = re.sub(r"\b(\d+(\.\d+)?)\s?([a-z]+)\b", convert_match, text)

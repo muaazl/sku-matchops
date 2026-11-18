@@ -17,11 +17,11 @@ logger = logging.getLogger("matchops.classifier")
 
 class ZeroShotClassifier:
     """
-    Classifies SKU Basic Type and a third tag (Region/Category) using bge-m3 embeddings.
+    Classifies SKU Basic Type and a third tag (Region/Category) using active embedding vectors.
 
     Modes (auto-selected at startup):
-      • trained  — LogisticRegression on bge-m3 embeddings, trained from
-                   data/training_data.csv.  Most accurate.
+      • trained  — LogisticRegression / ArcFace on dense SKU embeddings, trained from
+                   the synced catalog. Most accurate.
       • zero-shot— Cosine similarity to BT/Third Tag description embeddings.
                    Works with zero labeled data.
 
@@ -130,7 +130,7 @@ class ZeroShotClassifier:
             raise RuntimeError(
                 f"[FAIL-FAST] Domain '{self.domain}' is configured with BT_MODEL='arcface', "
                 f"but required ONNX model file '{onnx_path}' or label mapping '{labels_path}' is missing. "
-                f"Please train and export the model using 'python -m scripts.ml.train_bt_head --domain {self.domain}' "
+                f"Please train and export the model using 'python -m scripts.sync --arcface rebuild --domain {self.domain}' "
                 f"or configure {self.domain.upper()}_BT_MODEL=logreg in your environment."
             )
 
@@ -217,7 +217,7 @@ class ZeroShotClassifier:
         from engine.config import CLASSIFIER_WEIGHTS
 
         if not names_list:
-            return np.empty((0, 1024))
+            return np.empty((0, config.EMBEDDING_DIM))
 
         cache_file = os.path.join(self.cache_dir, f"{self.domain}_weighted_skus_cache.pkl")
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -225,7 +225,17 @@ class ZeroShotClassifier:
         sku_cache = {}
         if os.path.exists(cache_file):
             try:
-                sku_cache = joblib.load(cache_file)
+                loaded_cache = joblib.load(cache_file)
+                cached_model = (
+                    loaded_cache.get("__embedding_model__")
+                    if isinstance(loaded_cache, dict)
+                    else None
+                )
+                if isinstance(loaded_cache, dict) and cached_model in (
+                    None,
+                    config.EMBEDDING_MODEL,
+                ):
+                    sku_cache = loaded_cache
             except Exception:
                 sku_cache = {}
 
@@ -259,6 +269,7 @@ class ZeroShotClassifier:
                 key = keys[i]
                 sku_cache[key] = dense_vectors[idx]
 
+            sku_cache["__embedding_model__"] = config.EMBEDDING_MODEL
             # Save the updated cache
             joblib.dump(sku_cache, cache_file)
             logger.info(f"[EMBED] {self.domain} classifier training: cache updated.")
@@ -522,15 +533,7 @@ class ZeroShotClassifier:
         """
         vec_2d = vec.reshape(1, -1) if vec.ndim == 1 else vec
         p_val = float(price) if price is not None else 0.0
-
-        # Check for dynamic zero-shot classes that may match with high cross-encoder confidence
         cold_router = getattr(self, "cold_start_router", None)
-        if cold_router is not None and cold_router.registry.zero_shot_classes and sku_name:
-            zs_tag, zs_conf, zs_src = cold_router.tier1_zero_shot.predict(
-                sku_name, sku_description, query_dense=vec_2d[0]
-            )
-            if zs_conf >= config.AUTO_THRESHOLD and zs_tag:
-                return zs_tag, zs_conf, zs_src, []
 
         # 1. Deep Metric Learning ArcFace Model Path
         if self.bt_model == "arcface" and getattr(self, "_arcface_session", None) is not None:
@@ -545,7 +548,7 @@ class ZeroShotClassifier:
             probas = (exp_logits / np.sum(exp_logits, axis=-1, keepdims=True))[0]
             best = int(np.argmax(probas))
             conf = float(probas[best])
-            if conf >= 0.4:
+            if conf >= config.BT_TRAINED_CONFIDENCE_THRESHOLD:
                 return self._arcface_classes[best], conf, "trained", []
 
         # 2. Logistic Regression Model Path
@@ -559,7 +562,7 @@ class ZeroShotClassifier:
             proba = self._bt_clf.predict_proba(vec_with_price)[0]
             best = int(np.argmax(proba))
             conf = float(proba[best])
-            if conf >= 0.4:
+            if conf >= config.BT_TRAINED_CONFIDENCE_THRESHOLD:
                 return self._bt_enc.classes_[best], conf, "trained", []
 
         # 3. Cold-Start to Warm-Start Multi-Tier Fallback (Tier 1 Zero-Shot, Tier 2 Few-Shot, Tier 3 Centroids)
@@ -787,7 +790,7 @@ class ZeroShotClassifier:
             proba = self._third_tag_clf.predict_proba(vec_with_price)[0]
             best = int(np.argmax(proba))
             conf = float(proba[best])
-            if conf >= 0.4:
+            if conf >= config.BT_TRAINED_CONFIDENCE_THRESHOLD:
                 return self._third_tag_enc.classes_[best], conf, "trained"
 
         # Zero-shot
@@ -847,7 +850,7 @@ class ZeroShotClassifier:
             confs = np.max(probas, axis=1)
 
             for list_idx, orig_idx in enumerate(remaining_indices):
-                if confs[list_idx] >= 0.4:
+                if confs[list_idx] >= config.BT_TRAINED_CONFIDENCE_THRESHOLD:
                     results[orig_idx] = (
                         self._third_tag_enc.classes_[bests[list_idx]],
                         float(confs[list_idx]),

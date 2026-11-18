@@ -3,12 +3,11 @@ import re
 
 import numpy as np
 
+from engine import config
 from engine.config import (
     ALPHA,
     AUTO_THRESHOLD,
     FUSION_METHOD,
-    RERANKER_MARGIN,
-    RERANKER_THRESHOLD,
     REVIEW_THRESHOLD,
     RRF_K,
     TAG_SEARCH_LIMIT,
@@ -26,11 +25,37 @@ def get_status(confidence: float, has_tags: bool, source: str = "") -> str:
         return "LOW"
     if source in ("override", "keyword"):
         return "AUTO"
-    if confidence >= AUTO_THRESHOLD:
+    if source == "reranker":
+        auto_thr = config.CONFIDENCE_THRESHOLD_HIGH
+        review_thr = config.RERANKER_THRESHOLD
+    else:
+        auto_thr = AUTO_THRESHOLD
+        review_thr = REVIEW_THRESHOLD
+    if confidence >= auto_thr:
         return "AUTO"
-    if confidence >= REVIEW_THRESHOLD:
+    if confidence >= review_thr:
         return "REVIEW"
     return "LOW"
+
+
+def resolve_gk_confidence_and_status(
+    trained_conf: float,
+    trained_source: str,
+    final_conf: float,
+    used_reranker: bool,
+    has_tags: bool,
+) -> tuple[float, str, str]:
+    """Selects calibrated GK confidence, status, and winning source across trained vs reranked paths."""
+    if trained_source == "trained" and trained_conf >= AUTO_THRESHOLD:
+        gk_conf = float(trained_conf)
+        gk_source = "trained"
+    elif used_reranker:
+        gk_conf = float(final_conf)
+        gk_source = "reranker"
+    else:
+        gk_conf = float(final_conf)
+        gk_source = ""
+    return gk_conf, get_status(gk_conf, has_tags, gk_source), gk_source
 
 
 def compute_weighted_confidence(
@@ -79,21 +104,20 @@ def compute_weighted_confidence(
     return round(sum(c * (w / total_w) for c, w in zip(confs, weights)), 4)
 
 
-def _rrf_fusion(dense_results, sparse_results, k=RRF_K) -> list:
-    """Reciprocal Rank Fusion"""
+def _rrf_fusion(
+    dense_results,
+    bm25_results,
+    sparse_results=None,
+    k=RRF_K,
+) -> list:
+    """Reciprocal Rank Fusion across Dense, BM25, and optional BGE-M3 learned sparse hits."""
     scores = {}
-
-    for rank, hit in enumerate(dense_results):
-        tag = hit.payload.get("tag")
-        if tag not in scores:
-            scores[tag] = 0
-        scores[tag] += 1 / (k + rank + 1)
-
-    for rank, hit in enumerate(sparse_results):
-        tag = hit.payload.get("tag")
-        if tag not in scores:
-            scores[tag] = 0
-        scores[tag] += 1 / (k + rank + 1)
+    for rank_list in (dense_results, bm25_results, sparse_results):
+        if not rank_list:
+            continue
+        for rank, hit in enumerate(rank_list):
+            tag = hit.payload.get("tag")
+            scores[tag] = scores.get(tag, 0.0) + 1.0 / (k + rank + 1)
 
     fused = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [{"tag": tag, "score": score, "source": "rrf"} for tag, score in fused]
@@ -109,17 +133,21 @@ def _get_gk_regex(gk_tuple: tuple[str, ...]) -> re.Pattern:
     return re.compile(pattern_str)
 
 
-def _weighted_fusion(dense_results, sparse_results, alpha=ALPHA) -> list:
-    """Weighted Sum Fusion"""
+def _weighted_fusion(dense_results, bm25_results, sparse_results=None, alpha=ALPHA) -> list:
+    """Weighted Sum Fusion across Dense, BM25, and optional BGE-M3 learned sparse hits."""
     scores = {}
 
-    for hit in dense_results:
+    for hit in dense_results or ():
         tag = hit.payload.get("tag")
         scores[tag] = scores.get(tag, 0) + alpha * hit.score
 
-    for hit in sparse_results:
-        tag = hit.payload.get("tag")
-        scores[tag] = scores.get(tag, 0) + (1 - alpha) * hit.score
+    lexical_lists = [lst for lst in (bm25_results, sparse_results) if lst]
+    if lexical_lists:
+        lex_weight = (1 - alpha) / len(lexical_lists)
+        for lst in lexical_lists:
+            for hit in lst:
+                tag = hit.payload.get("tag")
+                scores[tag] = scores.get(tag, 0) + lex_weight * hit.score
 
     fused = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [{"tag": tag, "score": score, "source": "weighted"} for tag, score in fused]
@@ -150,46 +178,6 @@ def _resolve_flavors_from_text(text: str, flavors_dict: dict) -> set:
             if canonical:
                 result.add(canonical)
     return result
-
-
-def match_bt(
-    vec_dense,
-    classifier,
-    extracted_flavors=None,
-    known_flavors=None,
-    price=None,
-    sku_name: str = "",
-    sku_description: str = "",
-) -> tuple[str, float, str, list[str]]:
-    bt_tag, confidence, source, propagated_gks = classifier.predict_bt(
-        vec_dense, price=price, sku_name=sku_name, sku_description=sku_description
-    )
-    if confidence < REVIEW_THRESHOLD:
-        return "", confidence, source, propagated_gks
-
-    # Flavor Conflict: checks for conflicts using the dynamic flavors dict.
-    if extracted_flavors and bt_tag:
-        bt_flavors = _resolve_flavors_from_text(bt_tag, classifier.food_flavors_dict)
-        # extracted_flavors is a list of flavor strings from the input SKU
-        input_flavors = set()
-        for f in extracted_flavors:
-            input_flavors.update(_resolve_flavors_from_text(f, classifier.food_flavors_dict))
-
-        if bt_flavors and input_flavors and bt_flavors.isdisjoint(input_flavors):
-            return "", 0.0, "conflict", propagated_gks
-
-    return bt_tag, confidence, source, propagated_gks
-
-
-def match_third_tag(
-    vec_dense, sku_name, description, classifier, predicted_bt="", price=None
-) -> tuple[str, float, str]:
-    tag, conf, source = classifier.predict_third_tag(
-        vec_dense, sku_name, description, predicted_bt, price=price
-    )
-    if source != "override" and conf < REVIEW_THRESHOLD:
-        return "", conf, source
-    return tag, conf, source
 
 
 class DomainStrategy:
@@ -289,7 +277,7 @@ class FoodStrategy(DomainStrategy):
 
     @staticmethod
     def get_reranker_threshold(score: float, tag_lower: str, allowed_gks_lower: set) -> bool:
-        return tag_lower in allowed_gks_lower and score >= RERANKER_THRESHOLD
+        return tag_lower in allowed_gks_lower and score >= config.RERANKER_THRESHOLD
 
     @staticmethod
     def filter_final_trained_gk(trained_gk: list, allowed_gks_lower: set) -> list:
@@ -343,8 +331,8 @@ class MarketStrategy(DomainStrategy):
     @staticmethod
     def get_reranker_threshold(score: float, tag_lower: str, allowed_gks_lower: set) -> bool:
         if allowed_gks_lower:
-            return tag_lower in allowed_gks_lower and score >= RERANKER_THRESHOLD
-        return score >= RERANKER_THRESHOLD
+            return tag_lower in allowed_gks_lower and score >= config.RERANKER_THRESHOLD
+        return score >= config.RERANKER_THRESHOLD
 
     @staticmethod
     def filter_final_trained_gk(trained_gk: list, allowed_gks_lower: set) -> list:
@@ -359,159 +347,6 @@ def get_strategy(domain: str) -> DomainStrategy:
     elif domain == "market":
         return MarketStrategy()
     return DomainStrategy()
-
-
-def match_gk_hybrid(
-    sku_name,
-    description,
-    query_dense,
-    query_sparse,
-    vector_store,
-    reranker,
-    classifier,
-    bt: str,
-    market_brand: str = "",
-    category: str = "",
-    extracted_flavors: list = None,
-    price=None,
-) -> tuple[list[str], float]:
-    strategy = get_strategy(classifier.domain)
-
-    # 1. Guaranteed tags from classifier
-    guaranteed = classifier.get_guaranteed_gk(bt)
-    if not isinstance(guaranteed, list):
-        guaranteed = list(guaranteed)
-
-    # 2. Trained GK tags
-    trained_gk, trained_conf, source = classifier.predict_gk(query_dense, price=price)
-
-    # 3. Build the allowed GK list from bt_gk_map for this BT
-    bt_gk_map = getattr(classifier, "bt_gk_map", {})
-    allowed_gks_for_bt = bt_gk_map.get(bt, [])
-    allowed_gks_lower = {kw.lower().strip() for kw in allowed_gks_for_bt}
-
-    # ── BT-as-GK fallback (only if BT exists as a known GK) ────────────────
-    if bt and bt not in guaranteed:
-        bt_lower = bt.lower().strip()
-        all_known_gks_lower: set = set()
-        for gk_list in bt_gk_map.values():
-            for gk in gk_list:
-                all_known_gks_lower.add(gk.lower().strip())
-        if bt_lower in all_known_gks_lower:
-            guaranteed.append(bt)
-
-    # ── Literal text match from SKU Name ────────────────────────────────────
-    sku_name_lower = sku_name.lower()
-
-    if allowed_gks_for_bt:
-        gk_pool = [gk.lower().strip() for gk in allowed_gks_for_bt if gk.strip()]
-        gk_map = {gk.lower().strip(): gk for gk in allowed_gks_for_bt if gk.strip()}
-    else:
-        gk_map = {}
-        for gk_list in bt_gk_map.values():
-            for gk in gk_list:
-                clean = gk.lower().strip()
-                if clean and clean not in gk_map:
-                    gk_map[clean] = gk
-        gk_pool = list(gk_map.keys())
-
-    if gk_pool:
-        pattern = _get_gk_regex(tuple(gk_pool))
-        for match in pattern.finditer(sku_name_lower):
-            matched_gk_lower = match.group(1)
-            original_gk = gk_map[matched_gk_lower]
-            if original_gk not in guaranteed:
-                guaranteed.append(original_gk)
-
-    # Strategy: filter search tags
-    search_allowed_tags, early_return = strategy.filter_search_tags(
-        allowed_gks_for_bt, trained_conf, source, guaranteed
-    )
-    if early_return is not None:
-        return early_return
-
-    # 4. Hybrid Search
-    dense_hits, sparse_hits = vector_store.search_hybrid_tags(
-        dense_query=query_dense,
-        sparse_query=query_sparse,
-        limit=TAG_SEARCH_LIMIT,
-        filter_dict_type="gk",
-        domain=classifier.domain,
-        allowed_tags=search_allowed_tags,
-    )
-
-    if FUSION_METHOD == "rrf":
-        fused_candidates = _rrf_fusion(dense_hits, sparse_hits)
-    else:
-        fused_candidates = _weighted_fusion(dense_hits, sparse_hits)
-
-    top_candidates = fused_candidates[:TOP_K_FUSED]
-
-    # Strategy: post search filters
-    top_candidates = strategy.apply_post_search_filters(top_candidates, allowed_gks_lower)
-
-    # Strategy: Inject synthetic tags
-    top_candidates = strategy.inject_synthetic_tags(
-        top_candidates, market_brand, bt, category, extracted_flavors
-    )
-
-    # Strategy: GK Flavor Leak & Conflict Filters
-    ner_engine = getattr(classifier, "ner_engine", None)
-    guaranteed, trained_gk, top_candidates = strategy.apply_flavor_leak_filters(
-        guaranteed, trained_gk, top_candidates, extracted_flavors, ner_engine
-    )
-
-    # 5. Reranking Layer
-    reranked_tags = []
-    final_conf = 0.0
-
-    if top_candidates and USE_RERANKER and reranker is not None:
-        query_text = (sku_name + " " + description).strip()
-        pairs = [[query_text, c["tag"]] for c in top_candidates]
-
-        raw_scores = reranker.predict(pairs)
-
-        if isinstance(raw_scores, float) or (hasattr(raw_scores, "item") and raw_scores.ndim == 0):
-            scores = [float(raw_scores)]
-        else:
-            scores = [float(s) for s in raw_scores]
-
-        scored_candidates = []
-        for c, score in zip(top_candidates, scores):
-            tag_lower = c["tag"].lower().strip()
-            if strategy.get_reranker_threshold(score, tag_lower, allowed_gks_lower):
-                scored_candidates.append((c["tag"], score))
-
-        scored_candidates.sort(key=lambda x: x[1], reverse=True)
-
-        if scored_candidates:
-            top_score = scored_candidates[0][1]
-            margin_cutoff = max(RERANKER_THRESHOLD, top_score - RERANKER_MARGIN)
-            scored_candidates = [c for c in scored_candidates if c[1] >= margin_cutoff]
-
-        reranked_tags = [tag for tag, score in scored_candidates]
-        if scored_candidates:
-            final_conf = scored_candidates[0][1]
-    else:
-        reranked_tags = [c["tag"] for c in top_candidates]
-        if top_candidates:
-            final_conf = min(1.0, top_candidates[0]["score"])
-
-    seen = set()
-    merged = []
-
-    # Strategy: filter final trained gk
-    trained_gk = strategy.filter_final_trained_gk(trained_gk, allowed_gks_lower)
-
-    for tag in guaranteed + trained_gk + reranked_tags:
-        key = tag.lower().strip()
-        if key not in seen:
-            seen.add(key)
-            merged.append(tag)
-
-    conf = trained_conf if (source == "trained" and trained_conf >= AUTO_THRESHOLD) else final_conf
-
-    return merged, conf
 
 
 def tag_all_skus(
@@ -569,13 +404,16 @@ def tag_all_skus(
     if progress_callback:
         progress_callback(15.0)
 
-    # Extract dense and sparse vectors
+    # Extract dense, BM25, and optional BGE-M3 learned sparse vectors
     if isinstance(query_embeddings, dict):
         dense_vecs = np.asarray(query_embeddings["dense"])
-        sparse_vecs = query_embeddings["sparse"]
+        bm25_vecs = query_embeddings.get("bm25") or [{} for _ in range(len(dense_vecs))]
+        sparse_vecs = query_embeddings.get("sparse") or []
     else:
         dense_vecs = np.array([q["dense"] for q in query_embeddings])
-        sparse_vecs = [q["sparse"] for q in query_embeddings]
+        bm25_vecs = [q.get("bm25", {}) for q in query_embeddings]
+        raw_sp = [q.get("sparse") for q in query_embeddings]
+        sparse_vecs = [s or {} for s in raw_sp] if any(s for s in raw_sp) else []
 
     # 2. Batch predict BT (using multi-tier cold-start to warm-start fallback)
     raw_bt_preds = classifier.batch_predict_bt(
@@ -699,11 +537,16 @@ def tag_all_skus(
     # 6. Execute Batch Vector Store Search
     gk_final_results = {}
     for i, early_res in early_return_results.items():
-        gk_final_results[i] = early_res
+        _, tr_conf, tr_src = trained_gk_preds[i]
+        early_conf, early_status, _ = resolve_gk_confidence_and_status(
+            tr_conf, tr_src, early_res[1], False, bool(early_res[0])
+        )
+        gk_final_results[i] = (early_res[0], early_conf, early_status)
 
     if needs_search_indices:
         search_dense = [dense_vecs[i] for i in needs_search_indices]
-        search_sparse = [sparse_vecs[i] for i in needs_search_indices]
+        search_bm25 = [bm25_vecs[i] if i < len(bm25_vecs) else {} for i in needs_search_indices]
+        search_sparse = [sparse_vecs[i] for i in needs_search_indices] if sparse_vecs else None
         search_allowed = [all_search_allowed_tags[i] for i in needs_search_indices]
 
         batch_search_hits = vector_store.search_batch_hybrid_tags(
@@ -713,6 +556,7 @@ def tag_all_skus(
             domain=classifier.domain,
             allowed_tags_list=search_allowed,
             limit=TAG_SEARCH_LIMIT,
+            bm25_queries=search_bm25,
         )
 
         if is_cancelled and is_cancelled():
@@ -726,11 +570,11 @@ def tag_all_skus(
         per_item_top_candidates = []
 
         for list_idx, orig_idx in enumerate(needs_search_indices):
-            dense_hits, sparse_hits = batch_search_hits[list_idx]
+            dense_hits, bm25_hits, sparse_hits = batch_search_hits[list_idx]
             if FUSION_METHOD == "rrf":
-                fused = _rrf_fusion(dense_hits, sparse_hits)
+                fused = _rrf_fusion(dense_hits, bm25_hits, sparse_hits)
             else:
-                fused = _weighted_fusion(dense_hits, sparse_hits)
+                fused = _weighted_fusion(dense_hits, bm25_hits, sparse_hits)
             top_candidates = fused[:TOP_K_FUSED]
             top_candidates = strategy.apply_post_search_filters(
                 top_candidates, all_allowed_gks_lower[orig_idx]
@@ -797,10 +641,13 @@ def tag_all_skus(
             scored_candidates = scored_candidates_per_item[list_idx]
             scored_candidates.sort(key=lambda x: x[1], reverse=True)
 
-            if USE_RERANKER and reranker is not None and top_candidates:
+            used_reranker = bool(USE_RERANKER and reranker is not None and top_candidates)
+            if used_reranker:
                 if scored_candidates:
                     top_score = scored_candidates[0][1]
-                    margin_cutoff = max(RERANKER_THRESHOLD, top_score - RERANKER_MARGIN)
+                    margin_cutoff = max(
+                        config.RERANKER_THRESHOLD, top_score - config.RERANKER_MARGIN
+                    )
                     scored_candidates = [c for c in scored_candidates if c[1] >= margin_cutoff]
                 reranked_tags = [tag for tag, score in scored_candidates]
                 final_conf = scored_candidates[0][1] if scored_candidates else 0.0
@@ -821,12 +668,10 @@ def tag_all_skus(
                     seen.add(key)
                     merged.append(tag)
 
-            conf = (
-                trained_conf
-                if (trained_source == "trained" and trained_conf >= AUTO_THRESHOLD)
-                else final_conf
+            gk_conf, gk_status, _ = resolve_gk_confidence_and_status(
+                trained_conf, trained_source, final_conf, used_reranker, bool(merged)
             )
-            gk_final_results[orig_idx] = (merged, conf)
+            gk_final_results[orig_idx] = (merged, gk_conf, gk_status)
 
     # 10. Assemble Final Output Dicts
     results = []
@@ -839,13 +684,13 @@ def tag_all_skus(
 
     for i in range(n):
         bt_tag, bt_conf, bt_source = bt_results[i]
-        gk_tags, gk_conf = gk_final_results.get(i, ([], 0.0))
+        gk_tags, gk_conf, gk_status = gk_final_results.get(i, ([], 0.0, "LOW"))
         third_tag_name, third_tag_conf, third_tag_source = third_tag_results[i]
 
         res = {
             "suggested_gk": ", ".join(gk_tags),
             "gk_confidence": round(gk_conf, 3),
-            "gk_status": get_status(gk_conf, bool(gk_tags)),
+            "gk_status": gk_status,
             "suggested_bt": bt_tag,
             "bt_confidence": round(bt_conf, 3),
             "bt_status": get_status(bt_conf, bool(bt_tag), bt_source),

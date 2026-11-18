@@ -114,6 +114,27 @@ class CacheManager:
         """Stable, cross-session deterministic hash of a DataFrame's content, ignoring order and formatting quirks."""
         return calculate_df_hash(df, domain=domain)
 
+    @staticmethod
+    def _is_missing_scalar(val) -> bool:
+        """Type-safe missing check that handles dicts, lists, None, pd.NA, and NaN."""
+        return val is None or val is pd.NA or (isinstance(val, float) and val != val)
+
+    @staticmethod
+    def populate_basic_nlp_features(df: pd.DataFrame) -> pd.DataFrame:
+        """Computes clean_text, weight_val, token_count, and clean_no_weights on a catalog DataFrame."""
+        from engine.nlp.text_cleaner import TextPipeline
+
+        df["clean_text"] = (
+            df["Name"]
+            .fillna("")
+            .astype(str)
+            .apply(lambda x: TextPipeline.normalize_final(TextPipeline.standardize_units(x)))
+        )
+        df["weight_val"] = df["clean_text"].apply(TextPipeline.extract_weight_feature)
+        df["token_count"] = df["clean_text"].fillna("").astype(str).apply(lambda s: len(s.split()))
+        df["clean_no_weights"] = df["clean_text"].apply(TextPipeline.strip_weights)
+        return df
+
     def manage_catalog_cache(
         self,
         raw_catalog: pd.DataFrame,
@@ -165,7 +186,7 @@ class CacheManager:
             if not check_for_updates and not force_sync:
                 raise RuntimeError(
                     f"[CATALOG SYNC ERROR] Catalog metadata cache for domain '{domain.upper()}' was not found at '{processed_df_path}'. "
-                    f"Please run 'python -m scripts.catalog.sync --cache sync' to rebuild disk caches (or 'python -m scripts.catalog.sync' for a full sync), then start the server."
+                    f"Please run 'python -m scripts.sync --cache sync' to rebuild disk caches (or 'python -m scripts.sync' for a full sync), then start the server."
                 )
         else:
             try:
@@ -227,7 +248,11 @@ class CacheManager:
             and not collection_missing_or_empty
             and not check_for_updates
             and "clean_text" in processed_catalog.columns
-            and not processed_catalog["clean_text"].isna().all()
+            and not processed_catalog["clean_text"].isna().any()
+            and "entities" in processed_catalog.columns
+            and not processed_catalog["entities"].isna().any()
+            and "clean_no_weights" in processed_catalog.columns
+            and not processed_catalog["clean_no_weights"].isna().any()
         ):
             logger.info(
                 f"[CACHE] [{domain.upper()}] Loaded metadata from local cache and verified Qdrant collection '{collection_name}' ({cnt} points)."
@@ -238,6 +263,9 @@ class CacheManager:
         name_counts = {}
         changed_indices = []
         new_hashes = {}
+        row_hashes: list[str] = []
+        clean_col = processed_catalog["clean_text"].tolist()
+        ent_col = processed_catalog["entities"].tolist()
         records = raw_catalog.to_dict(orient="records")
         for idx, row in enumerate(records):
             raw_name = str(row.get("Name", "")).strip().lower()
@@ -246,12 +274,17 @@ class CacheManager:
             uid = f"{raw_name}#occ_{name_counts[raw_name]}"
 
             row_hash = self._hash_row(row, domain=domain)
+            row_hashes.append(row_hash)
             new_hashes[uid] = row_hash
+            missing_meta = self._is_missing_scalar(clean_col[idx]) or self._is_missing_scalar(
+                ent_col[idx]
+            )
             if (
                 force_sync
                 or collection_missing_or_empty
                 or uid not in old_hashes
                 or old_hashes[uid] != row_hash
+                or missing_meta
             ):
                 changed_indices.append(idx)
 
@@ -263,44 +296,42 @@ class CacheManager:
             f"[CACHE] [{domain.upper()}] Detected {len(changed_indices)} changed/new/unindexed rows. Syncing..."
         )
         changed_df = processed_catalog.loc[changed_indices].copy()
+        changed_df["row_hash"] = [row_hashes[i] for i in changed_indices]
 
-        # 1. Text Normalization (only compute for rows missing clean_text)
+        # 1. Text Normalization & Auxiliary Features (only compute for rows missing them)
         missing_clean_changed = (
             changed_df["clean_text"].isna()
             | (changed_df["clean_text"].astype(str) == "None")
             | (changed_df["clean_text"].astype(str).str.strip() == "")
+            | changed_df["clean_no_weights"].isna()
+            | (changed_df["clean_no_weights"].astype(str) == "None")
+            | changed_df["token_count"].isna()
         )
         if missing_clean_changed.any():
-            logger.info("[CACHE]      - Normalizing Text & Weights...")
-            changed_df.loc[missing_clean_changed, "clean_text"] = (
-                changed_df.loc[missing_clean_changed, "Name"]
-                .astype(str)
-                .apply(lambda x: TextPipeline.normalize_final(TextPipeline.standardize_units(x)))
+            logger.info("[CACHE]      - Normalizing Text, Weights & Auxiliary Features...")
+            sub_features = self.populate_basic_nlp_features(
+                changed_df.loc[missing_clean_changed].copy()
             )
-            changed_df.loc[missing_clean_changed, "weight_val"] = changed_df.loc[
-                missing_clean_changed, "clean_text"
-            ].apply(TextPipeline.extract_weight_feature)
+            for col in ("clean_text", "weight_val", "token_count", "clean_no_weights"):
+                changed_df.loc[missing_clean_changed, col] = sub_features[col]
 
         # 2. Entity Extraction (only compute for rows missing entities)
-        needs_entities = False
-        if "entities" not in changed_df.columns:
-            needs_entities = True
-        else:
-            sample_val = changed_df["entities"].dropna()
-            if len(sample_val) == 0:
-                needs_entities = True
-
-        if needs_entities:
+        missing_ent_mask = (
+            changed_df["entities"].isna()
+            if "entities" in changed_df.columns
+            else pd.Series(True, index=changed_df.index)
+        )
+        if missing_ent_mask.any():
             logger.info("[CACHE]      - Extracting Entities...")
+            missing_df = changed_df.loc[missing_ent_mask]
             target_col = "Brand" if domain == config.DOMAIN_MARKET else "Flavor"
             target_label = self.ner.target_label
-            entities_list = []
+            entities_list: list[dict | None] = []
 
-            if target_col in changed_df.columns:
+            if target_col in missing_df.columns:
                 # Fast path: read flavors/brands directly from the pre-filled sheet column.
                 # Rows missing the value fall through to the NER engine (Layer 1 dict + Layer 2 NER).
-                target_vals = changed_df[target_col].tolist()
-                for raw_val in target_vals:
+                for raw_val in missing_df[target_col].tolist():
                     val = str(raw_val or "").strip()
                     if val and val.lower() != "nan":
                         val_set = {v.strip().lower() for v in val.split(",") if v.strip()}
@@ -308,39 +339,27 @@ class CacheManager:
                     else:
                         entities_list.append(None)
 
-                if None in entities_list:
-                    texts_for_ner = [
-                        TextPipeline.prep_for_ner(str(t)) for t in changed_df["Name"].tolist()
-                    ]
-                    ner_results = self.ner.batch_extract_entities(
-                        texts_for_ner, batch_size=config.ONNX_BATCH_SIZE
-                    )
-                    for i in range(len(entities_list)):
-                        if entities_list[i] is None:
-                            entities_list[i] = ner_results[i]
-            else:
+            miss_ner_positions = (
+                [i for i, e in enumerate(entities_list) if e is None]
+                if entities_list
+                else list(range(len(missing_df)))
+            )
+            if not entities_list:
+                entities_list = [None] * len(missing_df)
+
+            if miss_ner_positions:
+                raw_names = missing_df["Name"].tolist()
                 texts_for_ner = [
-                    TextPipeline.prep_for_ner(str(t)) for t in changed_df["Name"].tolist()
+                    TextPipeline.prep_for_ner(str(raw_names[i])) for i in miss_ner_positions
                 ]
-                entities_list = self.ner.batch_extract_entities(
+                ner_results = self.ner.batch_extract_entities(
                     texts_for_ner, batch_size=config.ONNX_BATCH_SIZE
                 )
+                for pos, ner_ent in zip(miss_ner_positions, ner_results):
+                    entities_list[pos] = ner_ent
 
-            changed_df["entities"] = entities_list
-
-        # 3. Pre-calculate Auxiliary Features
-        missing_aux = (
-            "clean_no_weights" not in changed_df.columns
-            or changed_df["clean_no_weights"].isna().any()
-            | (changed_df["clean_no_weights"].astype(str) == "None").any()
-        )
-        if missing_aux:
-            logger.info("[CACHE]      - Pre-calculating Auxiliary Features...")
-            changed_df["token_count"] = (
-                changed_df["clean_text"].fillna("").astype(str).apply(lambda s: len(s.split()))
-            )
-            changed_df["clean_no_weights"] = changed_df["clean_text"].apply(
-                TextPipeline.strip_weights
+            changed_df.loc[missing_ent_mask, "entities"] = pd.Series(
+                entities_list, index=missing_df.index, dtype=object
             )
 
         # Merge pre-calculated columns back into the main catalog
@@ -348,8 +367,10 @@ class CacheManager:
             processed_catalog.loc[changed_indices, col] = changed_df[col]
 
         # 4. Hybrid Vectorization
+        has_sparse = bool(self.embedder and getattr(self.embedder, "has_learned_sparse", False))
+        vec_desc = "Dense + BM25 + Sparse" if has_sparse else "Dense + BM25"
         logger.info(
-            f"[CACHE]      - Vectorizing Data ({len(changed_df)} items with BGE-M3 Dense + Sparse)..."
+            f"[CACHE]      - Vectorizing Data ({len(changed_df)} items with {config.EMBEDDING_MODEL} {vec_desc})..."
         )
         catalog_names = changed_df["clean_text"].tolist()
         catalog_descs = (
@@ -377,21 +398,29 @@ class CacheManager:
             catalog_names, catalog_descs, catalog_cats, weights=config.MATCHER_WEIGHTS
         )
         dense_embeddings = encoded["dense"]
-        sparse_weights = encoded["sparse"]
+        bm25_weights = encoded.get("bm25")
+        sparse_weights = encoded.get("sparse")
 
         # 5. Persistent Storage Sync
         logger.info(
             f"[CACHE]      - Upserting {len(changed_df)} items to Qdrant collection '{collection_name}'..."
         )
-        self.vector_store.sync(changed_df, dense_embeddings, sparse_weights, domain=domain)
+        self.vector_store.sync(
+            changed_df,
+            dense_embeddings,
+            sparse_weights=sparse_weights,
+            bm25_weights=bm25_weights,
+            domain=domain,
+        )
         logger.info(
             f"[CACHE] [{domain.upper()}] ✓ Successfully synced {len(changed_df)} catalog items to Qdrant."
         )
 
         # 6. Finalize Local Cache
         logger.info(
-            f"[CACHE] [{domain.upper()}] Computed metadata for {len(changed_df)} rows cached in-memory/feather."
+            f"[CACHE] [{domain.upper()}] Saving processed catalog metadata ({len(processed_catalog)} rows) to '{processed_df_path}'."
         )
+        joblib.dump(processed_catalog, processed_df_path)
 
         with open(hash_file, "w") as f:
             json.dump(new_hashes, f)

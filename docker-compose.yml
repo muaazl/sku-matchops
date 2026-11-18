@@ -105,7 +105,8 @@ services:
       - BACKEND_GRPC_URL=backend:50052
       - ENGINE_GRPC_PORT=50051
       - INTERNAL_GRPC_SECRET=${INTERNAL_GRPC_SECRET:-}
-      - USE_INT8_MODELS=true
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-jinaai/jina-embeddings-v5-text-small}
+      - RERANKER_MODEL=${RERANKER_MODEL:-jinaai/jina-reranker-v3.5}
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
     env_file:
@@ -117,6 +118,8 @@ services:
       - models_data:/app/engine/models
       - ./engine/models:/host_models:ro
       - ./engine/data/cache:/host_cache:ro
+      - staged_data:/app/data/staged_sheets
+      - ./data/sample:/app/data/sample:ro
       - ./scripts:/app/scripts
       - ./docker/docker-entrypoint-engine.py:/app/docker-entrypoint-engine.py
     depends_on:
@@ -166,6 +169,8 @@ services:
         required: false
     volumes:
       - ./backend:/app/backend
+      - staged_data:/app/data/staged_sheets
+      - ./data/sample:/app/data/sample:ro
       - ./scripts:/app/scripts
       - ./docker/docker-entrypoint-backend.py:/app/docker-entrypoint-backend.py
     depends_on:
@@ -194,3 +199,4 @@ services:
 volumes:
   models_data:
   cache_data:
+  staged_data:

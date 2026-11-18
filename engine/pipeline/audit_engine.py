@@ -4,10 +4,102 @@ import numpy as np
 import pandas as pd
 
 from engine import config
+from engine.classification.tagger import (
+    get_status,
+    resolve_gk_confidence_and_status,
+)
 from engine.nlp.text_cleaner import TextPipeline
+from engine.pipeline.processor import RerankerWrapper
 from engine.rules_engine import run_rules_engine
 from engine.utils.flavor_utils import triage_input_flavors
 from engine.utils.weight_utils import resolve_weight_bypass_candidate
+
+
+def _run_audit_template_enrichment(
+    sku_name: str,
+    domain: str,
+    curr_bt: str,
+    curr_gk: str,
+    status_to_check: str,
+    suggest_fn=None,
+) -> tuple[str, str, bool, str, str, dict]:
+    """Shared template enrichment helper across matcher, pipeline, and classifier audit paths."""
+    if not getattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", True):
+        return (
+            curr_bt,
+            curr_gk,
+            False,
+            "",
+            "",
+            {
+                "matched_template": False,
+                "note": "Template tag enrichment is disabled in configuration",
+            },
+        )
+    if status_to_check in ["Exact Text Match", "High Confidence", "HIGH", "AUTO"]:
+        return (
+            curr_bt,
+            curr_gk,
+            False,
+            "",
+            "",
+            {
+                "matched_template": False,
+                "note": f"Skipped template enrichment because status was {status_to_check}",
+            },
+        )
+    try:
+        if suggest_fn is None:
+            try:
+                from engine.templates.template_suggest import suggest_tags_from_template
+
+                suggest_fn = suggest_tags_from_template
+            except Exception:
+                suggest_fn = None
+
+        if suggest_fn is not None:
+            sug_res = suggest_fn(sku_name, domain=domain, current_bt=curr_bt)
+        else:
+            sug_res = {"matched": False, "reason": "Template suggest service unavailable"}
+
+        if not sug_res.get("matched"):
+            return (
+                curr_bt,
+                curr_gk,
+                False,
+                "",
+                "",
+                {
+                    "matched_template": False,
+                    "note": sug_res.get("reason", "No template match found in catalog"),
+                },
+            )
+
+        s_bt = sug_res.get("suggested_bt", "")
+        s_gk_list = sug_res.get("suggested_gk", [])
+        s_gk = ", ".join(s_gk_list) if isinstance(s_gk_list, list) else str(s_gk_list)
+
+        new_bt = s_bt or curr_bt
+        new_gk = curr_gk
+        if s_gk:
+            existing_gks = [x.strip() for x in str(curr_gk).split(",") if x.strip()]
+            template_gks = (
+                s_gk_list
+                if isinstance(s_gk_list, list)
+                else [x.strip() for x in s_gk.split(",") if x.strip()]
+            )
+            new_gk = ", ".join(list(dict.fromkeys(existing_gks + template_gks)))
+
+        details = {
+            "matched_template": True,
+            "base_sku": sug_res.get("base_sku", ""),
+            "template_bt": s_bt,
+            "template_gk": s_gk,
+            "notes": f"Template tag enrichment applied from base SKU '{sug_res.get('base_sku', '')}'",
+        }
+        return new_bt, new_gk, True, s_bt, s_gk, details
+    except Exception as e:
+        return curr_bt, curr_gk, False, "", "", {"matched_template": False, "error": str(e)}
 
 
 def run_sku_audit(
@@ -102,45 +194,16 @@ def run_sku_audit(
     # Food domain flavor suffix modification (System pipeline step in processor.py)
     if domain == config.DOMAIN_FOOD and ner_engine:
         flavor_set = extracted_entities.get("flavor", set())
-        seafood_set = getattr(ner_engine, "seafood_flavors", set())
-        meat_set = getattr(ner_engine, "meat_flavors", set())
-        veg_set = getattr(ner_engine, "vegetable_flavors", set())
-        has_seafood = any(f in seafood_set for f in flavor_set)
-        # Exclude meta-categories ('mixed') and special protein ('egg') from land meats
-        land_meats = [
-            f
-            for f in flavor_set
-            if f in meat_set and f not in seafood_set and f not in ("egg", "mixed")
-        ]
-        meat_count = len(land_meats)
-        has_other_protein = meat_count > 0 or has_seafood
-        has_egg = ("egg" in flavor_set) and ("egg" in meat_set)
-        has_veg = any(f in veg_set for f in flavor_set)
-
-        # Egg priority logic:
-        # 1. If egg is added with another meat/seafood, prioritize that meat (egg does not count towards mixed).
-        # 2. If egg is alone or with veg (no other meat/seafood), keep egg as the primary protein (prevents tagging as veg).
-        if has_egg and not has_other_protein:
-            meat_count = 1
-            has_meat = True
-        else:
-            has_meat = meat_count > 0
-
-        suffixes = []
-        if (has_meat and has_seafood) or meat_count >= 2:
-            suffixes.append("mixed")
-        elif not has_seafood and not has_meat and has_veg:
-            suffixes.append("veg")
-
-        if suffixes:
-            food_suffix_added = " ".join(suffixes)
+        suffix = TextPipeline.resolve_food_mixed_suffix(sku_name, flavor_set, ner_engine)
+        if suffix:
+            food_suffix_added = suffix
             effective_sku_name = f"{sku_name} {food_suffix_added}"
             clean_input = TextPipeline.normalize_final(
                 TextPipeline.standardize_units(effective_sku_name)
             )
             input_no_weights = TextPipeline.strip_weights(clean_input)
             input_w_data = TextPipeline.extract_weight_feature(clean_input)
-            flavor_set.update(suffixes)
+            flavor_set.add(suffix)
             extracted_entities["flavor"] = flavor_set
 
     audit_data["stage1_nlp"] = {
@@ -170,6 +233,7 @@ def run_sku_audit(
             price,
             classifier=classifier,
             ner_engine=ner_engine,
+            suggest_fn=suggest_fn,
         )
         return audit_data
 
@@ -182,14 +246,18 @@ def run_sku_audit(
         [clean_input], [description], [category], weights=config.MATCHER_WEIGHTS
     )
     input_vec_dense = encoded["dense"][0]
-    input_vec_sparse = encoded["sparse"][0]
+    input_vec_bm25 = (encoded.get("bm25") or [{}])[0]
+    input_vec_sparse = (encoded.get("sparse") or [None])[0]
 
     bt_filter = None
     bt_prediction = {}
     if pipeline.classifier:
         try:
             bt_tag, confidence, source, _ = pipeline.classifier.predict_bt(
-                input_vec_dense, price=price, sku_name=sku_name, sku_description=description
+                input_vec_dense,
+                price=price,
+                sku_name=effective_sku_name,
+                sku_description=description,
             )
             threshold = config.get_bt_confidence_threshold(source)
             applied = confidence >= threshold
@@ -296,10 +364,15 @@ def run_sku_audit(
 
     if bt_filter:
         filtered_cands = pipeline.search_candidates(
-            input_vec_dense, input_vec_sparse, bt_filter=bt_filter
+            input_vec_dense,
+            input_vec_sparse,
+            bt_filter=bt_filter,
+            input_vec_bm25=input_vec_bm25,
         )
 
-    unfiltered_cands = pipeline.search_candidates(input_vec_dense, input_vec_sparse)
+    unfiltered_cands = pipeline.search_candidates(
+        input_vec_dense, input_vec_sparse, input_vec_bm25=input_vec_bm25
+    )
 
     # Brand-stripped search fallback
     brand_stripped_query = ""
@@ -324,19 +397,38 @@ def run_sku_audit(
                     [brand_stripped], [description], [category], weights=config.MATCHER_WEIGHTS
                 )
                 stripped_cands = pipeline.search_candidates(
-                    stripped_encoded["dense"][0], stripped_encoded["sparse"][0]
+                    stripped_encoded["dense"][0],
+                    (stripped_encoded.get("sparse") or [None])[0],
+                    input_vec_bm25=(stripped_encoded.get("bm25") or [{}])[0],
                 )
                 if not stripped_cands.empty:
                     stripped_candidates_added = len(stripped_cands)
             except Exception:
                 pass
 
-    # Combine pools for cross-encoder tracing
-    c_list = [df for df in [filtered_cands, unfiltered_cands, stripped_cands] if not df.empty]
-    if c_list:
-        candidates = pd.concat(c_list, ignore_index=True).drop_duplicates(subset=["clean_text"])
-    else:
-        candidates = pd.DataFrame()
+    # Mirror SKUMatcher candidate pool: sort by hybrid RRF score & clean_text,
+    # deduplicate by db_uid / clean_text, and cap to MATCHER_RERANK_CANDIDATES.
+    all_cands_records = []
+    for df_pool in (filtered_cands, unfiltered_cands, stripped_cands):
+        if not df_pool.empty:
+            all_cands_records.extend(df_pool.to_dict(orient="records"))
+
+    all_cands_records.sort(
+        key=lambda c: (-float(c.get("_qdrant_score_", 0.0) or 0.0), str(c.get("clean_text", "")))
+    )
+
+    seen_cand_keys = set()
+    rerank_records = []
+    rerank_limit = getattr(config, "MATCHER_RERANK_CANDIDATES", 30)
+    for cand_row in all_cands_records:
+        if len(seen_cand_keys) >= rerank_limit:
+            break
+        cand_key = cand_row.get("db_uid") or cand_row.get("clean_text", "")
+        if cand_key not in seen_cand_keys:
+            seen_cand_keys.add(cand_key)
+            rerank_records.append(cand_row)
+
+    candidates = pd.DataFrame(rerank_records) if rerank_records else pd.DataFrame()
 
     audit_data["stage2_candidate_retrieval"] = {
         "classifier_bt_prediction": bt_prediction,
@@ -347,7 +439,7 @@ def run_sku_audit(
         "total_candidates_found": len(candidates),
     }
 
-    if candidates.empty:
+    if candidates.empty and exact_bypass_row is None:
         audit_data["final_output"] = {
             "matched_catalog_name": "",
             "score": 0.0,
@@ -362,47 +454,37 @@ def run_sku_audit(
     # -------------------------------------------------------------
     # Stage 3: Cross-Encoder Scoring & Rankings
     # -------------------------------------------------------------
-    c_no_w = (
-        candidates["clean_no_weights"].tolist()
-        if "clean_no_weights" in candidates.columns
-        else [None] * len(candidates)
+    in_bf_key = "flavor" if domain == config.DOMAIN_FOOD else "brand"
+    in_brand_or_flavor = ", ".join(
+        sorted(str(x) for x in (extracted_entities or {}).get(in_bf_key, []) if x)
     )
-    c_clean = (
-        candidates["clean_text"].tolist()
-        if "clean_text" in candidates.columns
-        else [""] * len(candidates)
+    formatted_query = TextPipeline.format_matcher_rerank_text(
+        name=input_no_weights,
+        seller_category=category,
+        brand_or_flavor=in_brand_or_flavor,
+        description=description,
+        domain=domain,
     )
-    pairs = [
-        [
-            input_no_weights,
-            str(raw_no_w or TextPipeline.strip_weights(str(raw_clean or ""))).strip(),
+
+    score_by_key = {}
+    sorted_indices = np.array([], dtype=int)
+    if rerank_records:
+        pairs = [
+            [
+                formatted_query,
+                TextPipeline.format_catalog_row_for_reranker(cand_row, domain=domain),
+            ]
+            for cand_row in rerank_records
         ]
-        for raw_no_w, raw_clean in zip(c_no_w, c_clean)
-    ]
-    cross_scores = pipeline.embedder.score_cross_encoder(pairs)
 
-    input_tokens = len(clean_input.split())
-    cat_tokens = candidates["token_count"].values
-    token_penalties = np.where(cat_tokens > input_tokens + 2, 2.0, 0.0)
+        cross_scores = pipeline.embedder.score_cross_encoder(pairs)
+        for cand_row, sc in zip(rerank_records, cross_scores):
+            cand_key = cand_row.get("db_uid") or cand_row.get("clean_text", "")
+            score_by_key[cand_key] = float(sc)
 
-    brand_boosts = np.zeros(len(candidates))
-    if (
-        getattr(config, "ENABLE_TEMPLATE_AWARE_MATCHING", False)
-        and extracted_entities
-        and any(extracted_entities.get("brand", []))
-    ):
-        has_brand_mask = np.array(
-            [isinstance(ent, dict) and bool(ent.get("brand")) for ent in candidates["entities"]]
-        )
-        brand_boosts = np.where(has_brand_mask, 2.0, 0.0)
-
-    final_cross_scores = cross_scores - token_penalties + brand_boosts
-    sorted_indices = np.argsort(final_cross_scores)[::-1]
-
-    candidates["raw_cross_score"] = cross_scores
-    candidates["token_penalty"] = token_penalties
-    candidates["brand_boost"] = brand_boosts
-    candidates["final_cross_score"] = final_cross_scores
+        sorted_indices = np.argsort(cross_scores)[::-1]
+        candidates["raw_cross_score"] = cross_scores
+        candidates["final_cross_score"] = cross_scores
 
     top_candidates_trace = []
     if exact_bypass_row is not None:
@@ -465,8 +547,8 @@ def run_sku_audit(
                 ),
                 "region_category": str(row.get("region") or row.get("category") or ""),
                 "raw_cross_score": float(row["raw_cross_score"]),
-                "token_penalty": float(row["token_penalty"]),
-                "brand_boost": float(row["brand_boost"]),
+                "token_penalty": 0.0,
+                "brand_boost": 0.0,
                 "final_cross_score": float(row["final_cross_score"]),
             }
         )
@@ -478,31 +560,39 @@ def run_sku_audit(
     evaluated_results = []
     best_res = None
     win_reasons = ""
+    gate_limit = getattr(config, "MATCHER_LOGIC_GATE_CANDIDATES", 5)
 
-    def eval_cand_df(df_pool: pd.DataFrame):
-        res_list = []
+    def _is_better_candidate(cand: dict, best: dict | None) -> bool:
+        if best is None:
+            return True
+        if cand["computed_score"] > best["computed_score"] + 1e-4:
+            return True
+        if abs(cand["computed_score"] - best["computed_score"]) <= 1e-4:
+            if cand["raw_cross_score"] > best["raw_cross_score"] + 1e-3:
+                return True
+            if abs(cand["raw_cross_score"] - best["raw_cross_score"]) <= 1e-3:
+                return cand["clean_text"] < best["clean_text"]
+        return False
+
+    def eval_cand_df(df_pool: pd.DataFrame) -> list[dict]:
         if df_pool.empty:
-            return res_list
+            return []
 
-        # Deduplicate df_pool by clean_text to prevent repeating the same candidate
-        df_pool_unique = df_pool.drop_duplicates(subset=["clean_text"])
+        pool_records = df_pool.to_dict(orient="records")
+        scored_pool = []
+        for cand_row in pool_records:
+            cand_key = cand_row.get("db_uid") or cand_row.get("clean_text", "")
+            raw_score = float(score_by_key.get(cand_key, -10.0))
+            scored_pool.append((raw_score, cand_row))
 
-        # Sort pool by raw_cross_score descending to mirror SKUMatcher candidate evaluation ordering
-        pool_rows = []
-        for _, cand_row in df_pool_unique.iterrows():
-            cand_txt = cand_row["clean_text"]
-            matching_rows = candidates[candidates["clean_text"] == cand_txt]
-            raw_score = (
-                float(matching_rows.iloc[0]["raw_cross_score"])
-                if not matching_rows.empty
-                else -10.0
-            )
-            pool_rows.append((raw_score, cand_row))
+        # Mirror SKUMatcher score_candidates ordering
+        scored_pool.sort(
+            key=lambda item: (-float(np.round(item[0], 3)), str(item[1].get("clean_text", "")))
+        )
 
-        pool_rows.sort(key=lambda x: x[0], reverse=True)
-
-        for raw_score, cand_row in pool_rows:
-            cand_row_copy = cand_row.copy()
+        res_list = []
+        for raw_score, cand_row in scored_pool[:gate_limit]:
+            cand_row_copy = dict(cand_row)
             gate_score, gate_status, gate_reasons = pipeline.rules.apply_logic_gates(
                 clean_input,
                 extracted_entities,
@@ -519,6 +609,9 @@ def run_sku_audit(
             res_list.append(
                 {
                     "candidate_name": str(cand_row_copy["Name"]),
+                    "clean_text": str(
+                        cand_row_copy.get("clean_text", cand_row_copy.get("Name", ""))
+                    ),
                     "raw_cross_score": raw_score,
                     "computed_score": float(gate_score),
                     "status": gate_status,
@@ -527,12 +620,19 @@ def run_sku_audit(
                     "cand_row": cand_row_copy,
                 }
             )
-        res_list.sort(key=lambda x: x["computed_score"], reverse=True)
         return res_list
+
+    def _pick_best(eval_list: list[dict]) -> dict | None:
+        best = None
+        for item in eval_list:
+            if _is_better_candidate(item, best):
+                best = item
+        return best
 
     if exact_bypass_row is not None:
         best_res = {
             "candidate_name": str(exact_bypass_row["Name"]),
+            "clean_text": str(exact_bypass_row.get("clean_text", exact_bypass_row["Name"])),
             "raw_cross_score": 100.0,
             "computed_score": 1.0,
             "status": "High Confidence",
@@ -545,68 +645,61 @@ def run_sku_audit(
 
     elif bt_filter and not filtered_cands.empty:
         filtered_eval = eval_cand_df(filtered_cands)
-        for rank_i, item in enumerate(filtered_eval[:10]):
+        fallback_res = _pick_best(filtered_eval)
+        for rank_i, item in enumerate(
+            sorted(filtered_eval, key=lambda x: x["computed_score"], reverse=True)
+        ):
             evaluated_results.append({**item, "rank": rank_i + 1})
 
-        if filtered_eval and filtered_eval[0]["status"] == "High Confidence":
-            best_res = filtered_eval[0]
+        if fallback_res and fallback_res["status"] == "High Confidence":
+            best_res = fallback_res
             win_reasons = f"BT-Filtered ({bt_filter}) | {best_res['reasons']}"
         else:
-            fallback_res = filtered_eval[0] if filtered_eval else None
             unfiltered_pool = (
                 pd.concat([unfiltered_cands, stripped_cands], ignore_index=True).drop_duplicates(
                     subset=["clean_text"]
                 )
-                if not stripped_cands.empty
-                else unfiltered_cands
+                if (not unfiltered_cands.empty or not stripped_cands.empty)
+                else pd.DataFrame()
             )
             unfiltered_eval = eval_cand_df(unfiltered_pool)
 
-            for item in unfiltered_eval[:10]:
+            for item in sorted(unfiltered_eval, key=lambda x: x["computed_score"], reverse=True):
                 if not any(
                     r["candidate_name"] == item["candidate_name"] for r in evaluated_results
                 ):
                     evaluated_results.append({**item, "rank": len(evaluated_results) + 1})
 
-            best_uf = unfiltered_eval[0] if unfiltered_eval else None
+            best_uf = _pick_best(unfiltered_eval)
 
-            if fallback_res and (
-                not best_uf or fallback_res["computed_score"] > best_uf["computed_score"]
+            if fallback_res is not None and (
+                best_uf is None or fallback_res["computed_score"] > best_uf["computed_score"]
             ):
                 best_res = fallback_res
                 win_reasons = f"BT-Filtered ({bt_filter}) [Low Confidence Fallback] | {fallback_res['reasons']}"
-            elif best_uf:
+            elif best_uf is not None:
                 best_res = best_uf
-                if bt_filter:
-                    win_reasons = f"BT-Fallback (BT: {bt_filter}, score: {best_uf['computed_score']:.4f}) | {best_uf['reasons']}"
-                else:
-                    win_reasons = best_uf["reasons"]
+                win_reasons = f"BT-Fallback (BT: {bt_filter}, score: {best_uf['computed_score']:.4f}) | {best_uf['reasons']}"
     else:
         unfiltered_pool = (
             pd.concat([unfiltered_cands, stripped_cands], ignore_index=True).drop_duplicates(
                 subset=["clean_text"]
             )
-            if not stripped_cands.empty
-            else unfiltered_cands
+            if (not unfiltered_cands.empty or not stripped_cands.empty)
+            else pd.DataFrame()
         )
         unfiltered_eval = eval_cand_df(unfiltered_pool)
-        for rank_i, item in enumerate(unfiltered_eval[:10]):
+        for rank_i, item in enumerate(
+            sorted(unfiltered_eval, key=lambda x: x["computed_score"], reverse=True)
+        ):
             evaluated_results.append({**item, "rank": rank_i + 1})
 
-        if unfiltered_eval:
-            best_res = unfiltered_eval[0]
-            win_reasons = best_res["reasons"]
-
-    # Add why non-winners didn't win
-    best_res = None
-    for res in evaluated_results:
-        if res["status"] == "High Confidence":
-            best_res = res
-            break
-    if best_res is None:
-        for res in evaluated_results:
-            if best_res is None or res["computed_score"] > best_res["computed_score"]:
-                best_res = res
+        best_res = _pick_best(unfiltered_eval)
+        if best_res:
+            if bt_filter:
+                win_reasons = f"BT-Fallback (BT: {bt_filter}, score: {best_res['computed_score']:.4f}) | {best_res['reasons']}"
+            else:
+                win_reasons = best_res["reasons"]
 
     winner_name = best_res["candidate_name"] if best_res else ""
 
@@ -765,15 +858,25 @@ def run_sku_audit(
         "suggested_region": region_val,
     }
 
-    # If task is matcher-only, finish at stage 5 without escalation
+    # If task is matcher-only, finish after template enrichment without classifier escalation
     if task == "matcher":
+        matcher_bt = str(winner.get("basictype", winner.get("BasicType", "")))
+        matcher_bt, matcher_gk, _, _, _, tmpl_details = _run_audit_template_enrichment(
+            effective_sku_name,
+            domain,
+            matcher_bt,
+            winner_gk,
+            win_status,
+            suggest_fn=suggest_fn,
+        )
+        audit_data["stage7_template_enrichment"] = tmpl_details
         audit_data["final_output"] = {
             "matched_catalog_name": str(winner["Name"]),
             "score": float(win_score),
             "status": win_status,
             "logic_notes": win_reasons,
-            "suggested_bt": str(winner.get("basictype", winner.get("BasicType", ""))),
-            "suggested_gk": winner_gk,
+            "suggested_bt": matcher_bt,
+            "suggested_gk": matcher_gk,
             "suggested_region": region_val,
             "pipeline_source": "Matcher",
             "escalated": False,
@@ -805,15 +908,15 @@ def run_sku_audit(
                     weights=config.CLASSIFIER_WEIGHTS,
                 )
                 query_embeddings = [
-                    {"dense": esc_embs["dense"][0], "sparse": esc_embs["sparse"][0]}
+                    {
+                        "dense": esc_embs["dense"][0],
+                        "bm25": (esc_embs.get("bm25") or [{}])[0],
+                        "sparse": (esc_embs.get("sparse") or [None])[0],
+                    }
                 ]
 
-                class RerankerWrapper:
-                    def predict(self, pairs):
-                        return pipeline.embedder.score_cross_encoder(pairs)
-
                 reranker = (
-                    RerankerWrapper()
+                    RerankerWrapper(pipeline.embedder)
                     if (
                         hasattr(pipeline.embedder, "cross_session")
                         and pipeline.embedder.cross_session
@@ -878,72 +981,20 @@ def run_sku_audit(
     # -------------------------------------------------------------
     # Stage 7: Template Tag Enrichment
     # -------------------------------------------------------------
-    template_applied = False
-    template_details = {}
-    if getattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", True):
-        try:
-            esc_clf_status = (
-                str(audit_data.get("stage6_escalation", {}).get("classifier_bt_status", ""))
-                if (escalated and pipeline_source == "Classifier")
-                else ""
-            )
-            status_to_check = esc_clf_status or win_status
-            if status_to_check not in ["Exact Text Match", "High Confidence", "HIGH", "AUTO"]:
-                if suggest_fn is None:
-                    try:
-                        from engine.templates.template_suggest import suggest_tags_from_template
-
-                        suggest_fn = suggest_tags_from_template
-                    except Exception:
-                        suggest_fn = None
-
-                if suggest_fn is not None:
-                    sug_res = suggest_fn(sku_name, domain=domain, current_bt=curr_bt)
-                else:
-                    sug_res = {"matched": False, "reason": "Template suggest service unavailable"}
-
-                if sug_res.get("matched"):
-                    template_applied = True
-                    s_bt = sug_res.get("suggested_bt", "")
-                    s_gk_list = sug_res.get("suggested_gk", [])
-                    s_gk = ", ".join(s_gk_list) if isinstance(s_gk_list, list) else str(s_gk_list)
-
-                    if s_bt:
-                        curr_bt = s_bt
-                    if s_gk:
-                        existing_gks = [x.strip() for x in str(curr_gk).split(",") if x.strip()]
-                        template_gks = (
-                            s_gk_list
-                            if isinstance(s_gk_list, list)
-                            else [x.strip() for x in s_gk.split(",") if x.strip()]
-                        )
-                        merged_gks = list(dict.fromkeys(existing_gks + template_gks))
-                        curr_gk = ", ".join(merged_gks)
-
-                    template_details = {
-                        "matched_template": True,
-                        "base_sku": sug_res.get("base_sku", ""),
-                        "template_bt": s_bt,
-                        "template_gk": s_gk,
-                        "notes": f"Template tag enrichment applied from base SKU '{sug_res.get('base_sku', '')}'",
-                    }
-                else:
-                    template_details = {
-                        "matched_template": False,
-                        "note": sug_res.get("reason", "No template match found in catalog"),
-                    }
-            else:
-                template_details = {
-                    "matched_template": False,
-                    "note": f"Skipped template enrichment because status was {status_to_check}",
-                }
-        except Exception as e:
-            template_details = {"matched_template": False, "error": str(e)}
-    else:
-        template_details = {
-            "matched_template": False,
-            "note": "Template tag enrichment is disabled in configuration",
-        }
+    esc_clf_status = (
+        str(audit_data.get("stage6_escalation", {}).get("classifier_bt_status", ""))
+        if (escalated and pipeline_source == "Classifier")
+        else ""
+    )
+    status_to_check = esc_clf_status or win_status
+    curr_bt, curr_gk, template_applied, _, _, template_details = _run_audit_template_enrichment(
+        effective_sku_name,
+        domain,
+        curr_bt,
+        curr_gk,
+        status_to_check,
+        suggest_fn=suggest_fn,
+    )
 
     audit_data["stage7_template_enrichment"] = template_details
 
@@ -1020,6 +1071,7 @@ def _audit_classifier_pipeline(
     embed_engine=None,
     ner_engine=None,
     vector_store=None,
+    suggest_fn=None,
 ):
     """Executes a deep multi-stage diagnostic audit for classifier-only task."""
     if classifier is None:
@@ -1063,7 +1115,8 @@ def _audit_classifier_pipeline(
         [sku_name], [description], [category], weights=config.CLASSIFIER_WEIGHTS
     )
     vec_dense = query_embs["dense"][0]
-    vec_sparse = query_embs["sparse"][0]
+    vec_bm25 = (query_embs.get("bm25") or [{}])[0]
+    vec_sparse = (query_embs.get("sparse") or [None])[0]
     vec_2d = vec_dense.reshape(1, -1)
 
     # Extract entities from stage1_nlp
@@ -1111,7 +1164,7 @@ def _audit_classifier_pipeline(
             )
         best_idx = int(np.argmax(proba))
         best_prob = float(proba[best_idx])
-        if best_prob >= 0.40:
+        if best_prob >= config.BT_TRAINED_CONFIDENCE_THRESHOLD:
             predicted_bt = str(classifier._arcface_classes[best_idx])
             bt_conf = best_prob
             bt_source = "trained"
@@ -1136,7 +1189,7 @@ def _audit_classifier_pipeline(
             )
         best_idx = int(np.argmax(proba))
         best_prob = float(proba[best_idx])
-        if best_prob >= 0.40:
+        if best_prob >= config.BT_TRAINED_CONFIDENCE_THRESHOLD:
             predicted_bt = str(classifier._bt_enc.classes_[best_idx])
             bt_conf = best_prob
             bt_source = "trained"
@@ -1189,8 +1242,6 @@ def _audit_classifier_pipeline(
             bt_conf = 0.0
             bt_source = "conflict"
 
-    from engine.classification.tagger import get_status
-
     bt_status = get_status(bt_conf, bool(predicted_bt), bt_source)
 
     audit_data["stage2_bt_classification"] = {
@@ -1217,8 +1268,6 @@ def _audit_classifier_pipeline(
     from engine.config import (
         FUSION_METHOD,
         GK_TRAINED_CONFIDENCE_THRESHOLD,
-        RERANKER_MARGIN,
-        RERANKER_THRESHOLD,
         TAG_SEARCH_LIMIT,
         USE_RERANKER,
     )
@@ -1299,11 +1348,12 @@ def _audit_classifier_pipeline(
                 )
 
     # Strategy: filter search tags
+    trained_gk_source = "trained" if trained_gk else "zero-shot"
     search_allowed_tags, early_return = strategy.filter_search_tags(
-        allowed_gks_for_bt, trained_conf, "trained" if trained_gk else "zero-shot", guaranteed
+        allowed_gks_for_bt, trained_conf, trained_gk_source, guaranteed
     )
 
-    dense_hits, sparse_hits = [], []
+    dense_hits, bm25_hits, sparse_hits = [], [], []
     fused_candidates = []
     top_candidates = []
     top_candidates_clean = []
@@ -1316,23 +1366,25 @@ def _audit_classifier_pipeline(
 
     if early_return is not None:
         merged_gk = list(early_return[0])
-        gk_conf = float(early_return[1])
-        gk_status = get_status(gk_conf, bool(merged_gk))
+        gk_conf, gk_status, _ = resolve_gk_confidence_and_status(
+            trained_conf, trained_gk_source, float(early_return[1]), False, bool(merged_gk)
+        )
         reranked_tags = []
     else:
         if vector_store is not None:
-            dense_hits, sparse_hits = vector_store.search_hybrid_tags(
+            dense_hits, bm25_hits, sparse_hits = vector_store.search_hybrid_tags(
                 dense_query=vec_dense,
                 sparse_query=vec_sparse,
                 limit=TAG_SEARCH_LIMIT,
                 filter_dict_type="gk",
                 domain=classifier.domain,
                 allowed_tags=search_allowed_tags,
+                bm25_query=vec_bm25,
             )
             if FUSION_METHOD == "rrf":
-                fused_candidates = _rrf_fusion(dense_hits, sparse_hits)
+                fused_candidates = _rrf_fusion(dense_hits, bm25_hits, sparse_hits)
             else:
-                fused_candidates = _weighted_fusion(dense_hits, sparse_hits)
+                fused_candidates = _weighted_fusion(dense_hits, bm25_hits, sparse_hits)
 
         top_candidates = fused_candidates[:TOP_K_FUSED]
 
@@ -1364,20 +1416,17 @@ def _audit_classifier_pipeline(
                 pruned_by_flavor.append(c["tag"])
 
         # Reranking Layer
-        class RerankerWrapper:
-            def predict(self, pairs):
-                return embed_engine.score_cross_encoder(pairs)
-
         reranker = (
-            RerankerWrapper()
+            RerankerWrapper(embed_engine)
             if (hasattr(embed_engine, "cross_session") and embed_engine.cross_session)
             else None
         )
 
         reranked_tags = []
         final_conf = 0.0
+        used_reranker = bool(top_candidates_clean and USE_RERANKER and reranker is not None)
 
-        if top_candidates_clean and USE_RERANKER and reranker is not None:
+        if used_reranker:
             query_text = (sku_name + " " + description).strip()
             pairs = [[query_text, c["tag"]] for c in top_candidates_clean]
             raw_scores = reranker.predict(pairs)
@@ -1401,7 +1450,7 @@ def _audit_classifier_pipeline(
             scored_candidates.sort(key=lambda x: x["score"], reverse=True)
             if scored_candidates:
                 top_score = scored_candidates[0]["score"]
-                margin_cutoff = max(RERANKER_THRESHOLD, top_score - RERANKER_MARGIN)
+                margin_cutoff = max(config.RERANKER_THRESHOLD, top_score - config.RERANKER_MARGIN)
                 for item in scored_candidates:
                     if item["threshold_passed"] and item["score"] < margin_cutoff:
                         item["threshold_passed"] = False
@@ -1427,8 +1476,9 @@ def _audit_classifier_pipeline(
                 seen.add(key)
                 merged_gk.append(tag)
 
-        gk_conf = trained_conf if (trained_gk_final and trained_conf >= 0.8) else final_conf
-        gk_status = get_status(gk_conf, bool(merged_gk))
+        gk_conf, gk_status, _ = resolve_gk_confidence_and_status(
+            trained_conf, trained_gk_source, final_conf, used_reranker, bool(merged_gk)
+        )
 
     # Consolidated keywords considered table
     all_considered_map = {}
@@ -1491,7 +1541,7 @@ def _audit_classifier_pipeline(
                 if s_item["threshold_passed"]
                 else s_item.get(
                     "prune_reason_override",
-                    f"Reranker score ({s_item['score']:.3f}) < threshold ({RERANKER_THRESHOLD})",
+                    f"Reranker score ({s_item['score']:.3f}) < threshold ({config.RERANKER_THRESHOLD})",
                 ),
                 "is_selected": is_kept,
             }
@@ -1533,7 +1583,7 @@ def _audit_classifier_pipeline(
         "guaranteed_tags": guaranteed_clean,
         "trained_gk_tags": trained_gk_final,
         "literal_matched_tags": literal_matched_gks,
-        "vector_search_hits_count": len(dense_hits) + len(sparse_hits),
+        "vector_search_hits_count": len(dense_hits) + len(bm25_hits) + len(sparse_hits),
         "synthetic_tags_injected": synth_added,
         "pruned_by_flavor_leak": pruned_by_flavor,
         "considered_keywords": considered_keywords_list,
@@ -1616,60 +1666,23 @@ def _audit_classifier_pipeline(
     # -------------------------------------------------------------
     # Stage 4.5: Template Tag Enrichment
     # -------------------------------------------------------------
-    template_details = {}
-    curr_bt = predicted_bt
-    curr_gk_list = list(merged_gk)
-
-    if getattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", True):
-        try:
-            if bt_status not in ["High Confidence", "HIGH", "Exact Text Match", "AUTO"]:
-                from engine.templates.template_suggest import suggest_tags_from_template
-
-                sug_res = suggest_tags_from_template(sku_name, domain=domain, current_bt=curr_bt)
-                if sug_res.get("matched"):
-                    s_bt = sug_res.get("suggested_bt", "")
-                    s_gk_list = sug_res.get("suggested_gk", [])
-                    s_gk = ", ".join(s_gk_list) if isinstance(s_gk_list, list) else str(s_gk_list)
-
-                    if s_bt:
-                        curr_bt = s_bt
-                        bt_conf = max(bt_conf, 0.95)
-                        bt_status = "AUTO"
-                        bt_source = "template"
-                    if s_gk:
-                        template_gks = (
-                            s_gk_list
-                            if isinstance(s_gk_list, list)
-                            else [x.strip() for x in s_gk.split(",") if x.strip()]
-                        )
-                        curr_gk_list = list(dict.fromkeys(curr_gk_list + template_gks))
-                        gk_conf = max(gk_conf, 0.95)
-                        gk_status = "AUTO"
-
-                    template_details = {
-                        "matched_template": True,
-                        "base_sku": sug_res.get("base_sku", ""),
-                        "template_bt": s_bt,
-                        "template_gk": s_gk,
-                        "notes": f"Template tag enrichment applied from base SKU '{sug_res.get('base_sku', '')}'",
-                    }
-                else:
-                    template_details = {
-                        "matched_template": False,
-                        "note": sug_res.get("reason", "No template match found in catalog"),
-                    }
-            else:
-                template_details = {
-                    "matched_template": False,
-                    "note": f"Skipped template enrichment because classifier BT status was {bt_status}",
-                }
-        except Exception as e:
-            template_details = {"matched_template": False, "error": str(e)}
-    else:
-        template_details = {
-            "matched_template": False,
-            "note": "Template tag enrichment is disabled in configuration",
-        }
+    curr_bt, new_gk_str, tmpl_ok, s_bt, s_gk, template_details = _run_audit_template_enrichment(
+        sku_name,
+        domain,
+        predicted_bt,
+        ", ".join(merged_gk),
+        bt_status,
+        suggest_fn=suggest_fn,
+    )
+    curr_gk_list = [x.strip() for x in new_gk_str.split(",") if x.strip()] if new_gk_str else []
+    if tmpl_ok:
+        if s_bt:
+            bt_conf = max(bt_conf, 0.95)
+            bt_status = "AUTO"
+            bt_source = "template"
+        if s_gk:
+            gk_conf = max(gk_conf, 0.95)
+            gk_status = "AUTO"
 
     audit_data["stage7_template_enrichment"] = template_details
 

@@ -49,13 +49,15 @@ class TaxonomyLifecycleRegistry:
         self.few_shot_classes: list[str] = []
         self.warm_classes: list[str] = []
 
-        # Warm Centroids (shape: M_warm x 1024, L2 normalized)
-        self.warm_centroids: np.ndarray = np.empty((0, 1024), dtype=np.float32)
+        # Warm Centroids (shape: M_warm x EMBEDDING_DIM, L2 normalized)
+        self.warm_centroids: np.ndarray = np.empty((0, config.EMBEDDING_DIM), dtype=np.float32)
         self.warm_index_to_class: list[str] = []
         self.class_to_warm_index: dict[str, int] = {}
 
-        # Zero-Shot bi-encoder description embeddings for fast pre-filtering (M_zero x 1024)
-        self.zero_shot_embeddings: np.ndarray = np.empty((0, 1024), dtype=np.float32)
+        # Zero-Shot bi-encoder description embeddings for fast pre-filtering (M_zero x EMBEDDING_DIM)
+        self.zero_shot_embeddings: np.ndarray = np.empty(
+            (0, config.EMBEDDING_DIM), dtype=np.float32
+        )
         self.zero_shot_index_to_class: list[str] = []
 
     def get_tier(self, class_name: str) -> ClassLifecycleTier:
@@ -328,7 +330,7 @@ class TaxonomyLifecycleRegistry:
         """Lazily precomputes bi-encoder embeddings for zero-shot class descriptions when queried."""
         with self._lock:
             if not self.zero_shot_classes:
-                self.zero_shot_embeddings = np.empty((0, 1024), dtype=np.float32)
+                self.zero_shot_embeddings = np.empty((0, config.EMBEDDING_DIM), dtype=np.float32)
                 self.zero_shot_index_to_class = []
                 return
 
@@ -349,7 +351,7 @@ class TaxonomyLifecycleRegistry:
 class Tier1ZeroShotClassifier:
     """
     Tier 1: Pure Zero-Shot ($N_c = 0$ examples in Qdrant).
-    Method: Cross-Encoder Text Classification using BGE-Reranker-v2-m3.
+    Method: Reranker Text Classification (configured RERANKER_MODEL).
     Formats pairs: (sku_name, "Basic Type: {bt_name} - {bt_description}").
     """
 
@@ -402,13 +404,13 @@ class Tier1ZeroShotClassifier:
             bt_str = f"Basic Type: {bt} - {desc}" if desc and desc != bt else f"Basic Type: {bt}"
             pairs.append([query_text, bt_str])
 
-        # 3. Score with cross-encoder
-        raw_logits = self.embed_engine.score_cross_encoder(pairs)
-        if len(raw_logits) == 0:
+        # 3. Score with reranker (cosine similarity in [-1.0, 1.0])
+        raw_scores = self.embed_engine.score_cross_encoder(pairs)
+        if len(raw_scores) == 0:
             return "", 0.0, "zero-shot"
 
-        # 4. Calibrate confidence: sigmoid(logit)
-        confs = 1.0 / (1.0 + np.exp(-raw_logits))
+        # 4. Clamp cosine confidence to [0.0, 1.0]
+        confs = np.clip(np.asarray(raw_scores, dtype=np.float32), 0.0, 1.0)
         best_idx = int(np.argmax(confs))
         best_conf = float(confs[best_idx])
         best_class = candidate_classes[best_idx]
@@ -476,13 +478,13 @@ class Tier1ZeroShotClassifier:
         if not all_pairs:
             return [("", 0.0, "zero-shot")] * n
 
-        # 3. Score with cross-encoder (Single Batch Inference)
-        raw_logits = self.embed_engine.score_cross_encoder(all_pairs)
-        if len(raw_logits) == 0:
+        # 3. Score with reranker (cosine similarity in [-1.0, 1.0])
+        raw_scores = self.embed_engine.score_cross_encoder(all_pairs)
+        if len(raw_scores) == 0:
             return [("", 0.0, "zero-shot")] * n
 
-        # 4. Calibrate confidence: sigmoid(logit)
-        confs = 1.0 / (1.0 + np.exp(-np.array(raw_logits)))
+        # 4. Clamp cosine confidence to [0.0, 1.0]
+        confs = np.clip(np.asarray(raw_scores, dtype=np.float32), 0.0, 1.0)
 
         best_conf_per_sku = [0.0] * n
         best_class_per_sku = [""] * n
@@ -899,10 +901,6 @@ class ColdStartRouter:
             # Fallback to moderate few-shot
             elif fs_tag and fs_conf >= config.REVIEW_THRESHOLD:
                 results[orig_idx] = (fs_tag, fs_conf, fs_src, fs_gks)
-            # Desperate fallback to low-confidence warm centroid
-            elif warm_preds and warm_preds[orig_idx][0]:
-                c_tag, c_conf, c_src = warm_preds[orig_idx]
-                results[orig_idx] = (c_tag, c_conf, "zero-shot", [])
             else:
                 results[orig_idx] = ("", 0.0, "zero-shot", [])
 

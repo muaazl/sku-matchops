@@ -88,70 +88,69 @@ def main():
     try:
         from engine import config
 
-        bge_int8 = os.path.join(config.ONNX_DIR, "bge_m3", "model_int8.onnx")
-        bge_fp32 = os.path.join(config.ONNX_DIR, "bge_m3", "model.onnx")
-        rerank_int8 = os.path.join(config.ONNX_DIR, "reranker", "model_int8.onnx")
-        rerank_fp32 = os.path.join(config.ONNX_DIR, "reranker", "model.onnx")
-        gliner_onnx = os.path.join(config.ONNX_DIR, "gliner", "model.onnx")
-
-        use_int8 = config.USE_INT8_MODELS
+        emb_int8 = config.EMBEDDING_ONNX_INT8
+        emb_fp32 = config.EMBEDDING_ONNX_FP32
+        rerank_int8 = config.RERANKER_ONNX_INT8
+        rerank_fp32 = config.RERANKER_ONNX_FP32
+        gliner_onnx = config.GLINER_ONNX
 
         needs_export = False
         needs_quantization = False
 
-        # Check BGE-M3
-        if use_int8:
-            if not os.path.exists(bge_int8):
-                if os.path.exists(bge_fp32):
-                    needs_quantization = True
-                else:
-                    needs_export = True
-        else:
-            if not os.path.exists(bge_fp32):
+        # Check active embedding model (strictly INT8 ONNX)
+        if not os.path.exists(emb_int8):
+            if os.path.exists(emb_fp32):
+                needs_quantization = True
+            else:
                 needs_export = True
 
-        # Check Reranker
-        if use_int8:
-            if not os.path.exists(rerank_int8):
-                if os.path.exists(rerank_fp32):
-                    needs_quantization = True
-                else:
-                    needs_export = True
-        else:
-            if not os.path.exists(rerank_fp32):
+        # Check active reranker model (strictly INT8 ONNX)
+        if not os.path.exists(rerank_int8):
+            if os.path.exists(rerank_fp32):
+                needs_quantization = True
+            else:
                 needs_export = True
 
-        # Check GLiNER
+        # Check GLiNER ONNX
         if not os.path.exists(gliner_onnx):
             needs_export = True
 
         if needs_export:
             print(
-                "[SETUP] Required models are missing. Initiating one-time download, ONNX export & INT8 quantization...",
+                "[SETUP] Required models are missing. Initiating download, ONNX export & INT8 quantization...",
                 flush=True,
             )
             env = os.environ.copy()
             env["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-            subprocess.run([sys.executable, "scripts/ml/export_onnx.py"], check=True, env=env)
+            subprocess.run(
+                [sys.executable, "-m", "scripts.sync", "--models", "sync"],
+                check=True,
+                env=env,
+            )
             print("[SETUP] Models exported and quantized successfully!", flush=True)
 
-        if (
-            needs_quantization
-            and use_int8
-            and (not os.path.exists(bge_int8) or not os.path.exists(rerank_int8))
-        ):
+        if needs_quantization and (not os.path.exists(emb_int8) or not os.path.exists(rerank_int8)):
             print(
                 "[SETUP] Running INT8 dynamic quantization for memory optimization...", flush=True
             )
-            subprocess.run([sys.executable, "scripts/ml/quantize.py"], check=True)
+            subprocess.run(
+                [sys.executable, "-m", "scripts.sync", "--models", "quantize"],
+                check=True,
+            )
             print("[SETUP] INT8 quantization complete!", flush=True)
 
         if not needs_export and not needs_quantization:
             print("[OK] All required ONNX models and configs are present (cached).", flush=True)
 
+        for required_path in (emb_int8, rerank_int8, gliner_onnx):
+            if not os.path.exists(required_path):
+                raise FileNotFoundError(
+                    f"Required ONNX artifact still missing after setup: {required_path}"
+                )
+
     except Exception as e:
-        print(f"Error checking/preparing ONNX models: {e}", flush=True)
-        print("Attempting to proceed with server startup...", flush=True)
+        print(f"FATAL: ONNX model setup failed ({e})", flush=True)
+        sys.exit(1)
 
     # Launch the gRPC Engine microservice on ENGINE_GRPC_PORT (50051)
     grpc_port = os.getenv("ENGINE_GRPC_PORT", "50051")

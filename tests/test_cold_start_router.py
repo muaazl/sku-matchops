@@ -11,6 +11,7 @@ from engine import config
 from engine.classification.classifier import ZeroShotClassifier
 from engine.classification.cold_start_router import (
     ClassLifecycleTier,
+    ColdStartRouter,
     TaxonomyLifecycleRegistry,
     Tier1ZeroShotClassifier,
     Tier2FewShotClassifier,
@@ -100,8 +101,8 @@ class TestColdStartRouter(unittest.TestCase):
         )
 
         mock_embed = MagicMock(spec=EmbeddingEngine)
-        # Mock cross-encoder returning positive logit (relevant match: logit 2.5 -> sigmoid ~0.92)
-        mock_embed.score_cross_encoder.return_value = np.array([2.5], dtype=np.float32)
+        # Mock reranker returning strong cosine similarity score (0.92)
+        mock_embed.score_cross_encoder.return_value = np.array([0.92], dtype=np.float32)
 
         tier1 = Tier1ZeroShotClassifier(
             embed_engine=mock_embed,
@@ -290,6 +291,32 @@ class TestColdStartRouter(unittest.TestCase):
         registry2 = TaxonomyLifecycleRegistry(domain="market", cache_dir=self.test_dir)
         registry2.sync_from_catalog(["Mature"], {}, cat_df=cat_df)
         self.assertEqual(registry2.warm_index_to_class, ["Mature"])
+
+    def test_route_single_and_batch_parity_on_low_confidence_warm_centroid(self):
+        """Low-confidence warm centroids (< REVIEW_THRESHOLD) must return empty so static zero-shot can run."""
+        dim = config.EMBEDDING_DIM
+        router = ColdStartRouter(
+            domain="market",
+            embed_engine=MagicMock(spec=EmbeddingEngine),
+            vector_store=None,
+            descriptions={"bt_descriptions": {}},
+            cache_dir=self.test_dir,
+        )
+        # 3 orthogonal centroids -> query equidistant to all 3 -> softmax ~0.333 < REVIEW_THRESHOLD (0.50)
+        c = np.zeros((3, dim), dtype=np.float32)
+        c[0, 0] = 1.0
+        c[1, 1] = 1.0
+        c[2, 2] = 1.0
+        router.registry.warm_centroids = c
+        router.registry.warm_index_to_class = ["A", "B", "C"]
+        router.registry.class_to_warm_index = {"A": 0, "B": 1, "C": 2}
+
+        q = np.zeros(dim, dtype=np.float32)
+        q[:3] = 1.0 / np.sqrt(3.0)
+        single = router.route_single(q, sku_name="Unknown Item")
+        batch = router.route_batch(q.reshape(1, -1), sku_names=["Unknown Item"])[0]
+        self.assertEqual(single, ("", 0.0, "zero-shot", []))
+        self.assertEqual(batch, single)
 
 
 if __name__ == "__main__":

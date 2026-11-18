@@ -68,7 +68,7 @@ def _clean_field(row, key: str) -> str | None:
 def _extract_query_embeddings(
     embed_engine, names: list[str], descriptions: list[str], categories: list[str]
 ):
-    """Encodes query texts with the Bi-Encoder using fallback for description/category."""
+    """Encodes query texts with the active embedding model using fallback for description/category."""
     safe_descs = [d if d else "" for d in descriptions]
     safe_cats = [c if c else "" for c in categories]
     return embed_engine.embed_weighted_sku(names, safe_descs, safe_cats)
@@ -78,7 +78,7 @@ def _apply_template_tag_enrichment(
     skus: list[dict[str, Any]], results: list[dict], domain: str, mode: str = "classifier"
 ):
     """Enriches predicted tags using template-based keyword substitution if enabled."""
-    if not getattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", False):
+    if not getattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", True):
         return
 
     try:
@@ -183,35 +183,9 @@ def process_request(
             for i, sku in enumerate(skus):
                 flavor_set = ner_results[i].get("flavor", set())
                 name = sku.get("name", "")
-                seafood_set = getattr(ner_engine, "seafood_flavors", set())
-                meat_set = getattr(ner_engine, "meat_flavors", set())
-                veg_set = getattr(ner_engine, "vegetable_flavors", set())
-                has_seafood = any(f in seafood_set for f in flavor_set)
-                # Exclude meta-categories ('mixed') and special protein ('egg') from land meats
-                land_meats = [
-                    f
-                    for f in flavor_set
-                    if f in meat_set and f not in seafood_set and f not in ("egg", "mixed")
-                ]
-                meat_count = len(land_meats)
-                has_other_protein = meat_count > 0 or has_seafood
-                has_egg = ("egg" in flavor_set) and ("egg" in meat_set)
-                has_veg = any(f in veg_set for f in flavor_set)
-
-                # Egg priority logic:
-                # 1. If egg is added with another meat/seafood, prioritize that meat (egg does not count towards mixed).
-                # 2. If egg is alone or with veg (no other meat/seafood), keep egg as the primary protein (prevents tagging as veg).
-                if has_egg and not has_other_protein:
-                    meat_count = 1
-                    has_meat = True
-                else:
-                    has_meat = meat_count > 0
-
-                if (has_meat and has_seafood) or meat_count >= 2:
-                    if "mix" not in name.lower():
-                        name += " mixed"
-                elif not has_seafood and not has_meat and has_veg:
-                    pass  # name += " veg"
+                suffix = TextPipeline.resolve_food_mixed_suffix(name, flavor_set, ner_engine)
+                if suffix:
+                    name = f"{name} {suffix}"
                 # DO NOT mutate sku["name"] if it's just veg, it destroys exact matching downstream.
                 sku["name"] = name
         stage_timings["food_ner_prepass_ms"] = round((time.perf_counter() - t_ner_start) * 1000, 2)

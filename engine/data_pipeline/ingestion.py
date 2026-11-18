@@ -409,7 +409,7 @@ class DataIngestion:
             if not can_load_sheets:
                 raise RuntimeError(
                     f"[LOAD] No catalog data found in memory or Feather cache for domain '{domain}'. "
-                    f"Please run 'python -m scripts.catalog.sync' to initialize the catalog."
+                    f"Please run 'python -m scripts.sync' to initialize the catalog."
                 )
 
             return DataIngestion.load_catalog_from_sheets(sheet_id, domain)
@@ -527,9 +527,16 @@ class DataIngestion:
             }
         )
 
+        def _parse_bool_flag(val) -> bool:
+            if isinstance(val, bool):
+                return val
+            if isinstance(val, (int, float)):
+                return False if pd.isna(val) else bool(val)
+            return str(val).strip().lower() in ("true", "1", "1.0", "yes", "y")
+
         for col in ["Is_Weak", "Is_Meat", "Is_Vegetable", "Is_Seafood"]:
-            if col in brands_df.columns:
-                brands_df[col] = brands_df[col].astype(bool)
+            if col in brands_df.columns and not pd.api.types.is_bool_dtype(brands_df[col]):
+                brands_df[col] = brands_df[col].fillna(False).map(_parse_bool_flag).astype(bool)
 
         DataIngestion._catalog_mem_cache[domain] = cat_df
         DataIngestion._brands_mem_cache[domain] = brands_df
@@ -588,7 +595,7 @@ class DataIngestion:
         if not can_load:
             raise RuntimeError(
                 f"[LOAD] No classifier dictionaries found in local cache for domain '{domain}'. "
-                f"Please run 'python -m scripts.catalog.sync' to initialize dictionaries."
+                f"Please run 'python -m scripts.sync' to initialize dictionaries."
             )
 
         logger.info(
@@ -675,10 +682,3 @@ class DataIngestion:
                 logger.warning(f"[LOAD] Failed to read BT-GK pickle cache: {e}")
 
         return DataIngestion.build_bt_gk_map_from_catalog(domain=domain, cat_df=cat_df)
-
-    @staticmethod
-    def compute_and_store_dictionary_counts(domain: str, cat_df: pd.DataFrame | None = None):
-        """Deprecated on engine; database persistence is restricted to backend services."""
-        logger.debug(
-            f"[LOAD] [{domain.upper()}] compute_and_store_dictionary_counts is handled by backend service."
-        )

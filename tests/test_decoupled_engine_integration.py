@@ -414,23 +414,24 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             srv.stop(grace=0)
 
     def test_sync_script_has_no_top_level_backend_imports(self):
-        """scripts/catalog/sync.py must run --cache/--qdrant inside engine container without backend/."""
-        sync_file = Path(__file__).resolve().parent.parent / "scripts" / "catalog" / "sync.py"
+        """scripts/sync.py must run across engine/backend containers without cross-service top-level imports."""
+        sync_file = Path(__file__).resolve().parent.parent / "scripts" / "sync.py"
         tree = ast.parse(sync_file.read_text(encoding="utf-8"), filename=str(sync_file))
-        top_backend_imports = [
+        disallowed_roots = {"backend", "engine", "torch", "transformers", "onnxruntime"}
+        top_disallowed_imports = [
             node.lineno
             for node in tree.body
             if (
                 isinstance(node, ast.Import)
-                and any(a.name.split(".")[0] == "backend" for a in node.names)
+                and any(a.name.split(".")[0] in disallowed_roots for a in node.names)
             )
             or (
                 isinstance(node, ast.ImportFrom)
                 and node.module
-                and node.module.split(".")[0] == "backend"
+                and node.module.split(".")[0] in disallowed_roots
             )
         ]
-        self.assertEqual(top_backend_imports, [])
+        self.assertEqual(top_disallowed_imports, [])
 
     def test_model_load_lifecycle_concurrency_and_reload_cache_eviction(self):
         """trigger_model_load guards concurrent loads, evicts caches on reload, and skips duplicate classifier calls."""
@@ -667,6 +668,60 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             self.assertEqual(frame["id"], "test_sse_job_202")
             self.assertEqual(frame["status"], "completed")
             self.assertEqual(frame["progress_pct"], 100.0)
+
+    def test_sync_cli_db_mode_avoids_engine_imports(self):
+        import builtins
+        import sys
+        from unittest.mock import MagicMock
+
+        import scripts.sync as sync_mod
+
+        real_import = builtins.__import__
+        imported_roots = []
+
+        def _tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "engine" or name.startswith("engine."):
+                imported_roots.append(name)
+            return real_import(name, globals, locals, fromlist, level)
+
+        with (
+            patch.object(
+                sys, "argv", ["sync.py", "--db", "sync", "--from-staged", "--keep-staged"]
+            ),
+            patch.object(sync_mod, "sync_db", MagicMock()) as mock_sync_db,
+            patch.object(sync_mod, "_get_sheet_id", return_value="dummy_sheet_id"),
+            patch.object(builtins, "__import__", side_effect=_tracking_import),
+        ):
+            sync_mod.main()
+
+        self.assertEqual(imported_roots, [])
+        self.assertEqual(mock_sync_db.call_count, 2)
+
+    def test_grpc_suggest_tags_maps_template_fields(self):
+        from unittest.mock import MagicMock
+
+        from engine.grpc_server import EngineInferenceServicer
+
+        servicer = EngineInferenceServicer()
+        req = pb2.SuggestRequest(sku_name="Kist Mango Nectar 200ml", domain="market")
+        with patch(
+            "engine.grpc_server.suggest_tags_from_template",
+            return_value={
+                "matched": True,
+                "base_sku": "Kist Nectar 200ml",
+                "suggested_bt": "Juice",
+                "suggested_gk": ["Juice", "Fruit Drink"],
+                "suggested_region": "Beverages",
+            },
+        ):
+            resp = servicer.SuggestTags(req, MagicMock())
+
+        self.assertEqual(resp.status, "success")
+        self.assertTrue(resp.is_match)
+        self.assertEqual(resp.template_used, "Kist Nectar 200ml")
+        self.assertEqual(resp.suggested_bt, "Juice")
+        self.assertEqual(resp.suggested_gk, "Juice, Fruit Drink")
+        self.assertEqual(resp.suggested_region, "Beverages")
 
 
 if __name__ == "__main__":

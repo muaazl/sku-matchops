@@ -309,7 +309,11 @@ class TestArcFaceBT(unittest.TestCase):
         mock_vs = MagicMock()
         mock_vs.hybrid_search.return_value = []
 
-        query_embeddings = {"dense": np.random.randn(1, 1024).astype(np.float32), "sparse": [{}]}
+        query_embeddings = {
+            "dense": np.random.randn(1, 1024).astype(np.float32),
+            "bm25": [{}],
+            "sparse": [],
+        }
         res = tag_all_skus(
             sku_names=["Margherita Pizza"],
             sku_categories=["Food"],
@@ -328,12 +332,12 @@ class TestArcFaceBT(unittest.TestCase):
         self.assertEqual(item["bt_model"], "arcface")
         self.assertIn("Classifier (arcface):", item["reasoning"])
 
-    @patch("scripts.ml.train_bt_head.extract_embeddings")
+    @patch("scripts.sync.extract_embeddings")
     def test_train_bt_head_synthetic_pipeline(self, mock_extract):
         """Test train_bt_arcface end-to-end with mock catalog and embeddings."""
-        from scripts.ml.train_bt_head import train_bt_arcface
+        from scripts.sync import train_bt_arcface
 
-        # Mock embeddings to avoid loading heavy 2.2GB BGE-M3 model in tests
+        # Mock embeddings to avoid loading heavy embedding model in tests
         mock_extract.return_value = np.random.randn(20, 1024).astype(np.float32)
 
         # Create synthetic catalog CSV
@@ -358,11 +362,13 @@ class TestArcFaceBT(unittest.TestCase):
             device_name="cpu",
             from_sample=True,
             sample_file=sample_path,
-            no_quantize=False,
             output_dir=self.test_dir,
         )
 
-        self.assertTrue(os.path.exists(artifacts["fp32_onnx"]))
+        self.assertNotIn("fp32_onnx", artifacts)
+        self.assertFalse(
+            os.path.exists(os.path.join(self.test_dir, f"{config.DOMAIN_FOOD}_bt_arcface.onnx"))
+        )
         self.assertTrue(os.path.exists(artifacts["int8_onnx"]))
         self.assertTrue(os.path.exists(artifacts["labels_json"]))
         self.assertTrue(os.path.exists(artifacts["meta_joblib"]))

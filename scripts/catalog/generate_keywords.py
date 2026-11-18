@@ -4,7 +4,7 @@ generate_market_keywords.py
 
 Generates search autocomplete generic keywords for Market categories using:
 1. Low/medium confidence SKU extraction from PostgreSQL (jobs 578-596).
-2. Local BGE-M3 ONNX dense vector embedding & semantic deduplication to isolate distinct products.
+2. Local INT8 ONNX dense vector embedding & semantic deduplication to isolate distinct products.
 3. Dynamic few-shot catalog example mining for targeted categories.
 4. Gemini 2.5 Flash with structured Pydantic schema and exponential backoff retry.
 5. Deduplication, quality constraint filtering, and master JSON export.
@@ -40,9 +40,14 @@ logger = logging.getLogger("keyword_gen")
 
 # Paths
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from engine import config  # noqa: E402
+from engine.nlp.embedding_engine import EmbeddingEngine  # noqa: E402
+
 DATA_DIR = REPO_ROOT / "data"
-ONNX_BGE_DIR = REPO_ROOT / "models" / "bge_m3"
-ONNX_BGE_PATH = ONNX_BGE_DIR / "model_int8.onnx"
+ONNX_EMBED_PATH = Path(config.EMBEDDING_ONNX)
 EXPORTS_DIR = DATA_DIR / "exports"
 
 
@@ -174,7 +179,7 @@ def fetch_catalog_few_shots(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Text Normalization & Semantic Vector Deduplication (BGE-M3 ONNX)
+# 3. Text Normalization & Semantic Vector Deduplication (INT8 ONNX Embedding)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -215,7 +220,7 @@ def vector_deduplicate_skus(
     batch_size: int = 64,
 ) -> list[str]:
     """
-    Uses local BGE-M3 ONNX model to compute dense embeddings and performs
+    Uses local INT8 ONNX embedding model to compute dense embeddings and performs
     greedy clustering to isolate distinct products (skipping variants/brand duplicates).
     """
     # 1. Clean SKUs and filter those with insufficient Latin text
@@ -234,14 +239,23 @@ def vector_deduplicate_skus(
         f"Loaded {len(sku_pairs)} SKUs with valid English product text for vector deduplication."
     )
 
-    # 2. Load BGE-M3 Tokenizer and ONNX Session
-    logger.info(f"Loading local BGE-M3 ONNX model from {onnx_path}...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(onnx_path.parent), local_files_only=True, fix_mistral_regex=False
+    # 2. Load Tokenizer and INT8 ONNX Session
+    logger.info(
+        f"Loading local INT8 ONNX embedding model ({config.EMBEDDING_MODEL}) from {onnx_path}..."
     )
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(onnx_path.parent),
+        local_files_only=True,
+        trust_remote_code=True,
+        fix_mistral_regex=True,
+    )
+    tokenizer.padding_side = "right"
     sess_options = ort.SessionOptions()
     sess_options.intra_op_num_threads = min(os.cpu_count() or 4, 8)
     session = ort.InferenceSession(str(onnx_path), sess_options, providers=["CPUExecutionProvider"])
+    valid_inputs = {inp.name for inp in session.get_inputs()}
+    manifest = config.get_embedding_manifest()
+    pooling = manifest.get("pooling", "last_token")
 
     # 3. Compute Dense Embeddings in batches
     clean_texts = [p[1] for p in sku_pairs]
@@ -250,9 +264,11 @@ def vector_deduplicate_skus(
     for i in range(0, len(clean_texts), batch_size):
         batch = clean_texts[i : i + batch_size]
         inputs = tokenizer(batch, padding=True, truncation=True, max_length=64, return_tensors="np")
-        ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items()}
+        ort_inputs = {k: v.astype(np.int64) for k, v in inputs.items() if k in valid_inputs}
         outputs = session.run(None, ort_inputs)
-        dense = outputs[0]  # Shape: (batch_size, 1024)
+        dense = outputs[0]
+        if dense.ndim == 3:
+            dense = EmbeddingEngine._pool_hidden_states(dense, inputs["attention_mask"], pooling)
 
         # L2 Normalize
         norms = np.linalg.norm(dense, axis=1, keepdims=True)
@@ -470,7 +486,7 @@ def main():
     # Step 2: Vector Deduplication
     distinct_skus = vector_deduplicate_skus(
         raw_skus,
-        onnx_path=ONNX_BGE_PATH,
+        onnx_path=ONNX_EMBED_PATH,
         sim_threshold=args.sim_threshold,
     )
     logger.info(f"Proceeding with {len(distinct_skus)} distinct representative product SKUs.")

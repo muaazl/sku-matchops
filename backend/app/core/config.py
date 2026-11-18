@@ -6,7 +6,6 @@ load_dotenv()
 
 # System configuration (always running in standard secure mode)
 API_KEY = os.getenv("MATCHOPS_API_KEY", "bismillah")
-APPSCRIPT_WEBHOOK_URL = os.getenv("APPSCRIPT_WEBHOOK_URL", "")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
 # --- PostgreSQL & PgBouncer (owned exclusively by the Backend Gateway) ---
@@ -31,14 +30,18 @@ INTERNAL_GRPC_SECRET = os.getenv("INTERNAL_GRPC_SECRET", "")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 # --- Thresholds ---
-AUTO_THRESHOLD = float(os.getenv("AUTO_THRESHOLD", "0.85"))
-REVIEW_THRESHOLD = float(os.getenv("REVIEW_THRESHOLD", "0.60"))
+AUTO_THRESHOLD = float(os.getenv("AUTO_THRESHOLD", "0.80"))
+REVIEW_THRESHOLD = float(os.getenv("REVIEW_THRESHOLD", "0.50"))
 
 # --- Logging ---
 LOG_DIR = os.getenv(
     "LOG_DIR",
     os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "logs"
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        ),
+        "data",
+        "logs",
     ),
 )
 LOG_FILE = os.getenv("LOG_FILE", os.path.join(LOG_DIR, "backend.log"))

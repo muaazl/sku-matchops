@@ -225,7 +225,7 @@ def test_matcher_candidate_evaluation_matches_dataframe_reference_and_skips_noop
         [cand_alt, cand_hit],  # SKU 1 unfiltered
     ]
     mock_embed.score_cross_encoder.side_effect = lambda pairs: np.array(
-        [4.5 if "almond" in p[1] else -2.0 for p in pairs], dtype=np.float32
+        [0.88 if "almond" in p[1] else 0.20 for p in pairs], dtype=np.float32
     )
 
     input_df = pd.DataFrame(
@@ -253,10 +253,9 @@ def test_matcher_candidate_evaluation_matches_dataframe_reference_and_skips_noop
     assert res.iloc[1]["Logic Notes"].startswith("BT-Fallback (BT: Snacks,")
 
 
-def test_cross_encoder_fp32_cache_vs_int8_exact_batch_preservation():
-    """Item 11: FP32 Cross-Encoder deduplicates + caches; INT8 preserves exact batch composition."""
+def test_cross_encoder_int8_exact_batch_and_activation():
+    """Item 11: Strict INT8 Cross-Encoder preserves exact batch composition and applies configured activation."""
     eng = EmbeddingEngine.__new__(EmbeddingEngine)
-    eng.cross_encoder_fallback = None
     eng.rerank_tokenizer = MagicMock(
         side_effect=lambda t1, t2, **kw: {
             "input_ids": np.ones((len(t1), 4), dtype=np.int64),
@@ -265,8 +264,8 @@ def test_cross_encoder_fp32_cache_vs_int8_exact_batch_preservation():
     )
     eng.cross_session = MagicMock()
 
-    # 1. INT8 mode: preserves exact dynamic quantization batch composition
-    eng._cross_is_int8 = True
+    # 1. Identity activation: preserves exact dynamic quantization batch composition
+    eng._score_activation = "identity"
     eng.cross_session.run.side_effect = lambda _, inp: [
         np.arange(len(inp["input_ids"]), dtype=np.float32)
     ]
@@ -274,25 +273,19 @@ def test_cross_encoder_fp32_cache_vs_int8_exact_batch_preservation():
     out_int8 = eng.score_cross_encoder(pairs, batch_size=64)
     assert len(out_int8) == 3
     assert eng.rerank_tokenizer.call_args[0][0] == ["sku a", "sku a", "sku a"]
+    np.testing.assert_allclose(out_int8, [0.0, 1.0, 2.0], atol=1e-6)
 
-    # 2. FP32 mode: deduplicates duplicate pairs and serves subsequent calls from LRU cache
-    eng._cross_is_int8 = False
-    eng.rerank_tokenizer.reset_mock()
-    eng.cross_session.reset_mock()
+    # 2. Sigmoid activation: calibrates cross-encoder logits into (0.0, 1.0)
+    eng._score_activation = "sigmoid"
     eng.cross_session.run.side_effect = lambda _, inp: [
-        np.array(
-            [1.25 if idx == 0 else -0.75 for idx in range(len(inp["input_ids"]))],
-            dtype=np.float32,
-        )
+        np.array([[0.0], [2.0], [-2.0]], dtype=np.float32)
     ]
-
-    out_fp32_first = eng.score_cross_encoder(pairs, batch_size=64)
-    assert np.allclose(out_fp32_first, np.array([1.25, 1.25, -0.75], dtype=np.float32))
-    assert len(eng.rerank_tokenizer.call_args[0][0]) == 2
-
-    out_fp32_second = eng.score_cross_encoder(pairs, batch_size=64)
-    assert np.allclose(out_fp32_second, out_fp32_first)
-    assert eng.cross_session.run.call_count == 1
+    out_sig = eng.score_cross_encoder(pairs, batch_size=64)
+    np.testing.assert_allclose(
+        out_sig,
+        [0.5, 1.0 / (1.0 + np.exp(-2.0)), 1.0 / (1.0 + np.exp(2.0))],
+        atol=1e-5,
+    )
 
 
 def test_ner_engine_deduplicates_and_caches_food_prepass_to_tagger():
@@ -399,34 +392,65 @@ def test_vector_store_retry_rebinds_client_and_falls_back_from_grpc():
         VectorStore._prefer_grpc_override = orig_override
 
 
-def test_vector_store_search_hybrid_tags_uses_single_batch_query_and_minimal_payload():
-    """Item 10: search_hybrid_tags combines dense+sparse into 1 query_batch_points call with with_payload=['tag']."""
+def test_vector_store_search_hybrid_tags_uses_single_batch_query_and_minimal_payload(monkeypatch):
+    """Item 10: search_hybrid_tags combines dense+bm25(+optional BGE-M3 sparse) into 1 query_batch_points call."""
     vs = VectorStore.__new__(VectorStore)
     vs._prefer_grpc = True
-    vs._verified_collections = {"market_tags"}
+    vs._checked_collections = {"market_tags"}
     vs.client = MagicMock()
     dense_pt = SimpleNamespace(payload={"tag": "Beverages"}, score=0.91)
-    sparse_pt = SimpleNamespace(payload={"tag": "Soft Drinks"}, score=0.84)
+    bm25_pt = SimpleNamespace(payload={"tag": "Soft Drinks"}, score=0.84)
+    sparse_pt = SimpleNamespace(payload={"tag": "Soda"}, score=0.79)
+
+    # 1. Non-BGE-M3: Dense + BM25 (2 requests)
+    monkeypatch.setattr(config, "has_learned_sparse", lambda: False)
     vs.client.query_batch_points.return_value = [
         SimpleNamespace(points=[dense_pt]),
-        SimpleNamespace(points=[sparse_pt]),
+        SimpleNamespace(points=[bm25_pt]),
     ]
 
-    dense_hits, sparse_hits = vs.search_hybrid_tags(
+    dense_hits, bm25_hits, sparse_hits = vs.search_hybrid_tags(
         dense_query=np.ones(8, dtype=np.float32),
         sparse_query={10: 0.5},
         limit=5,
         filter_dict_type="BT",
         domain="market",
+        bm25_query={20: 0.6},
     )
 
     vs.client.query_batch_points.assert_called_once()
     call_kwargs = vs.client.query_batch_points.call_args.kwargs
     assert call_kwargs["collection_name"] == "market_tags"
-    assert len(call_kwargs["requests"]) == 2
+    assert [req.using for req in call_kwargs["requests"]] == ["dense", "bm25"]
     assert all(req.with_payload == ["tag"] for req in call_kwargs["requests"])
     assert dense_hits == [dense_pt]
-    assert sparse_hits == [sparse_pt]
+    assert bm25_hits == [bm25_pt]
+    assert sparse_hits == []
+
+    # 2. BGE-M3: Dense + BM25 + Sparse (3 requests)
+    vs.client.query_batch_points.reset_mock()
+    monkeypatch.setattr(config, "has_learned_sparse", lambda: True)
+    vs.client.query_batch_points.return_value = [
+        SimpleNamespace(points=[dense_pt]),
+        SimpleNamespace(points=[bm25_pt]),
+        SimpleNamespace(points=[sparse_pt]),
+    ]
+    d3, b3, s3 = vs.search_hybrid_tags(
+        dense_query=np.ones(8, dtype=np.float32),
+        sparse_query={10: 0.5},
+        limit=5,
+        filter_dict_type="BT",
+        domain="market",
+        bm25_query={20: 0.6},
+    )
+    assert [req.using for req in vs.client.query_batch_points.call_args.kwargs["requests"]] == [
+        "dense",
+        "bm25",
+        "sparse",
+    ]
+    assert d3 == [dense_pt]
+    assert b3 == [bm25_pt]
+    assert s3 == [sparse_pt]
 
 
 def test_worker_exec_gate_releases_before_outbound_webhook():

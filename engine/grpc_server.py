@@ -174,14 +174,20 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 exclude_bt=request.exclude_bt,
                 exclude_gk=request.exclude_gk,
             )
+            raw_gk = res.get("suggested_gk")
+            gk_str = (
+                ", ".join(str(g) for g in raw_gk if g)
+                if isinstance(raw_gk, (list, tuple))
+                else str(raw_gk or "")
+            )
             return pb2.SuggestResponse(
                 status="success",
                 sku_name=str(res.get("sku_name") or request.sku_name),
                 suggested_bt=str(res.get("suggested_bt") or ""),
-                suggested_gk=str(res.get("suggested_gk") or ""),
+                suggested_gk=gk_str,
                 suggested_region=str(res.get("suggested_region") or ""),
-                template_used=str(res.get("template_used") or ""),
-                is_match=bool(res.get("is_match", False)),
+                template_used=str(res.get("template_used") or res.get("base_sku") or ""),
+                is_match=bool(res.get("matched", res.get("is_match", False))),
             )
         except Exception as e:
             abort_rpc_error(context, logger, "SuggestTags", e)
@@ -367,31 +373,34 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
             )
 
             # Collections ending in _catalog (or generic collections) store clean_text which is normalized lowercase.
-            # Use normalized query for catalog dense matching; for sparse/hybrid, encode both raw and normalized
-            # so BGE-M3's case-sensitive subword vocabulary matches regardless of user input casing.
+            # Encode normalized query for consistent subword/BM25 tokenization across casing variations.
             is_catalog = request.name.endswith("_catalog") or not request.name.endswith("_tags")
             dense_target = normalized_query if (is_catalog and normalized_query) else raw_query
 
-            # Strictly encode the normalized query so BGE-M3 produces consistent subword token IDs
-            # regardless of query casing or script (case-insensitive for Latin, Sinhala, etc.)
             encoded = embed_engine.encode([dense_target])
             dense_vec = encoded["dense"][0]
             dense_list = dense_vec.tolist() if hasattr(dense_vec, "tolist") else dense_vec
 
             if mode in ("sparse", "hybrid"):
-                sparse_list = encoded.get("sparse", [{}])
+                bm25_list = encoded.get("bm25") or [{}]
+                bm25_dict = bm25_list[0] if bm25_list else {}
+                sparse_list = encoded.get("sparse") or []
                 sparse_dict = sparse_list[0] if sparse_list else {}
 
                 from qdrant_client.http.models import SparseVector
 
-                indices, values = [], []
-                for k, v in sparse_dict.items():
-                    try:
-                        indices.append(int(k))
-                        values.append(float(v))
-                    except (ValueError, TypeError):
-                        pass
-                sparse_vector = SparseVector(indices=indices, values=values)
+                def _to_sv(d: dict) -> SparseVector:
+                    idx, vals = [], []
+                    for k, v in d.items():
+                        try:
+                            idx.append(int(k))
+                            vals.append(float(v))
+                        except (ValueError, TypeError):
+                            pass
+                    return SparseVector(indices=idx, values=vals)
+
+                bm25_vector = _to_sv(bm25_dict)
+                sparse_vector = _to_sv(sparse_dict)
 
                 if mode == "sparse":
                     q_words = normalized_query.split()
@@ -399,11 +408,11 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                     fetch_limit = max((request.limit or 10) * 3, 30)
 
                     raw_points = vs._call_with_retry(
-                        "query_points (sparse collection search)",
+                        "query_points (bm25 collection search)",
                         vs.client.query_points,
                         collection_name=request.name,
-                        query=sparse_vector,
-                        using="sparse",
+                        query=bm25_vector,
+                        using="bm25",
                         limit=fetch_limit,
                         query_filter=query_filter,
                         score_threshold=score_threshold,
@@ -432,18 +441,22 @@ class EngineInferenceServicer(pb2_grpc.EngineInferenceServiceServicer):
                 else:  # hybrid
                     from qdrant_client.http.models import Fusion, FusionQuery, Prefetch
 
+                    limit_k = request.limit or 10
+                    prefetches = [Prefetch(query=dense_list, using="dense", limit=limit_k)]
+                    if bm25_vector.indices:
+                        prefetches.append(Prefetch(query=bm25_vector, using="bm25", limit=limit_k))
+                    if config.has_learned_sparse() and sparse_vector.indices:
+                        prefetches.append(
+                            Prefetch(query=sparse_vector, using="sparse", limit=limit_k)
+                        )
+
                     points = vs._call_with_retry(
                         "query_points (hybrid collection search)",
                         vs.client.query_points,
                         collection_name=request.name,
-                        prefetch=[
-                            Prefetch(query=dense_list, using="dense", limit=request.limit or 10),
-                            Prefetch(
-                                query=sparse_vector, using="sparse", limit=request.limit or 10
-                            ),
-                        ],
+                        prefetch=prefetches,
                         query=FusionQuery(fusion=Fusion.RRF),
-                        limit=request.limit or 10,
+                        limit=limit_k,
                         query_filter=query_filter,
                         with_payload=True,
                     ).points

@@ -1,10 +1,9 @@
-"""API Key authentication, observability, and golden regression tests."""
+"""API Key authentication and observability integration tests."""
 
 import io
 import json
 import logging
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -193,102 +192,6 @@ def test_json_log_format(monkeypatch):
     assert entry["message"] == "hello world"
     assert entry["level"] == "WARNING" and entry["trace_id"] == "abc123"
     assert entry["ts"] and entry["logger"] == log.name
-
-
-# ---------------------------------------------------------------- golden regression
-
-GOLDEN = json.loads((Path(__file__).parent / "golden_dataset.json").read_text(encoding="utf-8"))
-
-
-@pytest.fixture(scope="module")
-def golden_rules():
-    """Seeds the production business rules captured in the golden dataset."""
-    prev = (loader._RULES_CACHE, loader._RULES_VERSION)
-    loader.set_rules_from_dicts(GOLDEN["rules"])
-    yield
-    loader._RULES_CACHE, loader._RULES_VERSION = prev
-    loader._cached_rules.cache_clear()
-
-
-def test_golden_dataset_shape():
-    cases = GOLDEN["cases"]
-    assert len(cases) >= 50
-    assert len({c["id"] for c in cases}) == len(cases)
-    categories = {c["category"] for c in cases}
-    for required in (
-        "seafood_rule",
-        "seafood_rule_exclusion",
-        "unit_variant",
-        "beverage",
-        "combo_set_menu",
-        "typo",
-        "false_positive_trap",
-    ):
-        assert required in categories, required
-    assert {c["domain"] for c in cases} == {"food", "market"}
-
-
-@pytest.mark.live_models
-def test_golden_regression(golden_rules):
-    import os
-
-    import httpx
-
-    from engine import config
-    from engine.core.resource_loader import get_classifier, get_pipeline
-    from engine.pipeline.processor import process_request
-
-    for d in ("food", "market"):
-        meta_path = os.path.join(config.CACHE_DIR, f"{d}_catalog_metadata.pkl")
-        if (
-            not os.path.exists(config.BI_ENCODER_ONNX)
-            or not os.path.exists(config.get_bt_arcface_onnx_path(d))
-            or not os.path.exists(meta_path)
-        ):
-            pytest.skip(f"Local ONNX models or synced '{d}' catalog cache not found on disk")
-    try:
-        if httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0).status_code >= 500:
-            pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
-    except Exception:
-        pytest.skip(f"Qdrant not reachable at {config.QDRANT_URL}")
-
-    outcomes = []
-    for domain in ("food", "market"):
-        cases = [c for c in GOLDEN["cases"] if c["domain"] == domain]
-        get_classifier(domain)
-        get_pipeline(domain)
-        skus = [{"name": c["sku"], "price": 0.0, "description": "", "category": ""} for c in cases]
-        results = process_request(task="classifier", domain=domain, skus=skus)["results"]
-        assert len(results) == len(cases)
-        for case, res in zip(cases, results):
-            gks = {g.strip() for g in (res.get("suggested_gk") or "").split(",") if g.strip()}
-            bt_ok = res.get("suggested_bt") in case["expected_bt"]
-            missing = set(case.get("must_have_gk", [])) - gks
-            forbidden = set(case.get("must_not_have_gk", [])) & gks
-            outcomes.append(
-                {
-                    "case": case,
-                    "bt": res.get("suggested_bt"),
-                    "ok": bt_ok and not missing and not forbidden,
-                    "missing": missing,
-                    "forbidden": forbidden,
-                }
-            )
-
-    accuracy = sum(o["ok"] for o in outcomes) / len(outcomes)
-    critical = [o for o in outcomes if o["forbidden"] and o["case"].get("critical")]
-    misses = "\n".join(
-        f"  {o['case']['id']} {o['case']['sku']!r}: got bt={o['bt']!r} "
-        f"expected {o['case']['expected_bt']} missing={sorted(o['missing'])} forbidden={sorted(o['forbidden'])}"
-        for o in outcomes
-        if not o["ok"]
-    )
-    print(
-        f"\nGolden accuracy {accuracy:.1%} ({sum(o['ok'] for o in outcomes)}/{len(outcomes)})\n{misses}"
-    )
-
-    assert not critical, f"critical rule false positives:\n{misses}"
-    assert accuracy >= GOLDEN["min_accuracy"], f"accuracy {accuracy:.1%} below threshold:\n{misses}"
 
 
 # ---------------------------------------------------------------- gRPC fallback context

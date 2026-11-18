@@ -98,9 +98,7 @@ def _get_shared_models():
                 def _init_embed():
                     global _embed_engine
                     if _embed_engine is None:
-                        logger.info(
-                            "Loading shared Embedding Models (Bi-Encoder + Cross-Encoder)..."
-                        )
+                        logger.info("Loading shared Embedding & Reranker models...")
                         _embed_engine = EmbeddingEngine()
 
                 def _init_ner():
@@ -160,11 +158,13 @@ def get_pipeline(
                 config.GOOGLE_SHEET_ID, domain=domain, force_fetch=False
             )
 
-            ner_engine = NEREngine(brands_df, domain=domain, shared_model=ner_engine_shared.model)
+            classifier = get_classifier(domain, force_reset=force_sync)
+            ner_engine = _get_or_create_domain_ner(
+                domain, brands_df, ner_engine_shared.model, force_refresh=False
+            )
             logic_gates = LogicGates(embed_engine, brands_df=brands_df)
             cache_manager = CacheManager(ner_engine, embed_engine)
 
-            classifier = get_classifier(domain, force_reset=force_sync)
             matcher = SKUMatcher(
                 cat_df,
                 brands_df,
@@ -228,7 +228,9 @@ def _train_classifier(domain: str, force_reset: bool) -> ZeroShotClassifier:
             config.GOOGLE_SHEET_ID, domain=domain, force_fetch=False
         )
 
-        ner_engine = NEREngine(brands_df, domain=domain, shared_model=ner_engine_shared.model)
+        ner_engine = _get_or_create_domain_ner(
+            domain, brands_df, ner_engine_shared.model, force_refresh=force_reset
+        )
         cache_manager = CacheManager(ner_engine, embed_engine)
         dicts = DataIngestion.load_classifier_dictionaries(
             config.GOOGLE_SHEET_ID, domain=domain, force_fetch=False
@@ -248,32 +250,26 @@ def _train_classifier(domain: str, force_reset: bool) -> ZeroShotClassifier:
         descriptions = build_descriptions(domain, dicts, bt_gk_map, third_tag_map)
         descriptions["bt_to_gk_umbrella"] = umbrella
 
-        gk_tags = dicts.get("gk", [])
-        if gk_tags:
-            gk_embs = embed_engine.embed_dictionary_incremental(domain, "gk", gk_tags)
-            vector_store.upsert_tags(
-                gk_tags, gk_embs["dense"], gk_embs["sparse"], "gk", domain=domain, force=force_reset
-            )
-
-        bt_tags = dicts.get("bt", [])
-        if bt_tags:
-            bt_embs = embed_engine.embed_dictionary_incremental(domain, "bt", bt_tags)
-            vector_store.upsert_tags(
-                bt_tags, bt_embs["dense"], bt_embs["sparse"], "bt", domain=domain, force=force_reset
-            )
-
-        third_key = "region" if domain == config.DOMAIN_FOOD else "category"
-        tt_tags = dicts.get(third_key, [])
-        if tt_tags:
-            tt_embs = embed_engine.embed_dictionary_incremental(domain, third_key, tt_tags)
-            vector_store.upsert_tags(
-                tt_tags,
-                tt_embs["dense"],
-                tt_embs["sparse"],
-                third_key,
-                domain=domain,
-                force=force_reset,
-            )
+        for tag_key, dict_type in (
+            ("gk", "gk"),
+            ("bt", "bt"),
+            (
+                "region" if domain == config.DOMAIN_FOOD else "category",
+                "region" if domain == config.DOMAIN_FOOD else "category",
+            ),
+        ):
+            tag_list = dicts.get(tag_key, [])
+            if tag_list:
+                tag_embs = embed_engine.embed_dictionary_incremental(domain, dict_type, tag_list)
+                vector_store.upsert_tags(
+                    tag_list,
+                    tag_embs["dense"],
+                    sparse_embs=tag_embs.get("sparse"),
+                    dict_type=dict_type,
+                    domain=domain,
+                    force=force_reset,
+                    bm25_embs=tag_embs.get("bm25"),
+                )
 
         classifier = ZeroShotClassifier(
             embed_engine, domain, descriptions, cat_df=cat_df, brands_df=brands_df
@@ -293,43 +289,57 @@ def _train_classifier(domain: str, force_reset: bool) -> ZeroShotClassifier:
         raise e
 
 
+def _get_or_create_domain_ner(
+    domain: str,
+    brands_df: pd.DataFrame | None = None,
+    shared_model=None,
+    force_refresh: bool = False,
+) -> NEREngine:
+    """Reuse or build a domain-scoped NEREngine sharing the base ONNX model."""
+    with _loader_lock:
+        if not force_refresh:
+            if domain in _domain_ner_engines:
+                return _domain_ner_engines[domain]
+            if (
+                domain in _pipelines
+                and hasattr(_pipelines[domain], "ner")
+                and _pipelines[domain].ner is not None
+            ):
+                _domain_ner_engines[domain] = _pipelines[domain].ner
+                return _domain_ner_engines[domain]
+            if (
+                domain in _classifiers
+                and hasattr(_classifiers[domain], "ner_engine")
+                and _classifiers[domain].ner_engine is not None
+            ):
+                _domain_ner_engines[domain] = _classifiers[domain].ner_engine
+                return _domain_ner_engines[domain]
+
+    if shared_model is None:
+        _, ner_engine_shared = _get_shared_models()
+        shared_model = ner_engine_shared.model
+    if brands_df is None:
+        try:
+            _, brands_df = DataIngestion.load_catalog(
+                config.GOOGLE_SHEET_ID, domain=domain, force_fetch=False
+            )
+        except Exception as e:
+            logger.warning(f"Could not load catalog for domain '{domain}' NER: {e}")
+            brands_df = pd.DataFrame(columns=["Flavor Name", "Brand Name", "Aliases", "Is_Weak"])
+
+    domain_ner = NEREngine(brands_df, domain=domain, shared_model=shared_model)
+    with _loader_lock:
+        if not force_refresh and domain in _domain_ner_engines:
+            return _domain_ner_engines[domain]
+        _domain_ner_engines[domain] = domain_ner
+    return domain_ner
+
+
 def get_ner_engine(domain: str) -> NEREngine:
     """Returns a domain-specific NEREngine with the domain's dictionary loaded."""
     if domain not in (config.DOMAIN_MARKET, config.DOMAIN_FOOD):
         domain = config.DOMAIN_MARKET
-
-    with _loader_lock:
-        if domain in _domain_ner_engines:
-            return _domain_ner_engines[domain]
-        if (
-            domain in _pipelines
-            and hasattr(_pipelines[domain], "ner")
-            and _pipelines[domain].ner is not None
-        ):
-            _domain_ner_engines[domain] = _pipelines[domain].ner
-            return _domain_ner_engines[domain]
-        if (
-            domain in _classifiers
-            and hasattr(_classifiers[domain], "ner_engine")
-            and _classifiers[domain].ner_engine is not None
-        ):
-            _domain_ner_engines[domain] = _classifiers[domain].ner_engine
-            return _domain_ner_engines[domain]
-
-    # Build domain NEREngine reusing shared ONNX model
-    _, ner_engine_shared = _get_shared_models()
-    try:
-        _, brands_df = DataIngestion.load_catalog(
-            config.GOOGLE_SHEET_ID, domain=domain, force_fetch=False
-        )
-    except Exception as e:
-        logger.warning(f"Could not load catalog for domain '{domain}' NER: {e}")
-        brands_df = pd.DataFrame(columns=["Flavor Name", "Brand Name", "Aliases", "Is_Weak"])
-
-    domain_ner = NEREngine(brands_df, domain=domain, shared_model=ner_engine_shared.model)
-    with _loader_lock:
-        _domain_ner_engines[domain] = domain_ner
-    return domain_ner
+    return _get_or_create_domain_ner(domain)
 
 
 def check_models_loaded(domain: str, task: str) -> None:
@@ -351,7 +361,7 @@ def check_models_loaded(domain: str, task: str) -> None:
     if missing:
         raise ValueError(
             f"Models for domain '{domain}' are not loaded (missing: {', '.join(missing)}). "
-            f"Please call the /load-models endpoint to load the models first."
+            f"Please call the ManageModels gRPC RPC to load the models first."
         )
 
 
