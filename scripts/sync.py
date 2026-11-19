@@ -505,8 +505,9 @@ if nn is not None:
 
             target_mod = self.backbone if self.backbone is not None else self.model
             self._pass_use_cache = _accepts_kwarg(target_mod, "use_cache")
+            self._pass_token_type_ids = _accepts_kwarg(self.model, "token_type_ids")
 
-        def forward(self, input_ids, attention_mask):
+        def forward(self, input_ids, attention_mask, token_type_ids=None):
             if self.arch_type == "listwise_lbnl":
                 if self.backbone is not None and self.projector is not None:
                     kwargs = {
@@ -542,9 +543,14 @@ if nn is not None:
                     self.projector(hidden_states) if self.projector is not None else hidden_states
                 )
 
-            outputs = self.model(
-                input_ids=input_ids, attention_mask=attention_mask, return_dict=True
-            )
+            kwargs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "return_dict": True,
+            }
+            if token_type_ids is not None and self._pass_token_type_ids:
+                kwargs["token_type_ids"] = token_type_ids
+            outputs = self.model(**kwargs)
             return outputs.logits if hasattr(outputs, "logits") else outputs[0]
 
 
@@ -892,17 +898,29 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
         inputs = tokenizer(
             ["query"], ["passage"], padding=True, truncation=True, return_tensors="pt"
         )
+        export_args = [inputs["input_ids"], inputs["attention_mask"]]
+        input_names = ["input_ids", "attention_mask"]
+        dynamic_axes = {
+            "input_ids": {0: "batch_size", 1: "sequence_length"},
+            "attention_mask": {0: "batch_size", 1: "sequence_length"},
+            "logits": {0: "batch_size"},
+        }
+        if (
+            "token_type_ids" in inputs
+            and wrapper._pass_token_type_ids
+            and getattr(hf_config, "type_vocab_size", 0) > 1
+        ):
+            export_args.append(inputs["token_type_ids"])
+            input_names.append("token_type_ids")
+            dynamic_axes["token_type_ids"] = {0: "batch_size", 1: "sequence_length"}
+
         _torch_onnx_export(
             wrapper,
-            (inputs["input_ids"], inputs["attention_mask"]),
+            tuple(export_args),
             tmp_onnx,
-            input_names=["input_ids", "attention_mask"],
+            input_names=input_names,
             output_names=["logits"],
-            dynamic_axes={
-                "input_ids": {0: "batch_size", 1: "sequence_length"},
-                "attention_mask": {0: "batch_size", 1: "sequence_length"},
-                "logits": {0: "batch_size"},
-            },
+            dynamic_axes=dynamic_axes,
         )
         manifest_payload = {
             "model_name": model_id,
@@ -1028,7 +1046,6 @@ def quantize_model(input_path: Path | str, output_path: Path | str, label: str) 
 def _verify_embedding_parity() -> None:
     import numpy as np
     import onnxruntime as ort
-    from transformers import AutoTokenizer
 
     from engine import config
 
@@ -1104,7 +1121,6 @@ def _verify_embedding_parity() -> None:
 def _verify_reranker_parity() -> None:
     import numpy as np
     import onnxruntime as ort
-    from transformers import AutoTokenizer
 
     from engine import config
 
@@ -1751,7 +1767,7 @@ def load_catalog_data(
         raise ValueError(f"[{domain.upper()}] Catalog missing Name column: {list(df.columns)}")
 
     desc_col = next((col_map[c] for c in ("description", "desc") if c in col_map), None)
-    cat_col = next((col_map[c] for c in ("category", "cat", "region") if c in col_map), None)
+    cat_col = config.resolve_input_category_col(df.columns) or None
     price_col = col_map.get("price")
 
     df = df.fillna("")

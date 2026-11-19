@@ -69,7 +69,9 @@ def main():
     qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
 
     def parse_url(url, default_port=80):
-        parts = url.replace("http://", "").replace("https://", "").replace("redis://", "").split("/")
+        parts = (
+            url.replace("http://", "").replace("https://", "").replace("redis://", "").split("/")
+        )
         host_port = parts[0].split("@")[-1].split(":")
         host = host_port[0]
         port = int(host_port[1]) if len(host_port) > 1 else default_port
@@ -96,8 +98,14 @@ def main():
     host_marker = Path("/host_cache/active_embedding_model.txt")
     vol_marker = Path("/app/engine/data/cache/active_embedding_model.txt")
     if host_marker.exists() and vol_marker.exists():
-        if host_marker.read_text(encoding="utf-8").strip() != vol_marker.read_text(encoding="utf-8").strip():
-            print("[SYNC] Host active_embedding_model.txt changed; clearing stale volume cache...", flush=True)
+        if (
+            host_marker.read_text(encoding="utf-8").strip()
+            != vol_marker.read_text(encoding="utf-8").strip()
+        ):
+            print(
+                "[SYNC] Host active_embedding_model.txt changed; clearing stale volume cache...",
+                flush=True,
+            )
             for f in Path("/app/engine/data/cache").iterdir():
                 if f.is_file():
                     f.unlink(missing_ok=True)

@@ -36,7 +36,7 @@ def calculate_row_hash(row, domain: str = config.DOMAIN_MARKET) -> str:
     row_dict = row if isinstance(row, dict) else row.to_dict()
 
     # Standard list of columns we care about for semantic hashing
-    cols = ["Name", "basictype", "Generic keywords", "Price", "Description"]
+    cols = ["Name", "basictype", "Generic keywords", "Price", "Description", "SellerCategory"]
     if domain == config.DOMAIN_FOOD:
         cols.extend(["region", "Flavor"])
     else:
@@ -67,7 +67,7 @@ def calculate_df_hash(df: pd.DataFrame, domain: str = config.DOMAIN_MARKET) -> s
         return None
 
     # Select only relevant columns
-    cols = ["Name", "basictype", "Generic keywords", "Price", "Description"]
+    cols = ["Name", "basictype", "Generic keywords", "Price", "Description", "SellerCategory"]
     if domain == config.DOMAIN_FOOD:
         cols.extend(["region", "Flavor"])
     else:
@@ -384,7 +384,7 @@ class CacheManager:
             if "Description" in changed_df.columns
             else [""] * len(changed_df)
         )
-        cat_col = config.get_third_tag_col(domain)
+        cat_col = config.resolve_input_category_col(changed_df.columns)
         catalog_cats = (
             [
                 TextPipeline.normalize_final(str(c))
@@ -392,7 +392,7 @@ class CacheManager:
                 else ""
                 for c in changed_df[cat_col].tolist()
             ]
-            if cat_col in changed_df.columns
+            if cat_col and cat_col in changed_df.columns
             else [""] * len(changed_df)
         )
         encoded = self.embedder.embed_weighted_sku(

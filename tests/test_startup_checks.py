@@ -17,7 +17,9 @@ def test_check_active_embedding_model_missing(tmp_path: Path):
 
 
 def test_check_active_embedding_model_mismatch(tmp_path: Path):
-    (tmp_path / "active_embedding_model.txt").write_text("jinaai/jina-embeddings-v5-text-small", encoding="utf-8")
+    (tmp_path / "active_embedding_model.txt").write_text(
+        "jinaai/jina-embeddings-v5-text-small", encoding="utf-8"
+    )
     with (
         patch.object(startup_checks.config, "CACHE_DIR", tmp_path),
         patch.object(startup_checks.config, "EMBEDDING_MODEL", "BAAI/bge-m3"),
@@ -49,7 +51,7 @@ def test_check_qdrant_detects_same_dim_model_mismatch_and_empty_collection(tmp_p
     fake_vs.client.collection_exists.return_value = True
     fake_vs.client.get_collection.side_effect = [
         SimpleNamespace(points_count=100),  # market
-        SimpleNamespace(points_count=0),    # food (empty)
+        SimpleNamespace(points_count=0),  # food (empty)
     ]
     fake_vs.get_collection_schema_mismatch.return_value = None
 
@@ -143,10 +145,18 @@ def test_classifier_load_arcface_model_fails_on_embedding_model_mismatch(tmp_pat
     clf.domain = "food"
 
     with (
-        patch("engine.classification.classifier.config.get_bt_arcface_onnx_path", return_value=onnx_path),
-        patch("engine.classification.classifier.config.get_bt_arcface_labels_path", return_value=labels_path),
+        patch(
+            "engine.classification.classifier.config.get_bt_arcface_onnx_path",
+            return_value=onnx_path,
+        ),
+        patch(
+            "engine.classification.classifier.config.get_bt_arcface_labels_path",
+            return_value=labels_path,
+        ),
         patch("engine.classification.classifier.config.EMBEDDING_MODEL", "BAAI/bge-m3"),
         patch("engine.classification.classifier.config.EMBEDDING_DIM", 1024),
     ):
-        with pytest.raises(RuntimeError, match="trained with 'jinaai/jina-embeddings-v5-text-small'"):
+        with pytest.raises(
+            RuntimeError, match="trained with 'jinaai/jina-embeddings-v5-text-small'"
+        ):
             clf._load_arcface_model()

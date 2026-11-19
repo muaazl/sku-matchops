@@ -219,6 +219,10 @@ class VectorStore:
             else config.QDRANT_COLLECTION_MARKET
         )
 
+    def _get_tags_collection_name(self, domain: str) -> str:
+        prefix = str(getattr(config, "QDRANT_TAGS_PREFIX", "") or "")
+        return f"{prefix}{domain}_tags"
+
     @staticmethod
     def _inspect_schema_mismatch(info) -> str | None:
         """Returns a schema mismatch description if collection params conflict with active config."""
@@ -804,7 +808,7 @@ class VectorStore:
         """Returns True when Qdrant already holds at least expected_count tags for dict_type under EMBEDDING_MODEL."""
         if expected_count <= 0:
             return True
-        collection_name = f"{domain}_tags"
+        collection_name = self._get_tags_collection_name(domain)
         try:
             self._ensure_collection(collection_name)
             type_filter = Filter(
@@ -862,7 +866,7 @@ class VectorStore:
         if not tags:
             return
 
-        collection_name = f"{domain}_tags"
+        collection_name = self._get_tags_collection_name(domain)
         self._ensure_collection(collection_name)
 
         if not force and self.has_tags_synced(domain, dict_type, len(set(tags))):
@@ -949,7 +953,7 @@ class VectorStore:
         if n == 0:
             return []
 
-        collection_name = f"{domain}_tags"
+        collection_name = self._get_tags_collection_name(domain)
         if hasattr(self.client, "collection_exists"):
             self._ensure_collection(collection_name)
         if allowed_tags_list is None:

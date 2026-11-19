@@ -280,11 +280,7 @@ class TaxonomyLifecycleRegistry:
             if "Description" in df_clean.columns
             else [""] * len(df_clean)
         )
-        col_cat = (
-            "category"
-            if "category" in df_clean.columns
-            else ("Category" if "Category" in df_clean.columns else "")
-        )
+        col_cat = config.resolve_input_category_col(df_clean.columns)
         cats = (
             df_clean[col_cat].astype("string").fillna("").str.strip().tolist()
             if col_cat

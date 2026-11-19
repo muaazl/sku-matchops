@@ -58,7 +58,6 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 # --- Engine & Callback Services ---
-ENVIRONMENT = "production"
 ENGINE_GRPC_PORT = int(os.getenv("ENGINE_GRPC_PORT", "50051"))
 BACKEND_GRPC_URL = os.getenv("BACKEND_GRPC_URL", "127.0.0.1:50052")
 BACKEND_HTTP_URL = os.getenv("BACKEND_HTTP_URL", "http://127.0.0.1:8000")
@@ -98,7 +97,8 @@ DOMAIN_MARKET = "market"
 DOMAIN_FOOD = "food"
 QDRANT_COLLECTION_MARKET = "market_catalog"
 QDRANT_COLLECTION_FOOD = "food_catalog"
-CACHE_SALT = "MatchOps_v2"
+QDRANT_TAGS_PREFIX = ""
+CACHE_SALT = "MatchOps_v3"
 
 # --- Model Artifacts & Quantization (Strict ONNX + INT8) ---
 ONNX_DIR = BASE_DIR / "models"
@@ -328,7 +328,7 @@ MARKET_CATALOG_SHEET = "Market Catalog"
 # --- Classifier Constants & Thresholds ---
 COL_NAME = "Name"
 COL_DESCRIPTION = "Description"
-COL_INPUT_CATEGORY = "Category"
+COL_INPUT_CATEGORY = "SellerCategory"
 COL_GK = "Generic keywords"
 COL_BT = "basictype"
 
@@ -410,3 +410,12 @@ def get_third_tag_col(domain: str) -> str:
 def get_third_tag_name(domain: str) -> str:
     """Returns display name for domain's third classification tag."""
     return "Region" if domain == DOMAIN_FOOD else "Category"
+
+
+def resolve_input_category_col(columns) -> str:
+    """Returns the raw seller-input category column name if present, avoiding target-label leakage."""
+    col_map = {str(c).strip(): str(c) for c in columns}
+    for candidate in (COL_INPUT_CATEGORY, "SellerCategory", "seller_category", "Seller_Category"):
+        if candidate in col_map:
+            return col_map[candidate]
+    return ""

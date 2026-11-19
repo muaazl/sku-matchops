@@ -427,9 +427,9 @@ class TaxonomyClassifier:
             from engine.config import (
                 COL_DESCRIPTION,
                 COL_GK,
-                COL_INPUT_CATEGORY,
                 COL_NAME,
                 get_third_tag_col,
+                resolve_input_category_col,
             )
 
             target_col = get_third_tag_col(self.domain)
@@ -455,11 +455,7 @@ class TaxonomyClassifier:
                 if COL_DESCRIPTION in df.columns
                 else [""] * len(df)
             )
-            col_cat = (
-                COL_INPUT_CATEGORY
-                if COL_INPUT_CATEGORY in df.columns
-                else ("category" if "category" in df.columns else "")
-            )
+            col_cat = resolve_input_category_col(df.columns)
             cats_list = df[col_cat].astype(str).str.strip().tolist() if col_cat else [""] * len(df)
 
             logger.info(f"[TRAIN] Training on {len(df)} labeled SKUs...")

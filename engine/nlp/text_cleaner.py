@@ -256,9 +256,7 @@ class TextPipeline:
         cand_cat = (
             TextPipeline._clean_prompt_val(row.get("SellerCategory"))
             or TextPipeline._clean_prompt_val(row.get("Seller_Category"))
-            or TextPipeline._clean_prompt_val(row.get("category"))
-            or TextPipeline._clean_prompt_val(row.get("Categories"))
-            or TextPipeline._clean_prompt_val(row.get("region"))
+            or TextPipeline._clean_prompt_val(row.get("seller_category"))
         )
         cand_ents = row.get("entities") if isinstance(row.get("entities"), dict) else {}
         attr_key = "flavor" if domain == config.DOMAIN_FOOD else "brand"
