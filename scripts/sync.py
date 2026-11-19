@@ -37,11 +37,12 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 if sys.platform == "win32":
     if hasattr(sys.stdout, "reconfigure"):
@@ -63,14 +64,10 @@ except ImportError:
     torch = None
     nn = None
 
-TMP_DIR = os.path.join(PROJECT_ROOT, "data", "cache", "onnx_tmp")
-_STAGING_DIR = os.path.join(PROJECT_ROOT, "data", "staged_sheets")
+TMP_DIR = PROJECT_ROOT / "data" / "cache" / "onnx_tmp"
+_STAGING_DIR = PROJECT_ROOT / "data" / "staged_sheets"
 _DOMAIN_MARKET = "market"
 _DOMAIN_FOOD = "food"
-
-_EMBEDDING_REPO_ALIASES = {
-    "jinaai/jina-embeddings-v5-text-small": "jinaai/jina-embeddings-v5-text-small-retrieval",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -81,16 +78,17 @@ _EMBEDDING_REPO_ALIASES = {
 def _ensure_dirs() -> None:
     from engine import config
 
-    os.makedirs(config.ONNX_DIR, exist_ok=True)
-    os.makedirs(config.EMBEDDING_ROOT_DIR, exist_ok=True)
-    os.makedirs(config.RERANKER_ROOT_DIR, exist_ok=True)
-    os.makedirs(TMP_DIR, exist_ok=True)
+    Path(config.ONNX_DIR).mkdir(parents=True, exist_ok=True)
+    Path(config.EMBEDDING_ROOT_DIR).mkdir(parents=True, exist_ok=True)
+    Path(config.RERANKER_ROOT_DIR).mkdir(parents=True, exist_ok=True)
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _read_manifest(path: str) -> dict:
-    if os.path.exists(path):
+def _read_manifest(path: Path | str) -> dict:
+    p = Path(path)
+    if p.exists():
         try:
-            with open(path, encoding="utf-8") as f:
+            with p.open(encoding="utf-8") as f:
                 data = json.load(f)
                 return data if isinstance(data, dict) else {}
         except Exception:
@@ -98,23 +96,25 @@ def _read_manifest(path: str) -> dict:
     return {}
 
 
-def _write_manifest(path: str, payload: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+def _write_manifest(path: Path | str, payload: dict) -> None:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
 
-def _remove_onnx_artifacts(base_onnx_path: str) -> None:
+def _remove_onnx_artifacts(base_onnx_path: Path | str) -> None:
+    base = Path(base_onnx_path)
     for suffix in ("", ".data", "_data"):
-        stale = base_onnx_path + suffix
-        if os.path.exists(stale):
-            os.remove(stale)
+        stale = base.with_name(base.name + suffix) if suffix else base
+        if stale.exists():
+            stale.unlink()
 
 
-def _qdrant_state_path() -> str:
+def _qdrant_state_path() -> Path:
     from engine import config
 
-    return os.path.join(config.CACHE_DIR, "qdrant_embedding_models.json")
+    return Path(config.CACHE_DIR) / "qdrant_embedding_models.json"
 
 
 def _get_qdrant_embedding_model(domain: str) -> str:
@@ -126,24 +126,24 @@ def _record_qdrant_embedding_model(domain: str) -> None:
     from engine import config
 
     path = _qdrant_state_path()
-    os.makedirs(config.CACHE_DIR, exist_ok=True)
+    Path(config.CACHE_DIR).mkdir(parents=True, exist_ok=True)
     state = _read_manifest(path)
     state[domain] = config.EMBEDDING_MODEL
     _write_manifest(path, state)
 
 
-def _active_emb_marker_path() -> str:
+def _active_emb_marker_path() -> Path:
     from engine import config
 
-    return os.path.join(config.CACHE_DIR, "active_embedding_model.txt")
+    return Path(config.CACHE_DIR) / "active_embedding_model.txt"
 
 
 def _record_active_embedding_model() -> None:
     from engine import config
 
-    os.makedirs(config.CACHE_DIR, exist_ok=True)
-    with open(_active_emb_marker_path(), "w", encoding="utf-8") as f:
-        f.write(config.EMBEDDING_MODEL)
+    marker = _active_emb_marker_path()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(config.EMBEDDING_MODEL, encoding="utf-8")
 
 
 def _ensure_clean_embedding_caches_for_model() -> None:
@@ -151,10 +151,10 @@ def _ensure_clean_embedding_caches_for_model() -> None:
     from engine import config
 
     marker = _active_emb_marker_path()
-    if not os.path.exists(marker):
+    if not marker.exists():
         return
     try:
-        previous = open(marker, encoding="utf-8").read().strip()
+        previous = marker.read_text(encoding="utf-8").strip()
     except Exception:
         previous = ""
     if previous and previous != config.EMBEDDING_MODEL:
@@ -169,7 +169,8 @@ def wipe_embedding_caches() -> None:
     """Deletes stale embedding-dependent disk caches before re-syncing an embedding model."""
     from engine import config
 
-    if not os.path.exists(config.CACHE_DIR):
+    cache_dir = Path(config.CACHE_DIR)
+    if not cache_dir.exists():
         return
     removed = 0
     stale_suffixes = (
@@ -180,17 +181,17 @@ def wipe_embedding_caches() -> None:
         "_row_hashes.json",
     )
     stale_substrings = ("_classifier_bt_", "_classifier_third_tag_")
-    for fname in os.listdir(config.CACHE_DIR):
-        fpath = os.path.join(config.CACHE_DIR, fname)
-        if not os.path.isfile(fpath):
+    for fpath in cache_dir.iterdir():
+        if not fpath.is_file():
             continue
+        fname = fpath.name
         if (
             fname in ("model_hashes.json", "active_embedding_model.txt")
             or fname.endswith(stale_suffixes)
             or any(sub in fname for sub in stale_substrings)
         ):
             try:
-                os.remove(fpath)
+                fpath.unlink()
                 removed += 1
             except Exception as e:
                 logger.warning(f"Could not remove stale embedding cache {fpath}: {e}")
@@ -202,55 +203,83 @@ def wipe_embedding_caches() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _save_consolidated_onnx(tmp_onnx_path: str, final_onnx_path: str) -> None:
+def _save_consolidated_onnx(tmp_onnx_path: Path | str, final_onnx_path: Path | str) -> None:
     """Moves exported ONNX (+ external data) or consolidates scattered files without ByteSize()."""
-    tmp_dir = os.path.dirname(tmp_onnx_path)
-    os.makedirs(os.path.dirname(final_onnx_path), exist_ok=True)
-    _remove_onnx_artifacts(final_onnx_path)
+    tmp_onnx = Path(tmp_onnx_path)
+    final_onnx = Path(final_onnx_path)
+    tmp_dir = tmp_onnx.parent
+    final_onnx.parent.mkdir(parents=True, exist_ok=True)
+    _remove_onnx_artifacts(final_onnx)
 
-    tmp_files = {f for f in os.listdir(tmp_dir) if os.path.isfile(os.path.join(tmp_dir, f))}
-    base_name = os.path.basename(tmp_onnx_path)
+    tmp_files = {f for f in tmp_dir.iterdir() if f.is_file()}
+    base_name = tmp_onnx.name
     allowed_single = {base_name, base_name + ".data", base_name + "_data"}
 
-    if tmp_files <= allowed_single:
-        shutil.move(tmp_onnx_path, final_onnx_path)
+    if {f.name for f in tmp_files} <= allowed_single:
+        shutil.move(str(tmp_onnx), str(final_onnx))
         for suffix in (".data", "_data"):
-            src_data = tmp_onnx_path + suffix
-            if os.path.exists(src_data):
-                shutil.move(src_data, final_onnx_path + suffix)
+            src_data = tmp_onnx.with_name(tmp_onnx.name + suffix)
+            if src_data.exists():
+                shutil.move(str(src_data), str(final_onnx.with_name(final_onnx.name + suffix)))
         return
 
     import onnx
 
-    total_bytes = sum(os.path.getsize(os.path.join(tmp_dir, f)) for f in tmp_files)
+    total_bytes = sum(f.stat().st_size for f in tmp_files)
     save_external = total_bytes > int(1.5 * 1024 * 1024 * 1024)
-    proto = onnx.load(tmp_onnx_path, load_external_data=True)
-    data_path = final_onnx_path + ".data"
+    proto = onnx.load(str(tmp_onnx), load_external_data=True)
+    data_path = final_onnx.with_name(final_onnx.name + ".data")
     onnx.save_model(
         proto,
-        final_onnx_path,
+        str(final_onnx),
         save_as_external_data=save_external,
         all_tensors_to_one_file=True,
-        location=os.path.basename(data_path),
+        location=data_path.name,
     )
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _find_prebuilt_onnx(source_dir: Path | str | None) -> tuple[Path | None, Path | None]:
+    """Checks if source directory contains pre-exported FP32 and/or INT8 ONNX models."""
+    if not source_dir:
+        return None, None
+    sdir = Path(source_dir)
+    if not sdir.is_dir():
+        return None, None
+
+    fp32_candidates = [
+        sdir / "onnx" / "model.onnx",
+        sdir / "model.onnx",
+    ]
+    int8_candidates = [
+        sdir / "onnx" / "model_int8.onnx",
+        sdir / "onnx" / "model_quantized.onnx",
+        sdir / "model_int8.onnx",
+        sdir / "model_quantized.onnx",
+    ]
+
+    fp32_path = next((p for p in fp32_candidates if p.is_file()), None)
+    int8_path = next((p for p in int8_candidates if p.is_file()), None)
+    return fp32_path, int8_path
 
 
 def _torch_onnx_export(
     wrapper,
     sample_args,
-    tmp_onnx_path,
+    tmp_onnx_path: Path | str,
     input_names,
     output_names,
     dynamic_axes,
-    prefer_dynamo: bool = True,
+    prefer_dynamo: bool = False,
 ) -> None:
     """Exports wrapper to tmp_onnx_path, preferring dynamo=True with external_data=True."""
+    tmp_onnx_str = str(tmp_onnx_path)
     if prefer_dynamo:
         try:
             torch.onnx.export(
                 wrapper,
                 sample_args,
-                tmp_onnx_path,
+                tmp_onnx_str,
                 input_names=input_names,
                 output_names=output_names,
                 dynamic_axes=dynamic_axes,
@@ -265,7 +294,7 @@ def _torch_onnx_export(
     torch.onnx.export(
         wrapper,
         sample_args,
-        tmp_onnx_path,
+        tmp_onnx_str,
         input_names=input_names,
         output_names=output_names,
         dynamic_axes=dynamic_axes,
@@ -275,19 +304,123 @@ def _torch_onnx_export(
     )
 
 
-def _resolve_hf_source(repo_id: str) -> str:
-    """Resolves a HuggingFace repo ID to a local cached snapshot directory when available."""
-    if os.path.isdir(repo_id):
-        return repo_id
-    try:
-        from huggingface_hub import snapshot_download
+def _is_complete_snapshot(snap_path: Path | str | None) -> bool:
+    """Verifies that a local snapshot directory contains configuration, weights, and necessary modules."""
+    if not snap_path:
+        return False
+    spath = Path(snap_path)
+    if not spath.is_dir():
+        return False
+    if not (spath / "config.json").is_file():
+        return False
 
-        local_snap = snapshot_download(repo_id=repo_id, local_files_only=True)
-        if os.path.isdir(local_snap):
-            return local_snap
+    files = [f.name for f in spath.iterdir()]
+    has_weights = any(
+        f.endswith((".safetensors", ".bin", ".pt", ".onnx"))
+        or f.endswith(".safetensors.index.json")
+        or f.endswith(".bin.index.json")
+        for f in files
+    )
+    if not has_weights:
+        return False
+
+    try:
+        from transformers.dynamic_module_utils import check_imports
+
+        for f in spath.iterdir():
+            if f.name.endswith(".py") and f.is_file():
+                for needed in check_imports(str(f)):
+                    if not (spath / f"{needed}.py").exists():
+                        return False
     except Exception:
         pass
+
+    return True
+
+
+def _resolve_hf_source(repo_id: str) -> str:
+    """Resolves a HuggingFace repo ID to a complete local cached snapshot directory.
+
+    Downloads the model from Hugging Face if files are missing or incomplete locally.
+    """
+    repo_path = Path(repo_id)
+    if repo_path.is_dir():
+        if not _is_complete_snapshot(repo_path):
+            logger.warning(
+                f"Local directory '{repo_id}' is missing configuration, weights, or code modules."
+            )
+        return str(repo_path)
+
+    from huggingface_hub import snapshot_download
+
+    try:
+        local_snap = snapshot_download(repo_id=repo_id, local_files_only=True)
+        if _is_complete_snapshot(local_snap):
+            return str(local_snap)
+        logger.info(
+            f"Local snapshot for '{repo_id}' is incomplete (missing weights or modules). "
+            f"Downloading from Hugging Face..."
+        )
+    except Exception:
+        logger.info(f"Model '{repo_id}' not found locally. Downloading from Hugging Face...")
+
+    try:
+        downloaded_snap = snapshot_download(repo_id=repo_id, local_files_only=False)
+        if Path(downloaded_snap).is_dir():
+            logger.info(f"Successfully downloaded '{repo_id}' to {downloaded_snap}")
+            return str(downloaded_snap)
+    except Exception as exc:
+        logger.warning(
+            f"Failed to download snapshot for '{repo_id}' from Hugging Face: {exc}. "
+            f"Falling back to repo ID for direct HuggingFace hub access."
+        )
+
     return repo_id
+
+
+def _load_hf_component(loader_fn, source: str, fallback_repo: str, local_only: bool, **kwargs):
+    """Loads a HuggingFace model/config/tokenizer with fallback to remote download if local files are missing."""
+    try:
+        return loader_fn(source, local_files_only=local_only, **kwargs)
+    except TypeError as type_err:
+        if "fix_mistral_regex" in kwargs:
+            clean_kwargs = {k: v for k, v in kwargs.items() if k != "fix_mistral_regex"}
+            return _load_hf_component(loader_fn, source, fallback_repo, local_only, **clean_kwargs)
+        raise type_err
+    except (FileNotFoundError, OSError, Exception) as exc:
+        if local_only and source != fallback_repo:
+            logger.warning(
+                f"Failed to load from local source '{source}' ({exc}). "
+                f"Downloading '{fallback_repo}' from Hugging Face..."
+            )
+            try:
+                return loader_fn(fallback_repo, local_files_only=False, **kwargs)
+            except TypeError:
+                clean_kwargs = {k: v for k, v in kwargs.items() if k != "fix_mistral_regex"}
+                return loader_fn(fallback_repo, local_files_only=False, **clean_kwargs)
+        raise
+
+
+def _load_local_tokenizer(model_dir: Path | str, **kwargs):
+    """Safely loads a saved local tokenizer, gracefully falling back if fix_mistral_regex is unsupported."""
+    from transformers import AutoTokenizer
+
+    mdir = Path(model_dir)
+    try:
+        return AutoTokenizer.from_pretrained(
+            str(mdir),
+            local_files_only=True,
+            trust_remote_code=True,
+            **kwargs,
+        )
+    except TypeError:
+        return AutoTokenizer.from_pretrained(
+            str(mdir),
+            local_files_only=True,
+            trust_remote_code=True,
+            fix_mistral_regex=False,
+            **kwargs,
+        )
 
 
 def _accepts_kwarg(module, kwarg: str) -> bool:
@@ -415,10 +548,6 @@ if nn is not None:
             return outputs.logits if hasattr(outputs, "logits") else outputs[0]
 
 
-def _resolve_hf_embedding_id(model_id: str) -> str:
-    return _EMBEDDING_REPO_ALIASES.get(model_id, model_id)
-
-
 def _detect_pooling_mode(source_path: str, hf_id: str, model_id: str, hf_config) -> str:
     from engine import config
 
@@ -427,21 +556,23 @@ def _detect_pooling_mode(source_path: str, hf_id: str, model_id: str, hf_config)
         return override
 
     pooling_cfg = None
-    if os.path.isdir(source_path):
-        cand = os.path.join(source_path, "1_Pooling", "config.json")
-        if os.path.exists(cand):
+    spath = Path(source_path)
+    if spath.is_dir():
+        cand = spath / "1_Pooling" / "config.json"
+        if cand.exists():
             pooling_cfg = cand
     else:
         try:
             from huggingface_hub import hf_hub_download
 
-            pooling_cfg = hf_hub_download(repo_id=hf_id, filename="1_Pooling/config.json")
+            downloaded = hf_hub_download(repo_id=hf_id, filename="1_Pooling/config.json")
+            pooling_cfg = Path(downloaded) if downloaded else None
         except Exception:
             pooling_cfg = None
 
-    if pooling_cfg and os.path.exists(pooling_cfg):
+    if pooling_cfg and Path(pooling_cfg).exists():
         try:
-            with open(pooling_cfg, encoding="utf-8") as f:
+            with Path(pooling_cfg).open(encoding="utf-8") as f:
                 pc = json.load(f)
             if pc.get("pooling_mode_lasttoken_tokens"):
                 return "last_token"
@@ -465,25 +596,27 @@ def _load_sparse_linear(source_path: str, hf_id: str, model_id: str, hidden_size
         return None
 
     sparse_pt = None
-    if os.path.isdir(source_path):
-        cand = os.path.join(source_path, "sparse_linear.pt")
-        if os.path.exists(cand):
+    spath = Path(source_path)
+    if spath.is_dir():
+        cand = spath / "sparse_linear.pt"
+        if cand.exists():
             sparse_pt = cand
     if sparse_pt is None:
         try:
             from huggingface_hub import hf_hub_download
 
-            sparse_pt = hf_hub_download(repo_id=hf_id, filename="sparse_linear.pt")
+            downloaded = hf_hub_download(repo_id=hf_id, filename="sparse_linear.pt")
+            sparse_pt = Path(downloaded) if downloaded else None
         except Exception:
             sparse_pt = None
 
-    if not sparse_pt or not os.path.exists(sparse_pt):
+    if not sparse_pt or not Path(sparse_pt).exists():
         raise FileNotFoundError(
             f"Expected 'sparse_linear.pt' for BGE-M3 model '{model_id}', but could not locate it."
         )
 
     linear = nn.Linear(hidden_size, 1)
-    state = torch.load(sparse_pt, map_location="cpu", weights_only=True)
+    state = torch.load(str(sparse_pt), map_location="cpu", weights_only=True)
     linear.load_state_dict(state)
     linear.eval()
     return linear
@@ -496,21 +629,20 @@ def _detect_reranker_arch(model_id: str, hf_config) -> str:
     return "cross_encoder"
 
 
-def _has_saved_tokenizer(target_dir: str) -> bool:
-    return os.path.exists(os.path.join(target_dir, "tokenizer.json")) or os.path.exists(
-        os.path.join(target_dir, "tokenizer_config.json")
-    )
+def _has_saved_tokenizer(target_dir: Path | str) -> bool:
+    tdir = Path(target_dir)
+    return (tdir / "tokenizer.json").exists() or (tdir / "tokenizer_config.json").exists()
 
 
 def export_embedding(force: bool = False, require_int8: bool = True) -> bool:
     """Exports configured EMBEDDING_MODEL to FP32 ONNX. Returns True if a new export ran."""
     from engine import config
 
-    target_dir = config.EMBEDDING_DIR
-    onnx_fp32 = config.EMBEDDING_ONNX_FP32
-    onnx_int8 = config.EMBEDDING_ONNX_INT8
+    target_dir = Path(config.EMBEDDING_DIR)
+    onnx_fp32 = Path(config.EMBEDDING_ONNX_FP32)
+    onnx_int8 = Path(config.EMBEDDING_ONNX_INT8)
     manifest = _read_manifest(config.EMBEDDING_MANIFEST)
-    artifact_ready = os.path.exists(onnx_int8) if require_int8 else os.path.exists(onnx_fp32)
+    artifact_ready = onnx_int8.exists() if require_int8 else onnx_fp32.exists()
     explicit_pooling = getattr(config, "EMBEDDING_POOLING", "auto")
     pooling_matches = explicit_pooling not in ("cls", "mean", "last_token") or (
         manifest.get("pooling") == explicit_pooling
@@ -529,34 +661,39 @@ def export_embedding(force: bool = False, require_int8: bool = True) -> bool:
     from transformers import AutoConfig, AutoModel, AutoTokenizer
 
     model_id = config.EMBEDDING_MODEL
-    hf_id = _resolve_hf_embedding_id(model_id)
+    hf_id = os.getenv("EMBEDDING_HF_REPO") or model_id
     source = _resolve_hf_source(hf_id)
-    local_only = os.path.isdir(source)
+    local_only = Path(source).is_dir()
     logger.info(f"Exporting Embedding model '{model_id}' (source: '{hf_id}') to ONNX...")
 
-    os.makedirs(target_dir, exist_ok=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
     _remove_onnx_artifacts(onnx_int8)
     _remove_onnx_artifacts(onnx_fp32)
 
-    tmp_sub = os.path.join(TMP_DIR, "embedding")
+    tmp_sub = TMP_DIR / "embedding"
     shutil.rmtree(tmp_sub, ignore_errors=True)
-    os.makedirs(tmp_sub, exist_ok=True)
-    tmp_onnx = os.path.join(tmp_sub, "model.onnx")
+    tmp_sub.mkdir(parents=True, exist_ok=True)
+    tmp_onnx = tmp_sub / "model.onnx"
 
-    hf_config = AutoConfig.from_pretrained(
-        source, trust_remote_code=True, local_files_only=local_only
+    hf_config = _load_hf_component(
+        AutoConfig.from_pretrained, source, hf_id, local_only, trust_remote_code=True
     )
     pooling = _detect_pooling_mode(source, hf_id, model_id, hf_config)
     hidden_size = int(getattr(hf_config, "hidden_size", 1024))
     sparse_linear = _load_sparse_linear(source, hf_id, model_id, hidden_size)
     has_sparse = sparse_linear is not None
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        source, trust_remote_code=True, local_files_only=local_only, fix_mistral_regex=True
+    tokenizer = _load_hf_component(
+        AutoTokenizer.from_pretrained,
+        source,
+        hf_id,
+        local_only,
+        trust_remote_code=True,
+        fix_mistral_regex=True,
     )
     tokenizer.padding_side = "right"
-    hf_model = AutoModel.from_pretrained(
-        source, trust_remote_code=True, local_files_only=local_only
+    hf_model = _load_hf_component(
+        AutoModel.from_pretrained, source, hf_id, local_only, trust_remote_code=True
     )
     hf_model.eval()
     wrapper = EmbeddingONNXWrapper(hf_model, pooling=pooling, sparse_linear=sparse_linear)
@@ -611,11 +748,11 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
     """Exports configured RERANKER_MODEL to FP32 ONNX. Returns True if a new export ran."""
     from engine import config
 
-    target_dir = config.RERANKER_DIR
-    onnx_fp32 = config.RERANKER_ONNX_FP32
-    onnx_int8 = config.RERANKER_ONNX_INT8
+    target_dir = Path(config.RERANKER_DIR)
+    onnx_fp32 = Path(config.RERANKER_ONNX_FP32)
+    onnx_int8 = Path(config.RERANKER_ONNX_INT8)
     manifest = _read_manifest(config.RERANKER_MANIFEST)
-    artifact_ready = os.path.exists(onnx_int8) if require_int8 else os.path.exists(onnx_fp32)
+    artifact_ready = onnx_int8.exists() if require_int8 else onnx_fp32.exists()
 
     if (
         not force
@@ -635,29 +772,68 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
 
     model_id = config.RERANKER_MODEL
     source = _resolve_hf_source(model_id)
-    local_only = os.path.isdir(source)
+    local_only = Path(source).is_dir()
     logger.info(f"Exporting Reranker '{model_id}' to ONNX...")
 
-    os.makedirs(target_dir, exist_ok=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
     _remove_onnx_artifacts(onnx_int8)
     _remove_onnx_artifacts(onnx_fp32)
 
-    tmp_sub = os.path.join(TMP_DIR, "reranker")
+    tmp_sub = TMP_DIR / "reranker"
     shutil.rmtree(tmp_sub, ignore_errors=True)
-    os.makedirs(tmp_sub, exist_ok=True)
-    tmp_onnx = os.path.join(tmp_sub, "model.onnx")
+    tmp_sub.mkdir(parents=True, exist_ok=True)
+    tmp_onnx = tmp_sub / "model.onnx"
 
-    hf_config = AutoConfig.from_pretrained(
-        source, trust_remote_code=True, local_files_only=local_only
+    hf_config = _load_hf_component(
+        AutoConfig.from_pretrained, source, model_id, local_only, trust_remote_code=True
     )
     arch_type = _detect_reranker_arch(model_id, hf_config)
-    tokenizer = AutoTokenizer.from_pretrained(
-        source, trust_remote_code=True, local_files_only=local_only, fix_mistral_regex=True
+    is_mistral_reranker = any(k in model_id.lower() for k in ("mistral", "mixtral"))
+    tokenizer = _load_hf_component(
+        AutoTokenizer.from_pretrained,
+        source,
+        model_id,
+        local_only,
+        trust_remote_code=True,
+        fix_mistral_regex=is_mistral_reranker,
     )
 
+    pre_fp32, pre_int8 = _find_prebuilt_onnx(source)
+    if pre_fp32:
+        logger.info(f"Using pre-exported FP32 ONNX model from {pre_fp32}...")
+        shutil.copy(str(pre_fp32), str(onnx_fp32))
+        for suffix in (".data", "_data"):
+            pre_data = pre_fp32.with_name(pre_fp32.name + suffix)
+            if pre_data.exists():
+                shutil.copy(str(pre_data), str(onnx_fp32.with_name(onnx_fp32.name + suffix)))
+        if pre_int8:
+            logger.info(f"Using pre-exported INT8 ONNX model from {pre_int8}...")
+            shutil.copy(str(pre_int8), str(onnx_int8))
+            for suffix in (".data", "_data"):
+                pre_int8_data = pre_int8.with_name(pre_int8.name + suffix)
+                if pre_int8_data.exists():
+                    shutil.copy(
+                        str(pre_int8_data), str(onnx_int8.with_name(onnx_int8.name + suffix))
+                    )
+
+        manifest_payload = {
+            "model_name": model_id,
+            "arch_type": arch_type,
+            "score_activation": "identity" if arch_type == "listwise_lbnl" else "sigmoid",
+        }
+        tokenizer.save_pretrained(target_dir)
+        hf_config.save_pretrained(target_dir)
+        _write_manifest(config.RERANKER_MANIFEST, manifest_payload)
+        del tokenizer
+        gc.collect()
+        logger.info(
+            f"Reranker ready at {onnx_fp32} (arch={arch_type}, prebuilt_int8={pre_int8 is not None})"
+        )
+        return True
+
     if arch_type == "listwise_lbnl":
-        hf_model = AutoModel.from_pretrained(
-            source, trust_remote_code=True, local_files_only=local_only
+        hf_model = _load_hf_component(
+            AutoModel.from_pretrained, source, model_id, local_only, trust_remote_code=True
         )
         hf_model.eval()
         wrapper = RerankerONNXWrapper(hf_model, arch_type="listwise_lbnl")
@@ -703,8 +879,12 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
             ),
         }
     else:
-        hf_model = AutoModelForSequenceClassification.from_pretrained(
-            source, trust_remote_code=True, local_files_only=local_only
+        hf_model = _load_hf_component(
+            AutoModelForSequenceClassification.from_pretrained,
+            source,
+            model_id,
+            local_only,
+            trust_remote_code=True,
         )
         hf_model.eval()
         wrapper = RerankerONNXWrapper(hf_model, arch_type="cross_encoder")
@@ -735,6 +915,17 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
 
     _save_consolidated_onnx(tmp_onnx, onnx_fp32)
     tokenizer.save_pretrained(target_dir)
+    tok_cfg = target_dir / "tokenizer_config.json"
+    if tok_cfg.is_file() and not is_mistral_reranker:
+        try:
+            with tok_cfg.open("r", encoding="utf-8") as f:
+                cfg_data = json.load(f)
+            if "fix_mistral_regex" in cfg_data:
+                cfg_data.pop("fix_mistral_regex", None)
+                with tok_cfg.open("w", encoding="utf-8") as f:
+                    json.dump(cfg_data, f, indent=2)
+        except Exception:
+            pass
     hf_config.save_pretrained(target_dir)
     _write_manifest(config.RERANKER_MANIFEST, manifest_payload)
     del tokenizer
@@ -746,28 +937,28 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
 def export_gliner(force: bool = False) -> None:
     from engine import config
 
-    target_dir = config.GLINER_MODEL
-    onnx_file = config.GLINER_ONNX
-    config_file = os.path.join(target_dir, "gliner_config.json")
+    target_dir = Path(config.GLINER_MODEL)
+    onnx_file = Path(config.GLINER_ONNX)
+    config_file = target_dir / "gliner_config.json"
 
-    if not force and os.path.exists(onnx_file) and os.path.exists(config_file):
+    if not force and onnx_file.exists() and config_file.exists():
         logger.info("GLiNER ONNX model already exists. Skipping download.")
         return
 
     from huggingface_hub import snapshot_download
 
     logger.info("Downloading GLiNER Medium v2.1 ONNX model...")
-    os.makedirs(target_dir, exist_ok=True)
+    target_dir.mkdir(parents=True, exist_ok=True)
     snapshot_download(
         repo_id="onnx-community/gliner_medium-v2.1",
-        local_dir=target_dir,
+        local_dir=str(target_dir),
         allow_patterns=["*.json", "*.txt", "model.onnx", "onnx/model.onnx"],
     )
 
-    nested_onnx = os.path.join(target_dir, "onnx", "model.onnx")
-    if os.path.exists(nested_onnx):
-        shutil.move(nested_onnx, onnx_file)
-        shutil.rmtree(os.path.join(target_dir, "onnx"), ignore_errors=True)
+    nested_onnx = target_dir / "onnx" / "model.onnx"
+    if nested_onnx.exists():
+        shutil.move(str(nested_onnx), str(onnx_file))
+        shutil.rmtree(target_dir / "onnx", ignore_errors=True)
 
     gc.collect()
     logger.info(f"GLiNER ONNX model ready at {onnx_file}")
@@ -778,18 +969,20 @@ def _filter_ort_inputs(session, ort_inputs: dict) -> dict:
     return {k: v for k, v in ort_inputs.items() if k in valid_names}
 
 
-def quantize_model(input_path: str, output_path: str, label: str) -> None:
+def quantize_model(input_path: Path | str, output_path: Path | str, label: str) -> None:
     from onnxruntime.quantization import QuantType, quantize_dynamic
 
-    if not os.path.exists(input_path):
-        raise FileNotFoundError(f"Source FP32 model not found at: {input_path}")
+    in_p = Path(input_path)
+    out_p = Path(output_path)
+    if not in_p.exists():
+        raise FileNotFoundError(f"Source FP32 model not found at: {in_p}")
 
-    logger.info(f"[{label}] Starting INT8 dynamic quantization from {input_path}...")
+    logger.info(f"[{label}] Starting INT8 dynamic quantization from {in_p}...")
     start_t = time.time()
     try:
         quantize_dynamic(
-            model_input=input_path,
-            model_output=output_path,
+            model_input=str(in_p),
+            model_output=str(out_p),
             weight_type=QuantType.QInt8,
             op_types_to_quantize=["MatMul", "Gemm"],
             extra_options={"MatMulConstBOnly": True},
@@ -805,8 +998,8 @@ def quantize_model(input_path: str, output_path: str, label: str) -> None:
                 f"[{label}] Single-file protobuf limit reached ({quant_err}); retrying with external data..."
             )
             quantize_dynamic(
-                model_input=input_path,
-                model_output=output_path,
+                model_input=str(in_p),
+                model_output=str(out_p),
                 weight_type=QuantType.QInt8,
                 op_types_to_quantize=["MatMul", "Gemm"],
                 use_external_data_format=True,
@@ -815,15 +1008,16 @@ def quantize_model(input_path: str, output_path: str, label: str) -> None:
         else:
             raise
 
-    def _size_mb(path: str) -> float:
-        total = os.path.getsize(path)
+    def _size_mb(path: Path) -> float:
+        total = path.stat().st_size
         for suffix in ("_data", ".data"):
-            if os.path.exists(path + suffix):
-                total += os.path.getsize(path + suffix)
+            ext_data = path.with_name(path.name + suffix)
+            if ext_data.exists():
+                total += ext_data.stat().st_size
         return total / (1024 * 1024)
 
-    in_mb = _size_mb(input_path)
-    out_mb = _size_mb(output_path)
+    in_mb = _size_mb(in_p)
+    out_mb = _size_mb(out_p)
     reduction = (1.0 - (out_mb / in_mb)) * 100.0 if in_mb > 0 else 0.0
     logger.info(
         f"[{label}] Quantized in {time.time() - start_t:.2f}s: "
@@ -838,9 +1032,9 @@ def _verify_embedding_parity() -> None:
 
     from engine import config
 
-    fp32_model = config.EMBEDDING_ONNX_FP32
-    int8_model = config.EMBEDDING_ONNX_INT8
-    if not (os.path.exists(fp32_model) and os.path.exists(int8_model)):
+    fp32_model = Path(config.EMBEDDING_ONNX_FP32)
+    int8_model = Path(config.EMBEDDING_ONNX_INT8)
+    if not (fp32_model.exists() and int8_model.exists()):
         return
 
     manifest = config.get_embedding_manifest()
@@ -848,12 +1042,7 @@ def _verify_embedding_parity() -> None:
     logger.info(
         f"[VERIFY] Checking Embedding ({config.EMBEDDING_MODEL}, pooling={pooling}) INT8 vs FP32..."
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.EMBEDDING_DIR,
-        local_files_only=True,
-        trust_remote_code=True,
-        fix_mistral_regex=True,
-    )
+    tokenizer = _load_local_tokenizer(config.EMBEDDING_DIR)
     tokenizer.padding_side = "right"
     sample_texts = [
         "Red Bull Energy Drink 250ml",
@@ -863,7 +1052,7 @@ def _verify_embedding_parity() -> None:
     inputs = tokenizer(sample_texts, padding=True, truncation=True, return_tensors="np")
 
     t0 = time.time()
-    fp32_sess = ort.InferenceSession(fp32_model, providers=["CPUExecutionProvider"])
+    fp32_sess = ort.InferenceSession(str(fp32_model), providers=["CPUExecutionProvider"])
     fp32_load = time.time() - t0
     ort_inputs = _filter_ort_inputs(fp32_sess, {k: v.astype(np.int64) for k, v in inputs.items()})
     t0 = time.time()
@@ -871,7 +1060,7 @@ def _verify_embedding_parity() -> None:
     fp32_inf = (time.time() - t0) * 1000
 
     t0 = time.time()
-    int8_sess = ort.InferenceSession(int8_model, providers=["CPUExecutionProvider"])
+    int8_sess = ort.InferenceSession(str(int8_model), providers=["CPUExecutionProvider"])
     int8_load = time.time() - t0
     t0 = time.time()
     int8_out = int8_sess.run(None, ort_inputs)[0]
@@ -919,9 +1108,9 @@ def _verify_reranker_parity() -> None:
 
     from engine import config
 
-    fp32_model = config.RERANKER_ONNX_FP32
-    int8_model = config.RERANKER_ONNX_INT8
-    if not (os.path.exists(fp32_model) and os.path.exists(int8_model)):
+    fp32_model = Path(config.RERANKER_ONNX_FP32)
+    int8_model = Path(config.RERANKER_ONNX_INT8)
+    if not (fp32_model.exists() and int8_model.exists()):
         return
 
     manifest = config.get_reranker_manifest()
@@ -929,18 +1118,13 @@ def _verify_reranker_parity() -> None:
     logger.info(
         f"[VERIFY] Checking Reranker ({config.RERANKER_MODEL}, arch={arch}) INT8 vs FP32..."
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.RERANKER_DIR,
-        local_files_only=True,
-        trust_remote_code=True,
-        fix_mistral_regex=True,
-    )
+    tokenizer = _load_local_tokenizer(config.RERANKER_DIR)
 
     t0 = time.time()
-    fp32_sess = ort.InferenceSession(fp32_model, providers=["CPUExecutionProvider"])
+    fp32_sess = ort.InferenceSession(str(fp32_model), providers=["CPUExecutionProvider"])
     fp32_load = time.time() - t0
     t0 = time.time()
-    int8_sess = ort.InferenceSession(int8_model, providers=["CPUExecutionProvider"])
+    int8_sess = ort.InferenceSession(str(int8_model), providers=["CPUExecutionProvider"])
     int8_load = time.time() - t0
 
     try:
@@ -1050,8 +1234,8 @@ def quantize_models(target: str = "all", force: bool = False, cleanup_fp32: bool
     if target in ("all", "embedding"):
         jobs.append(
             (
-                config.EMBEDDING_ONNX_FP32,
-                config.EMBEDDING_ONNX_INT8,
+                Path(config.EMBEDDING_ONNX_FP32),
+                Path(config.EMBEDDING_ONNX_INT8),
                 "EMBEDDING",
                 _verify_embedding_parity,
             )
@@ -1059,8 +1243,8 @@ def quantize_models(target: str = "all", force: bool = False, cleanup_fp32: bool
     if target in ("all", "reranker"):
         jobs.append(
             (
-                config.RERANKER_ONNX_FP32,
-                config.RERANKER_ONNX_INT8,
+                Path(config.RERANKER_ONNX_FP32),
+                Path(config.RERANKER_ONNX_INT8),
                 "RERANKER",
                 _verify_reranker_parity,
             )
@@ -1068,8 +1252,8 @@ def quantize_models(target: str = "all", force: bool = False, cleanup_fp32: bool
 
     for in_path, out_path, name, verify_fn in jobs:
         ran_quant = False
-        if force or not os.path.exists(out_path):
-            if not os.path.exists(in_path):
+        if force or not out_path.exists():
+            if not in_path.exists():
                 raise FileNotFoundError(
                     f"Cannot quantize {name}: intermediate FP32 missing at {in_path}."
                 )
@@ -1078,16 +1262,16 @@ def quantize_models(target: str = "all", force: bool = False, cleanup_fp32: bool
         else:
             logger.info(f"[{name}] INT8 ONNX already exists ({out_path}). Skipping quantization.")
 
-        if ran_quant or os.path.exists(in_path):
+        if ran_quant or in_path.exists():
             try:
                 verify_fn()
             except Exception:
-                if os.path.exists(out_path):
+                if out_path.exists():
                     _remove_onnx_artifacts(out_path)
                     logger.warning(f"[{name}] Removed failed INT8 artifact: {out_path}")
                 raise
 
-        if cleanup_fp32 and os.path.exists(out_path) and os.path.exists(in_path):
+        if cleanup_fp32 and out_path.exists() and in_path.exists():
             gc.collect()
             _remove_onnx_artifacts(in_path)
             logger.info(f"[{name}] Cleaned intermediate FP32 artifact: {in_path}")
@@ -1120,7 +1304,7 @@ def sync_models(
         if target in ("all", "gliner"):
             export_gliner(force=force)
     finally:
-        if os.path.exists(TMP_DIR):
+        if TMP_DIR.exists():
             shutil.rmtree(TMP_DIR, ignore_errors=True)
 
     if mode == "export":
@@ -1130,8 +1314,8 @@ def sync_models(
     need_quant = (
         exported_emb
         or exported_rerank
-        or (target in ("all", "embedding") and not os.path.exists(config.EMBEDDING_ONNX_INT8))
-        or (target in ("all", "reranker") and not os.path.exists(config.RERANKER_ONNX_INT8))
+        or (target in ("all", "embedding") and not Path(config.EMBEDDING_ONNX_INT8).exists())
+        or (target in ("all", "reranker") and not Path(config.RERANKER_ONNX_INT8).exists())
     )
     if need_quant:
         logger.info("Running INT8 quantization + parity verification in an isolated subprocess...")
@@ -1139,11 +1323,11 @@ def sync_models(
         env["PYTHONPATH"] = (
             f"{PROJECT_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
             if "PYTHONPATH" in env
-            else PROJECT_ROOT
+            else str(PROJECT_ROOT)
         )
         cmd = [
             sys.executable,
-            os.path.abspath(__file__),
+            str(Path(__file__).resolve()),
             "--models",
             "quantize",
             "--model-target",
@@ -1163,15 +1347,16 @@ def sync_models(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_project_path(path: str) -> str:
-    if os.path.isabs(path) or os.path.exists(path):
-        return path
-    return os.path.join(PROJECT_ROOT, path)
+def _resolve_project_path(path: Path | str) -> Path:
+    p = Path(path)
+    if p.is_absolute() or p.exists():
+        return p
+    return PROJECT_ROOT / p
 
 
-def _get_staged_path(sheet_name: str) -> str:
+def _get_staged_path(sheet_name: str) -> Path:
     safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in sheet_name) + ".csv"
-    return os.path.join(_STAGING_DIR, safe_name)
+    return _STAGING_DIR / safe_name
 
 
 def _domain_sheet_names(domain: str) -> list[str]:
@@ -1218,7 +1403,7 @@ def _stage_all_sheets(sheet_id: str, domains: list[str]) -> None:
     import pandas as pd
     import requests
 
-    os.makedirs(_STAGING_DIR, exist_ok=True)
+    _STAGING_DIR.mkdir(parents=True, exist_ok=True)
     tabs: list[str] = []
     for d in domains:
         for tab in _domain_sheet_names(d):
@@ -1246,22 +1431,21 @@ def _stage_all_sheets(sheet_id: str, domains: list[str]) -> None:
                     time.sleep(1.5**attempt)
         if text is None:
             raise ConnectionError(f"Failed to download sheet '{tab}': {last_err}") from last_err
-        with open(_get_staged_path(tab), "w", encoding="utf-8") as f:
-            f.write(text)
+        _get_staged_path(tab).write_text(text, encoding="utf-8")
         logger.info(f"[STAGE] ({idx}/{len(tabs)}) Staged '{tab}'.")
 
     for d in domains:
         cat_name = "Food Catalog" if d == _DOMAIN_FOOD else "Market Catalog"
         cat_path = _get_staged_path(cat_name)
-        if os.path.exists(cat_path):
+        if cat_path.exists():
             _write_bt_gk_map_csv(pd.read_csv(cat_path, dtype=str), d)
 
 
-def _stage_all_from_excel(excel_path: str, domains: list[str]) -> None:
+def _stage_all_from_excel(excel_path: Path | str, domains: list[str]) -> None:
     """Extracts Excel workbook tabs as CSVs into _STAGING_DIR without importing engine."""
     import pandas as pd
 
-    os.makedirs(_STAGING_DIR, exist_ok=True)
+    _STAGING_DIR.mkdir(parents=True, exist_ok=True)
     xl = pd.ExcelFile(excel_path)
     sheet_names = xl.sheet_names
     for name in sheet_names:
@@ -1281,7 +1465,7 @@ def _stage_all_from_excel(excel_path: str, domains: list[str]) -> None:
 
 
 def _cleanup_staged_sheets() -> None:
-    if os.path.exists(_STAGING_DIR):
+    if _STAGING_DIR.exists():
         shutil.rmtree(_STAGING_DIR, ignore_errors=True)
         logger.info(f"[STAGE] Removed temporary staging folder: {_STAGING_DIR}")
 
@@ -1326,28 +1510,28 @@ def wipe_local_cache_files() -> None:
     from engine import config
 
     logger.info("Purging local disk cache files...")
-    if os.path.exists(config.CACHE_DIR):
-        for item in os.listdir(config.CACHE_DIR):
-            item_path = os.path.join(config.CACHE_DIR, item)
-            if os.path.isfile(item_path):
+    cache_dir = Path(config.CACHE_DIR)
+    if cache_dir.exists():
+        for item in cache_dir.iterdir():
+            if item.is_file():
                 try:
-                    os.remove(item_path)
+                    item.unlink()
                 except Exception as e:
-                    logger.warning(f"Could not remove cache file {item_path}: {e}")
+                    logger.warning(f"Could not remove cache file {item}: {e}")
 
 
 def wipe_domain_cache_files(domain: str) -> None:
     from engine import config
 
     logger.info(f"[{domain.upper()}] Purging local disk cache files...")
-    if os.path.exists(config.CACHE_DIR):
-        for item in os.listdir(config.CACHE_DIR):
-            fpath = os.path.join(config.CACHE_DIR, item)
-            if item.startswith(f"{domain}_") and os.path.isfile(fpath):
+    cache_dir = Path(config.CACHE_DIR)
+    if cache_dir.exists():
+        for item in cache_dir.iterdir():
+            if item.name.startswith(f"{domain}_") and item.is_file():
                 try:
-                    os.remove(fpath)
+                    item.unlink()
                 except Exception as e:
-                    logger.warning(f"Could not remove cache file {item}: {e}")
+                    logger.warning(f"Could not remove cache file {item.name}: {e}")
 
 
 def sync_db(domain: str, sheet_id: str, mode: str):
@@ -1381,7 +1565,7 @@ def sync_cache(domain: str, sheet_id: str, mode: str) -> None:
     from engine.data_pipeline.cache_manager import CacheManager
     from engine.data_pipeline.ingestion import DataIngestion
 
-    os.makedirs(config.CACHE_DIR, exist_ok=True)
+    Path(config.CACHE_DIR).mkdir(parents=True, exist_ok=True)
     if mode == "rebuild":
         DataIngestion.clear_mem_cache(domain)
     try:
@@ -1392,14 +1576,14 @@ def sync_cache(domain: str, sheet_id: str, mode: str) -> None:
             f"Run with --from-staged (after backend --db --keep-staged) or --sample."
         ) from exc
 
-    catalog_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
-    brands_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
-    dicts_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_classifier_dicts.json")
-    metadata_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_metadata.pkl")
+    catalog_cache_path = Path(config.CACHE_DIR) / f"{domain}_catalog_mmap.feather"
+    brands_cache_path = Path(config.CACHE_DIR) / f"{domain}_brands_mmap.feather"
+    dicts_cache_path = Path(config.CACHE_DIR) / f"{domain}_classifier_dicts.json"
+    metadata_path = Path(config.CACHE_DIR) / f"{domain}_catalog_metadata.pkl"
 
     rebuild = mode == "rebuild"
 
-    if rebuild or not os.path.exists(catalog_cache_path) or not os.path.exists(brands_cache_path):
+    if rebuild or not catalog_cache_path.exists() or not brands_cache_path.exists():
         cat_df_feather = cat_df.copy()
         if "entities" in cat_df_feather.columns:
             cat_df_feather = cat_df_feather.drop(columns=["entities"])
@@ -1408,15 +1592,15 @@ def sync_cache(domain: str, sheet_id: str, mode: str) -> None:
         cat_df_feather = cat_df_feather.reset_index(drop=True)
         brands_df_feather = brands_df.reset_index(drop=True)
 
-        feather.write_feather(cat_df_feather, catalog_cache_path, compression="lz4")
-        feather.write_feather(brands_df_feather, brands_cache_path, compression="lz4")
+        feather.write_feather(cat_df_feather, str(catalog_cache_path), compression="lz4")
+        feather.write_feather(brands_df_feather, str(brands_cache_path), compression="lz4")
         logger.info(
             f"[{domain.upper()}] Feather caches written ({len(cat_df_feather)} catalog items, {len(brands_df_feather)} brands)."
         )
     else:
         logger.info(f"[{domain.upper()}] Feather caches already present — skipped.")
 
-    if rebuild or not os.path.exists(dicts_cache_path):
+    if rebuild or not dicts_cache_path.exists():
         try:
             dicts = DataIngestion.load_classifier_dictionaries(
                 sheet_id, domain=domain, force_fetch=False
@@ -1426,13 +1610,12 @@ def sync_cache(domain: str, sheet_id: str, mode: str) -> None:
                 f"[{domain.upper()}] Classifier dictionaries unavailable for --cache ({exc}). "
                 f"Run with --from-staged (after backend --db --keep-staged) or --sample."
             ) from exc
-        with open(dicts_cache_path, "w", encoding="utf-8") as f:
-            json.dump(dicts, f, indent=2)
+        dicts_cache_path.write_text(json.dumps(dicts, indent=2), encoding="utf-8")
         logger.info(f"[{domain.upper()}] Classifier dictionaries JSON cached.")
     else:
         logger.info(f"[{domain.upper()}] Classifier dictionaries JSON already present — skipped.")
 
-    if rebuild or not os.path.exists(metadata_path):
+    if rebuild or not metadata_path.exists():
         meta_df = CacheManager.populate_basic_nlp_features(cat_df.copy())
         joblib.dump(meta_df, metadata_path)
         logger.info(f"[{domain.upper()}] Catalog NLP metadata pickle saved.")
@@ -1468,11 +1651,11 @@ def sync_qdrant(domain: str, mode: str) -> None:
             logger.info(f"[{domain.upper()}] Qdrant rebuild triggered automatically ({reason}).")
             do_full_rebuild = True
             for stale_file in (
-                os.path.join(config.CACHE_DIR, f"{domain}_row_hashes.json"),
-                os.path.join(config.CACHE_DIR, f"{domain}_classifier_model.pkl"),
+                Path(config.CACHE_DIR) / f"{domain}_row_hashes.json",
+                Path(config.CACHE_DIR) / f"{domain}_classifier_model.pkl",
             ):
-                if os.path.exists(stale_file):
-                    os.remove(stale_file)
+                if stale_file.exists():
+                    stale_file.unlink()
 
     if do_full_rebuild:
         for col in collections:
@@ -1491,25 +1674,25 @@ def sync_qdrant(domain: str, mode: str) -> None:
             remote_hashes = {}
 
         if remote_hashes:
-            hash_file = os.path.join(config.CACHE_DIR, f"{domain}_row_hashes.json")
+            hash_file = Path(config.CACHE_DIR) / f"{domain}_row_hashes.json"
             local_hashes = {}
-            if os.path.exists(hash_file):
+            if hash_file.exists():
                 try:
-                    with open(hash_file, encoding="utf-8") as f:
+                    with hash_file.open(encoding="utf-8") as f:
                         local_hashes = json.load(f)
                 except Exception:
                     local_hashes = {}
             merged = {**remote_hashes, **local_hashes}
-            os.makedirs(config.CACHE_DIR, exist_ok=True)
-            with open(hash_file, "w", encoding="utf-8") as f:
+            hash_file.parent.mkdir(parents=True, exist_ok=True)
+            with hash_file.open("w", encoding="utf-8") as f:
                 json.dump(merged, f)
             logger.info(
                 f"[{domain.upper()}] Reconciled {len(remote_hashes)} row hashes from Qdrant "
                 f"({len(merged)} total known rows)."
             )
 
-    clf_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_classifier_model.pkl")
-    need_classifier_train = do_full_rebuild or not os.path.exists(clf_cache_path)
+    clf_cache_path = Path(config.CACHE_DIR) / f"{domain}_classifier_model.pkl"
+    need_classifier_train = do_full_rebuild or not clf_cache_path.exists()
 
     logger.info(f"[{domain.upper()}] Training classifier & syncing catalog vectors to Qdrant...")
     get_classifier(domain, force_reset=need_classifier_train)
@@ -1527,7 +1710,7 @@ def sync_qdrant(domain: str, mode: str) -> None:
 def load_catalog_data(
     domain: str,
     from_sample: bool = False,
-    sample_file: str = "data/sample/SampleData.xlsx",
+    sample_file: Path | str = "data/sample/SampleData.xlsx",
 ):
     """Loads and standardizes labeled catalog data for ArcFace BT training."""
     import pandas as pd
@@ -1536,18 +1719,18 @@ def load_catalog_data(
 
     df = pd.DataFrame()
     if from_sample:
-        sample_file = _resolve_project_path(sample_file)
-        if not os.path.exists(sample_file):
-            raise FileNotFoundError(f"Sample workbook not found: {sample_file}")
+        sample_path = _resolve_project_path(sample_file)
+        if not sample_path.exists():
+            raise FileNotFoundError(f"Sample workbook not found: {sample_path}")
         sheet_name = (
             config.FOOD_CATALOG_SHEET
             if domain == config.DOMAIN_FOOD
             else config.MARKET_CATALOG_SHEET
         )
         logger.info(
-            f"[{domain.upper()}] Loading ArcFace training data from '{sheet_name}' in {sample_file}..."
+            f"[{domain.upper()}] Loading ArcFace training data from '{sheet_name}' in {sample_path}..."
         )
-        df = pd.read_excel(sample_file, sheet_name=sheet_name)
+        df = pd.read_excel(sample_path, sheet_name=sheet_name)
     else:
         from engine.data_pipeline.ingestion import DataIngestion
 
@@ -1607,7 +1790,7 @@ def load_catalog_data(
 def extract_embeddings(
     df,
     domain: str,
-    cache_dir: str | None = None,
+    cache_dir: Path | str | None = None,
     force_embed: bool = False,
 ):
     """Extracts or loads cached weighted text embeddings for ArcFace training."""
@@ -1617,9 +1800,9 @@ def extract_embeddings(
 
     from engine import config
 
-    cache_dir = cache_dir or config.CACHE_DIR
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(cache_dir, f"{domain}_weighted_skus_cache.pkl")
+    cdir = Path(cache_dir or config.CACHE_DIR)
+    cdir.mkdir(parents=True, exist_ok=True)
+    cache_file = cdir / f"{domain}_weighted_skus_cache.pkl"
 
     def _to_clean(series) -> list[str]:
         return [
@@ -1633,7 +1816,7 @@ def extract_embeddings(
     keys = [f"{n}||{d}||{c}" for n, d, c in zip(names, descs, cats)]
 
     sku_cache = {}
-    if not force_embed and os.path.exists(cache_file):
+    if not force_embed and cache_file.exists():
         try:
             loaded_cache = joblib.load(cache_file)
             if (
@@ -1684,9 +1867,9 @@ def train_bt_arcface(
     weight_decay: float = 1e-4,
     device_name: str | None = None,
     from_sample: bool = False,
-    sample_file: str = "data/sample/SampleData.xlsx",
+    sample_file: Path | str = "data/sample/SampleData.xlsx",
     force_embed: bool = False,
-    output_dir: str | None = None,
+    output_dir: Path | str | None = None,
 ) -> dict[str, str]:
     """Trains BTArcFaceNet, exports ONNX, quantizes INT8, verifies parity, and cleans FP32."""
     import joblib
@@ -1700,8 +1883,8 @@ def train_bt_arcface(
     from engine.classification.models.arcface_bt import BTArcFaceNet, FocalLoss
 
     t_start = time.time()
-    arcface_dir = output_dir or config.get_arcface_dir()
-    os.makedirs(arcface_dir, exist_ok=True)
+    arcface_dir = Path(output_dir or config.get_arcface_dir())
+    arcface_dir.mkdir(parents=True, exist_ok=True)
 
     df = load_catalog_data(domain, from_sample=from_sample, sample_file=sample_file)
     X_text = extract_embeddings(df, domain, force_embed=force_embed)
@@ -1772,14 +1955,14 @@ def train_bt_arcface(
     model.eval()
     model.to("cpu")
 
-    fp32_onnx_path = os.path.join(arcface_dir, f"{domain}_bt_arcface.onnx")
-    int8_onnx_path = os.path.join(arcface_dir, f"{domain}_bt_arcface_int8.onnx")
+    fp32_onnx_path = arcface_dir / f"{domain}_bt_arcface.onnx"
+    int8_onnx_path = arcface_dir / f"{domain}_bt_arcface_int8.onnx"
     dummy_input = torch.randn(1, in_features, dtype=torch.float32)
 
     torch.onnx.export(
         model,
         dummy_input,
-        fp32_onnx_path,
+        str(fp32_onnx_path),
         input_names=["input"],
         output_names=["logits"],
         dynamic_axes={"input": {0: "batch_size"}, "logits": {0: "batch_size"}},
@@ -1790,7 +1973,7 @@ def train_bt_arcface(
     quantize_model(fp32_onnx_path, int8_onnx_path, f"ARCFACE-{domain.upper()}")
 
     # Verify INT8 output parity cleanly before deleting intermediate FP32
-    sess_int8 = ort.InferenceSession(int8_onnx_path, providers=["CPUExecutionProvider"])
+    sess_int8 = ort.InferenceSession(str(int8_onnx_path), providers=["CPUExecutionProvider"])
     try:
         probe = X[: min(4, len(X))]
         out_int8 = sess_int8.run(None, {sess_int8.get_inputs()[0].name: probe})[0]
@@ -1808,12 +1991,12 @@ def train_bt_arcface(
     del sess_int8
     gc.collect()
     _remove_onnx_artifacts(fp32_onnx_path)
-    int8_mb = os.path.getsize(int8_onnx_path) / (1024 * 1024)
+    int8_mb = int8_onnx_path.stat().st_size / (1024 * 1024)
     logger.info(
         f"[{domain.upper()}] ArcFace INT8 verified ({int8_mb:.2f} MB, max logit diff={max_diff:.4f}); cleaned FP32."
     )
 
-    labels_json_path = os.path.join(arcface_dir, f"{domain}_bt_arcface_labels.json")
+    labels_json_path = arcface_dir / f"{domain}_bt_arcface_labels.json"
     labels_meta = {
         "domain": domain,
         "num_classes": num_classes,
@@ -1829,10 +2012,10 @@ def train_bt_arcface(
             "var": float(price_scaler.var_[0]) if hasattr(price_scaler, "var_") else 1.0,
         },
     }
-    with open(labels_json_path, "w", encoding="utf-8") as f:
+    with labels_json_path.open("w", encoding="utf-8") as f:
         json.dump(labels_meta, f, indent=2, ensure_ascii=False)
 
-    meta_joblib_path = os.path.join(arcface_dir, f"{domain}_bt_arcface_meta.joblib")
+    meta_joblib_path = arcface_dir / f"{domain}_bt_arcface_meta.joblib"
     joblib.dump(
         {
             "label_encoder": label_encoder,
@@ -1849,9 +2032,9 @@ def train_bt_arcface(
     )
     return {
         "domain": domain,
-        "int8_onnx": int8_onnx_path,
-        "labels_json": labels_json_path,
-        "meta_joblib": meta_joblib_path,
+        "int8_onnx": str(int8_onnx_path),
+        "labels_json": str(labels_json_path),
+        "meta_joblib": str(meta_joblib_path),
     }
 
 
@@ -1860,18 +2043,16 @@ def sync_arcface(
     mode: str,
     epochs: int = 25,
     from_sample: bool = False,
-    sample_file: str = "data/sample/SampleData.xlsx",
+    sample_file: Path | str = "data/sample/SampleData.xlsx",
 ) -> None:
     """Trains ArcFace INT8 head if rebuilding or if missing / mismatched with EMBEDDING_DIM."""
     from engine import config
 
     _ensure_clean_embedding_caches_for_model()
-    onnx_path = config.get_bt_arcface_onnx_path(domain)
-    labels_path = config.get_bt_arcface_labels_path(domain)
+    onnx_path = Path(config.get_bt_arcface_onnx_path(domain))
+    labels_path = Path(config.get_bt_arcface_labels_path(domain))
 
-    needs_train = (
-        mode == "rebuild" or not os.path.exists(onnx_path) or not os.path.exists(labels_path)
-    )
+    needs_train = mode == "rebuild" or not onnx_path.exists() or not labels_path.exists()
     if not needs_train:
         labels_meta = _read_manifest(labels_path)
         expected_dim = config.EMBEDDING_DIM + 1
@@ -1993,10 +2174,11 @@ def run(
         if db_mode:
             reset_catalog_tables(single_domain)
         logger.info(f"\n>>> EXTRACTING SAMPLE DATA FROM '{sample_file}' <<<")
-        if not os.path.exists(sample_file):
-            logger.critical(f"Sample data file not found at '{sample_file}'.")
+        sample_path = _resolve_project_path(sample_file)
+        if not sample_path.exists():
+            logger.critical(f"Sample data file not found at '{sample_path}'.")
             sys.exit(1)
-        _stage_all_from_excel(sample_file, domains=target_domains)
+        _stage_all_from_excel(sample_path, domains=target_domains)
     elif db_mode and not from_staged:
         logger.info("\n>>> PRE-FETCHING & STAGING GOOGLE SHEETS <<<")
         _stage_all_sheets(sheet_id, domains=target_domains)

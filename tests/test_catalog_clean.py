@@ -161,7 +161,6 @@ def test_catalog_snapshot_feather_endpoints():
 def test_engine_fetches_snapshot_from_backend(tmp_path):
     """Verify engine _fetch_snapshot_from_backend downloads snapshots into its local CACHE_DIR."""
     import io
-    import os
 
     import pandas as pd
     import pyarrow.feather as feather
@@ -200,13 +199,13 @@ def test_engine_fetches_snapshot_from_backend(tmp_path):
             success = _fetch_snapshot_from_backend("food")
             assert success is True
 
-            cat_out = os.path.join(str(tmp_path), "food_catalog_mmap.feather")
-            brands_out = os.path.join(str(tmp_path), "food_brands_mmap.feather")
-            dicts_out = os.path.join(str(tmp_path), "food_classifier_dicts.json")
+            cat_out = tmp_path / "food_catalog_mmap.feather"
+            brands_out = tmp_path / "food_brands_mmap.feather"
+            dicts_out = tmp_path / "food_classifier_dicts.json"
 
-            assert os.path.exists(cat_out)
-            assert os.path.exists(brands_out)
-            assert os.path.exists(dicts_out)
+            assert cat_out.exists()
+            assert brands_out.exists()
+            assert dicts_out.exists()
 
             read_cat = feather.read_feather(cat_out)
             assert read_cat.iloc[0]["Name"] == "Food Item 1"

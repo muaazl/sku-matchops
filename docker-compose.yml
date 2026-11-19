@@ -95,7 +95,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.engine
     container_name: sku_matchops_engine
-    mem_limit: 4600m
+    mem_limit: 6000m
     expose:
       - "50051"
     environment:
@@ -105,8 +105,8 @@ services:
       - BACKEND_GRPC_URL=backend:50052
       - ENGINE_GRPC_PORT=50051
       - INTERNAL_GRPC_SECRET=${INTERNAL_GRPC_SECRET:-}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-jinaai/jina-embeddings-v5-text-small}
-      - RERANKER_MODEL=${RERANKER_MODEL:-jinaai/jina-reranker-v3.5}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - RERANKER_MODEL=${RERANKER_MODEL}
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
     env_file:

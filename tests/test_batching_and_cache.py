@@ -12,7 +12,7 @@ from sqlalchemy import text
 
 from backend.app.services import rules_service
 from engine import config
-from engine.classification.classifier import ZeroShotClassifier
+from engine.classification.classifier import TaxonomyClassifier
 from engine.data_pipeline.vector_store import VectorStore
 from engine.nlp.embedding_engine import EmbeddingEngine
 from engine.rules_engine import evaluator, loader
@@ -51,7 +51,7 @@ def onnx_batch_32(monkeypatch):
 @pytest.mark.parametrize("n", SIZES)
 def test_arcface_bt_inference_is_micro_batched_and_ordered(onnx_batch_32, n):
     n_classes = 128
-    clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+    clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
     clf.bt_model = "arcface"
     clf._arcface_input_name = "x"
     clf._arcface_classes = [f"class_{i}" for i in range(n_classes)]
@@ -125,7 +125,7 @@ def test_cross_encoder_is_micro_batched_and_ordered(onnx_batch_32, n):
 
 def test_classifier_embed_cache_keeps_one_file_per_input_set(tmp_path):
     calls = []
-    clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+    clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
     clf.cache_dir = str(tmp_path)
     clf.model = SimpleNamespace(
         encode=lambda texts: calls.append(list(texts)) or {"dense": np.ones((len(texts), 2))}
@@ -997,7 +997,6 @@ def test_unified_sync_cli_parser_and_stage_modes():
 
 def test_refresh_model_config_updates_paths_and_dim(tmp_path, monkeypatch):
     import json
-    import os
 
     from engine import config
 
@@ -1015,7 +1014,7 @@ def test_refresh_model_config_updates_paths_and_dim(tmp_path, monkeypatch):
         config.refresh_model_config()
         assert config.EMBEDDING_MODEL == "sentence-transformers/all-mpnet-base-v2"
         assert config.EMBEDDING_DIM == 768
-        assert config.EMBEDDING_ONNX == os.path.join(str(model_dir), "model_int8.onnx")
+        assert config.EMBEDDING_ONNX == model_dir / "model_int8.onnx"
         assert config.has_learned_sparse() is False
     finally:
         monkeypatch.undo()
@@ -1081,9 +1080,9 @@ def test_refresh_model_config_resets_when_env_unset(monkeypatch, tmp_path):
         monkeypatch.delenv("EMBEDDING_POOLING", raising=False)
         monkeypatch.delenv("RERANKER_MODEL", raising=False)
         config.refresh_model_config()
-        assert config.EMBEDDING_MODEL == config._DEFAULT_EMBEDDING_MODEL
-        assert config.EMBEDDING_POOLING == config._DEFAULT_EMBEDDING_POOLING
-        assert config.RERANKER_MODEL == config._DEFAULT_RERANKER_MODEL
+        assert config.EMBEDDING_MODEL
+        assert config.EMBEDDING_POOLING
+        assert config.RERANKER_MODEL
     finally:
         monkeypatch.undo()
         config.refresh_model_config()

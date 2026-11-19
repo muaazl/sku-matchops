@@ -1,10 +1,15 @@
 import json
 import os
 import warnings
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# --- Path Configuration (Root & Base) ---
+BASE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = BASE_DIR.parent
+ENV_PATH = ROOT_DIR / ".env"
+load_dotenv(ENV_PATH)
 
 # --- Resource & Threading Limits ---
 # Limit CPU thread pools to half of available cores to avoid resource starvation
@@ -35,17 +40,14 @@ for _warn_pattern in (
 ):
     warnings.filterwarnings("ignore", message=_warn_pattern)
 
-# --- Path Configuration ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
+# --- Data & Cache Paths ---
+DATA_DIR = ROOT_DIR / "data"
+CACHE_DIR = BASE_DIR / "data" / "cache"
+STAGING_DIR = DATA_DIR / "staged_sheets"
+QDRANT_DATA_DIR = BASE_DIR / "data" / "qdrant"
 
-DATA_DIR = os.path.join(ROOT_DIR, "data")
-CACHE_DIR = os.path.join(BASE_DIR, "data", "cache")
-STAGING_DIR = os.path.join(DATA_DIR, "staged_sheets")
-QDRANT_DATA_DIR = os.path.join(BASE_DIR, "data", "qdrant")
-
-LOG_DIR = os.path.join(DATA_DIR, "logs")
-LOG_FILE = os.path.join(LOG_DIR, "app.log")
+LOG_DIR = DATA_DIR / "logs"
+LOG_FILE = LOG_DIR / "app.log"
 # "json" emits one JSON object per log line (with trace_id); anything else is plain text
 LOG_FORMAT = "text"
 
@@ -99,11 +101,11 @@ QDRANT_COLLECTION_FOOD = "food_catalog"
 CACHE_SALT = "MatchOps_v2"
 
 # --- Model Artifacts & Quantization (Strict ONNX + INT8) ---
-ONNX_DIR = os.path.join(BASE_DIR, "models")
-ARCFACE_DIR = os.path.join(ONNX_DIR, "arcface")
-EMBEDDING_ROOT_DIR = os.path.join(ONNX_DIR, "embedding")
-RERANKER_ROOT_DIR = os.path.join(ONNX_DIR, "reranker")
-GLINER_MODEL = os.path.join(ONNX_DIR, "gliner")
+ONNX_DIR = BASE_DIR / "models"
+ARCFACE_DIR = ONNX_DIR / "arcface"
+EMBEDDING_ROOT_DIR = ONNX_DIR / "embedding"
+RERANKER_ROOT_DIR = ONNX_DIR / "reranker"
+GLINER_MODEL = ONNX_DIR / "gliner"
 
 
 def model_id_to_folder_name(model_id: str) -> str:
@@ -113,81 +115,11 @@ def model_id_to_folder_name(model_id: str) -> str:
     return base.lower().replace(" ", "-")
 
 
-_DEFAULT_EMBEDDING_MODEL = "jinaai/jina-embeddings-v5-text-small"
-_DEFAULT_EMBEDDING_POOLING = "auto"
-_DEFAULT_RERANKER_MODEL = "jinaai/jina-reranker-v3.5"
-
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL)
-EMBEDDING_POOLING = os.getenv("EMBEDDING_POOLING", _DEFAULT_EMBEDDING_POOLING).strip().lower()
-RERANKER_MODEL = os.getenv("RERANKER_MODEL", _DEFAULT_RERANKER_MODEL)
-
-EMBEDDING_DIR = os.path.join(EMBEDDING_ROOT_DIR, model_id_to_folder_name(EMBEDDING_MODEL))
-EMBEDDING_MANIFEST = os.path.join(EMBEDDING_DIR, "model_manifest.json")
-EMBEDDING_ONNX_FP32 = os.path.join(EMBEDDING_DIR, "model.onnx")
-EMBEDDING_ONNX_INT8 = os.path.join(EMBEDDING_DIR, "model_int8.onnx")
-EMBEDDING_ONNX = EMBEDDING_ONNX_INT8
-
-RERANKER_DIR = os.path.join(RERANKER_ROOT_DIR, model_id_to_folder_name(RERANKER_MODEL))
-RERANKER_MANIFEST = os.path.join(RERANKER_DIR, "model_manifest.json")
-RERANKER_ONNX_FP32 = os.path.join(RERANKER_DIR, "model.onnx")
-RERANKER_ONNX_INT8 = os.path.join(RERANKER_DIR, "model_int8.onnx")
-RERANKER_ONNX = RERANKER_ONNX_INT8
-
-GLINER_ONNX_FP32 = os.path.join(GLINER_MODEL, "model.onnx")
-GLINER_ONNX = GLINER_ONNX_FP32
-
-# --- BasicType (BT) Classifier Head Selection ---
-# Model head type: "arcface" or "logreg"
-FOOD_BT_MODEL = os.getenv("FOOD_BT_MODEL", "arcface").lower()
-MARKET_BT_MODEL = os.getenv("MARKET_BT_MODEL", "arcface").lower()
-
-FOOD_BT_ARCFACE_INT8 = os.path.join(ARCFACE_DIR, "food_bt_arcface_int8.onnx")
-FOOD_BT_ARCFACE_LABELS = os.path.join(ARCFACE_DIR, "food_bt_arcface_labels.json")
-
-MARKET_BT_ARCFACE_INT8 = os.path.join(ARCFACE_DIR, "market_bt_arcface_int8.onnx")
-MARKET_BT_ARCFACE_LABELS = os.path.join(ARCFACE_DIR, "market_bt_arcface_labels.json")
-
-
-def get_bt_model(domain: str) -> str:
-    """Returns the configured BT model identifier ('arcface' or 'logreg') for a domain."""
-    return FOOD_BT_MODEL if domain == DOMAIN_FOOD else MARKET_BT_MODEL
-
-
-def get_arcface_dir() -> str:
-    """Returns the effective ArcFace directory, preferring ONNX_DIR/arcface if present, else ONNX_DIR."""
-    arcface_sub = os.path.join(ONNX_DIR, "arcface")
-    if os.path.exists(arcface_sub):
-        return arcface_sub
-    return ONNX_DIR
-
-
-def get_bt_arcface_onnx_path(domain: str) -> str:
-    """Returns the expected INT8 ONNX artifact path for the domain's ArcFace BT model."""
-    int8_name = (
-        "food_bt_arcface_int8.onnx" if domain == DOMAIN_FOOD else "market_bt_arcface_int8.onnx"
-    )
-    return os.path.join(get_arcface_dir(), int8_name)
-
-
-def get_bt_arcface_labels_path(domain: str) -> str:
-    """Returns the path to the label mapping JSON for the domain's ArcFace BT model."""
-    labels_name = (
-        "food_bt_arcface_labels.json" if domain == DOMAIN_FOOD else "market_bt_arcface_labels.json"
-    )
-    return os.path.join(get_arcface_dir(), labels_name)
-
-
-# --- NER & Entity Extraction ---
-MARKET_NER_LABELS = ["brand"]
-FOOD_NER_LABELS = ["flavor"]
-NER_LABELS = MARKET_NER_LABELS + FOOD_NER_LABELS
-NER_CONFIDENCE_THRESHOLD = 0.25
-
-
-def _read_json_manifest(path: str) -> dict:
-    if os.path.exists(path):
+def _read_json_manifest(path: Path | str) -> dict:
+    p = Path(path)
+    if p.exists():
         try:
-            with open(path, encoding="utf-8") as f:
+            with p.open(encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     return data
@@ -257,21 +189,21 @@ def refresh_model_config() -> None:
     global CONFIDENCE_THRESHOLD_HIGH, CONFIDENCE_THRESHOLD_MEDIUM
     global RERANKER_THRESHOLD, RERANKER_MARGIN
 
-    load_dotenv(override=False)
-    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL)
-    EMBEDDING_POOLING = os.getenv("EMBEDDING_POOLING", _DEFAULT_EMBEDDING_POOLING).strip().lower()
-    RERANKER_MODEL = os.getenv("RERANKER_MODEL", _DEFAULT_RERANKER_MODEL)
+    load_dotenv(ENV_PATH, override=False)
+    EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    EMBEDDING_POOLING = os.getenv("EMBEDDING_POOLING", "auto").strip().lower()
+    RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 
-    EMBEDDING_DIR = os.path.join(EMBEDDING_ROOT_DIR, model_id_to_folder_name(EMBEDDING_MODEL))
-    EMBEDDING_MANIFEST = os.path.join(EMBEDDING_DIR, "model_manifest.json")
-    EMBEDDING_ONNX_FP32 = os.path.join(EMBEDDING_DIR, "model.onnx")
-    EMBEDDING_ONNX_INT8 = os.path.join(EMBEDDING_DIR, "model_int8.onnx")
+    EMBEDDING_DIR = Path(EMBEDDING_ROOT_DIR) / model_id_to_folder_name(EMBEDDING_MODEL)
+    EMBEDDING_MANIFEST = EMBEDDING_DIR / "model_manifest.json"
+    EMBEDDING_ONNX_FP32 = EMBEDDING_DIR / "model.onnx"
+    EMBEDDING_ONNX_INT8 = EMBEDDING_DIR / "model_int8.onnx"
     EMBEDDING_ONNX = EMBEDDING_ONNX_INT8
 
-    RERANKER_DIR = os.path.join(RERANKER_ROOT_DIR, model_id_to_folder_name(RERANKER_MODEL))
-    RERANKER_MANIFEST = os.path.join(RERANKER_DIR, "model_manifest.json")
-    RERANKER_ONNX_FP32 = os.path.join(RERANKER_DIR, "model.onnx")
-    RERANKER_ONNX_INT8 = os.path.join(RERANKER_DIR, "model_int8.onnx")
+    RERANKER_DIR = Path(RERANKER_ROOT_DIR) / model_id_to_folder_name(RERANKER_MODEL)
+    RERANKER_MANIFEST = RERANKER_DIR / "model_manifest.json"
+    RERANKER_ONNX_FP32 = RERANKER_DIR / "model.onnx"
+    RERANKER_ONNX_INT8 = RERANKER_DIR / "model_int8.onnx"
     RERANKER_ONNX = RERANKER_ONNX_INT8
 
     EMBEDDING_DIM = _resolve_embedding_dim(1024)
@@ -283,21 +215,90 @@ def refresh_model_config() -> None:
     ) = _thresholds_for_reranker_arch(_resolve_reranker_arch())
 
 
+# Module-level model configuration, populated by refresh_model_config()
+EMBEDDING_MODEL: str
+EMBEDDING_POOLING: str
+RERANKER_MODEL: str
+
+EMBEDDING_DIR: Path
+EMBEDDING_MANIFEST: Path
+EMBEDDING_ONNX_FP32: Path
+EMBEDDING_ONNX_INT8: Path
+EMBEDDING_ONNX: Path
+
+RERANKER_DIR: Path
+RERANKER_MANIFEST: Path
+RERANKER_ONNX_FP32: Path
+RERANKER_ONNX_INT8: Path
+RERANKER_ONNX: Path
+
+EMBEDDING_DIM: int
+CONFIDENCE_THRESHOLD_HIGH: float
+CONFIDENCE_THRESHOLD_MEDIUM: float
+RERANKER_THRESHOLD: float
+RERANKER_MARGIN: float
+
+refresh_model_config()
+
+GLINER_ONNX_FP32 = GLINER_MODEL / "model.onnx"
+GLINER_ONNX = GLINER_ONNX_FP32
+
+# --- BasicType (BT) Classifier Head Selection ---
+# Model head type: "arcface" or "logreg"
+FOOD_BT_MODEL = os.getenv("FOOD_BT_MODEL", "arcface").lower()
+MARKET_BT_MODEL = os.getenv("MARKET_BT_MODEL", "arcface").lower()
+
+FOOD_BT_ARCFACE_INT8 = ARCFACE_DIR / "food_bt_arcface_int8.onnx"
+FOOD_BT_ARCFACE_LABELS = ARCFACE_DIR / "food_bt_arcface_labels.json"
+
+MARKET_BT_ARCFACE_INT8 = ARCFACE_DIR / "market_bt_arcface_int8.onnx"
+MARKET_BT_ARCFACE_LABELS = ARCFACE_DIR / "market_bt_arcface_labels.json"
+
+
+def get_bt_model(domain: str) -> str:
+    """Returns the configured BT model identifier ('arcface' or 'logreg') for a domain."""
+    return FOOD_BT_MODEL if domain == DOMAIN_FOOD else MARKET_BT_MODEL
+
+
+def get_arcface_dir() -> Path:
+    """Returns the effective ArcFace directory, preferring ONNX_DIR/arcface if present, else ONNX_DIR."""
+    arcface_sub = Path(ONNX_DIR) / "arcface"
+    if arcface_sub.exists():
+        return arcface_sub
+    return Path(ONNX_DIR)
+
+
+def get_bt_arcface_onnx_path(domain: str) -> Path:
+    """Returns the expected INT8 ONNX artifact path for the domain's ArcFace BT model."""
+    int8_name = (
+        "food_bt_arcface_int8.onnx" if domain == DOMAIN_FOOD else "market_bt_arcface_int8.onnx"
+    )
+    return get_arcface_dir() / int8_name
+
+
+def get_bt_arcface_labels_path(domain: str) -> Path:
+    """Returns the path to the label mapping JSON for the domain's ArcFace BT model."""
+    labels_name = (
+        "food_bt_arcface_labels.json" if domain == DOMAIN_FOOD else "market_bt_arcface_labels.json"
+    )
+    return get_arcface_dir() / labels_name
+
+
+# --- NER & Entity Extraction ---
+MARKET_NER_LABELS = ["brand"]
+FOOD_NER_LABELS = ["flavor"]
+NER_LABELS = MARKET_NER_LABELS + FOOD_NER_LABELS
+NER_CONFIDENCE_THRESHOLD = 0.25
+
+
 # --- Matching Parameters & Gates ---
 TOP_K_RETRIEVAL = 30
-EMBEDDING_DIM = _resolve_embedding_dim(1024)
 # Max rows per ONNX session.run() (embedding, reranker, NER, ArcFace) to bound RAM
 ONNX_BATCH_SIZE = int(os.getenv("ONNX_BATCH_SIZE", "32"))
 UPSERT_BATCH_SIZE = 256
 MATCH_CHUNK_SIZE = 250
 CLASSIFY_CHUNK_SIZE = 250
 
-(
-    CONFIDENCE_THRESHOLD_HIGH,
-    CONFIDENCE_THRESHOLD_MEDIUM,
-    RERANKER_THRESHOLD,
-    RERANKER_MARGIN,
-) = _thresholds_for_reranker_arch(_resolve_reranker_arch())
 FUZZY_BYPASS_RATIO = 90.0  # Token-sort ratio for bypass
 FUZZY_BYPASS_TYPO_RATIO = 80.0  # Character alignment ratio for typo bypass
 MATCHER_LOGIC_GATE_CANDIDATES = 5

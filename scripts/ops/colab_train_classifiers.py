@@ -21,17 +21,18 @@ import threading
 import time
 import zipfile
 from collections import OrderedDict
+from pathlib import Path
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-# Prevent ZeroShotClassifier.__init__ from failing fast on missing ArcFace ONNX
+# Prevent TaxonomyClassifier.__init__ from failing fast on missing ArcFace ONNX
 # before ArcFace has been trained in this run.
 os.environ.setdefault("FOOD_BT_MODEL", "logreg")
 os.environ.setdefault("MARKET_BT_MODEL", "logreg")
@@ -45,7 +46,7 @@ logger = logging.getLogger("matchops.colab_train")
 
 
 def _load_gpu_embedding_engine(batch_size: int):
-    """Builds a CUDA-accelerated EmbeddingEngine compatible with ZeroShotClassifier & sync.py."""
+    """Builds a CUDA-accelerated EmbeddingEngine compatible with TaxonomyClassifier & sync.py."""
     from transformers import AutoConfig, AutoModel, AutoTokenizer
 
     from engine import config
@@ -54,11 +55,10 @@ def _load_gpu_embedding_engine(batch_size: int):
         EmbeddingONNXWrapper,
         _detect_pooling_mode,
         _load_sparse_linear,
-        _resolve_hf_embedding_id,
     )
 
     model_id = config.EMBEDDING_MODEL
-    hf_id = _resolve_hf_embedding_id(model_id)
+    hf_id = os.getenv("EMBEDDING_HF_REPO") or model_id
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type == "cuda" else torch.float32
 
@@ -249,7 +249,9 @@ def _fit_multiclass_logreg_gpu(
         weights = n_samples / (num_classes * counts)
         class_weights_t = torch.from_numpy(weights).to(device)
 
-    W = torch.zeros((num_classes, n_features), device=device, dtype=torch.float32, requires_grad=True)
+    W = torch.zeros(
+        (num_classes, n_features), device=device, dtype=torch.float32, requires_grad=True
+    )
     b = torch.zeros(num_classes, device=device, dtype=torch.float32, requires_grad=True)
     optimizer = torch.optim.AdamW([W, b], lr=0.05, weight_decay=0.0)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)
@@ -277,9 +279,7 @@ def _fit_multiclass_logreg_gpu(
     W_np = W.detach().cpu().numpy().astype(np.float64)
     b_np = b.detach().cpu().numpy().astype(np.float64)
 
-    clf = LogisticRegression(
-        max_iter=1000, C=C, class_weight="balanced" if balanced else None
-    )
+    clf = LogisticRegression(max_iter=1000, C=C, class_weight="balanced" if balanced else None)
     clf.classes_ = np.arange(num_classes)
     clf.n_features_in_ = n_features
     if num_classes == 2:
@@ -329,7 +329,9 @@ def _fit_ovr_logreg_gpu(
         W = torch.zeros((n_act, n_features), device=device, dtype=torch.float32, requires_grad=True)
         b = torch.zeros(n_act, device=device, dtype=torch.float32, requires_grad=True)
         optimizer = torch.optim.AdamW([W, b], lr=0.05, weight_decay=0.0)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs, eta_min=1e-4
+        )
         reg_coeff = 0.5 / (C * n_samples)
 
         pbar = tqdm(range(epochs), desc=desc, unit="epoch", mininterval=0.5)
@@ -339,7 +341,9 @@ def _fit_ovr_logreg_gpu(
             for start in range(0, n_samples, batch_size):
                 idx = perm[start : start + batch_size]
                 xb = X_t[torch.from_numpy(idx)].to(device, non_blocking=True)
-                yb = torch.from_numpy(y_act[idx]).to(device=device, dtype=torch.float32, non_blocking=True)
+                yb = torch.from_numpy(y_act[idx]).to(
+                    device=device, dtype=torch.float32, non_blocking=True
+                )
 
                 optimizer.zero_grad(set_to_none=True)
                 logits = xb @ W.T + b
@@ -387,7 +391,7 @@ def _train_domain_sklearn_and_caches(
     import json
 
     from engine import config
-    from engine.classification.classifier import ZeroShotClassifier
+    from engine.classification.classifier import TaxonomyClassifier
     from engine.classification.loader import (
         augment_bt_gk_map_with_training,
         build_bt_third_tag_map_from_catalog,
@@ -403,8 +407,8 @@ def _train_domain_sklearn_and_caches(
     cat_df, brands_df = DataIngestion.load_catalog(sheet_id, domain=domain, force_fetch=True)
     dicts = DataIngestion.load_classifier_dictionaries(sheet_id, domain=domain, force_fetch=True)
 
-    dicts_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_classifier_dicts.json")
-    with open(dicts_cache_path, "w", encoding="utf-8") as f:
+    dicts_cache_path = Path(config.CACHE_DIR) / f"{domain}_classifier_dicts.json"
+    with dicts_cache_path.open("w", encoding="utf-8") as f:
         json.dump(dicts, f, indent=2)
 
     # NEREngine without loading GLiNER ONNX (only used as lightweight wrapper here)
@@ -443,7 +447,7 @@ def _train_domain_sklearn_and_caches(
         if tag_list:
             gpu_embedder.embed_dictionary_incremental(domain, dict_type, tag_list)
 
-    class ColabZeroShotClassifier(ZeroShotClassifier):
+    class ColabTaxonomyClassifier(TaxonomyClassifier):
         """Uses CUDA GPU solvers for BT, Third-Tag, and GK classifiers when available."""
 
         def _fit_classifiers(
@@ -490,12 +494,10 @@ def _train_domain_sklearn_and_caches(
                 balanced=True,
                 desc=f"[GPU] {self.domain} {target_col.capitalize()} LogReg",
             )
-            gk_clf = _fit_ovr_logreg_gpu(
-                X, y_gk, C=5.0, desc=f"[GPU] {self.domain} GK OneVsRest"
-            )
+            gk_clf = _fit_ovr_logreg_gpu(X, y_gk, C=5.0, desc=f"[GPU] {self.domain} GK OneVsRest")
             return bt_clf, third_tag_clf, gk_clf
 
-    clf = ColabZeroShotClassifier(
+    clf = ColabTaxonomyClassifier(
         gpu_embedder,
         domain,
         descriptions,
@@ -504,51 +506,50 @@ def _train_domain_sklearn_and_caches(
         force_retrain=True,
     )
     if not clf._trained:
-        raise RuntimeError(f"[{domain.upper()}] ZeroShotClassifier training failed.")
+        raise RuntimeError(f"[{domain.upper()}] TaxonomyClassifier training failed.")
 
 
 def _package_artifacts(domains: list[str], output_zip: str) -> str:
     """Zips generated cache and ArcFace artifacts with repo-relative paths."""
     from engine import config
 
-    output_path = (
-        output_zip if os.path.isabs(output_zip) else os.path.join(PROJECT_ROOT, output_zip)
-    )
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    output_path = Path(output_zip)
+    if not output_path.is_absolute():
+        output_path = PROJECT_ROOT / output_zip
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    arcface_dir = config.get_arcface_dir()
-    files_to_pack: list[str] = []
+    cache_dir = Path(config.CACHE_DIR)
+    arcface_dir = Path(config.get_arcface_dir())
+    files_to_pack: list[Path] = []
 
     shared_cache = ("active_embedding_model.txt", "model_hashes.json")
     for fname in shared_cache:
-        fpath = os.path.join(config.CACHE_DIR, fname)
-        if os.path.isfile(fpath):
+        fpath = cache_dir / fname
+        if fpath.is_file():
             files_to_pack.append(fpath)
 
-    if os.path.isdir(config.CACHE_DIR):
-        for fname in sorted(os.listdir(config.CACHE_DIR)):
-            fpath = os.path.join(config.CACHE_DIR, fname)
-            if not os.path.isfile(fpath):
+    if cache_dir.is_dir():
+        for fpath in sorted(cache_dir.iterdir()):
+            if not fpath.is_file():
                 continue
-            if any(fname.startswith(f"{d}_") for d in domains):
+            if any(fpath.name.startswith(f"{d}_") for d in domains):
                 files_to_pack.append(fpath)
 
-    if os.path.isdir(arcface_dir):
-        for fname in sorted(os.listdir(arcface_dir)):
-            fpath = os.path.join(arcface_dir, fname)
-            if not os.path.isfile(fpath):
+    if arcface_dir.is_dir():
+        for fpath in sorted(arcface_dir.iterdir()):
+            if not fpath.is_file():
                 continue
-            if any(fname.startswith(f"{d}_") for d in domains):
+            if any(fpath.name.startswith(f"{d}_") for d in domains):
                 files_to_pack.append(fpath)
 
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for fpath in files_to_pack:
-            arcname = os.path.relpath(fpath, PROJECT_ROOT).replace("\\", "/")
+            arcname = str(fpath.relative_to(PROJECT_ROOT)).replace("\\", "/")
             zf.write(fpath, arcname=arcname)
 
-    size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    size_mb = output_path.stat().st_size / (1024 * 1024)
     logger.info(f"[PACK] Wrote {len(files_to_pack)} artifacts to {output_path} ({size_mb:.2f} MB)")
-    return output_path
+    return str(output_path)
 
 
 def main() -> None:
@@ -605,7 +606,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-sklearn",
         action="store_true",
-        help="Skip sklearn ZeroShotClassifier & centroid training.",
+        help="Skip sklearn TaxonomyClassifier & centroid training.",
     )
     parser.add_argument(
         "--skip-arcface",

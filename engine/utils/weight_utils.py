@@ -5,6 +5,49 @@ def _get_catalog_row(raw_catalog: pd.DataFrame | list[dict], idx: int):
     return raw_catalog[idx] if isinstance(raw_catalog, list) else raw_catalog.iloc[idx]
 
 
+def resolve_bt_consensus_indices(
+    raw_catalog: pd.DataFrame | list[dict],
+    cand_indices: list[int],
+    conf_bt: str | None = None,
+    cat_bts_lower: list[str] | None = None,
+) -> list[int]:
+    """
+    Filters catalog candidate indices tied on exact or token-sorted text to a consistent BasicType.
+    If conf_bt matches a subset of cand_indices and is not outnumbered >=3:1 by the catalog
+    consensus BasicType, returns the conf_bt-matching indices; otherwise returns the indices
+    matching the majority-vote BasicType across cand_indices.
+    """
+    if not cand_indices or len(cand_indices) <= 1:
+        return list(cand_indices)
+
+    bts: list[str] = []
+    bt_counts: dict[str, int] = {}
+    for idx in cand_indices:
+        if cat_bts_lower is not None and idx < len(cat_bts_lower):
+            bt = cat_bts_lower[idx]
+        else:
+            row = _get_catalog_row(raw_catalog, idx)
+            bt = str(row.get("basictype", row.get("BasicType", "")) or "").strip().lower()
+        bts.append(bt)
+        if bt:
+            bt_counts[bt] = bt_counts.get(bt, 0) + 1
+
+    if not bt_counts:
+        return list(cand_indices)
+
+    majority_bt = max(bt_counts.items(), key=lambda item: item[1])[0]
+    majority_count = bt_counts[majority_bt]
+
+    if conf_bt:
+        conf_bt_norm = conf_bt.strip().lower()
+        bt_matched = [idx for idx, bt in zip(cand_indices, bts) if bt == conf_bt_norm]
+        if bt_matched and majority_count < 3 * len(bt_matched):
+            return bt_matched
+
+    majority_indices = [idx for idx, bt in zip(cand_indices, bts) if bt == majority_bt]
+    return majority_indices or list(cand_indices)
+
+
 def resolve_weight_bypass_candidate(
     raw_catalog: pd.DataFrame | list[dict],
     cand_indices: list[int],

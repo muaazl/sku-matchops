@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -32,12 +33,12 @@ class TestCacheFallbackIsolation(unittest.TestCase):
     """
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+        self.test_dir = Path(tempfile.mkdtemp())
         self.orig_cache_dir = config.CACHE_DIR
         self.orig_staging_dir = config.STAGING_DIR
 
         config.CACHE_DIR = self.test_dir
-        config.STAGING_DIR = os.path.join(self.test_dir, "staged")
+        config.STAGING_DIR = self.test_dir / "staged"
 
         with get_engine().begin() as conn:
             conn.execute(text(f"TRUNCATE {_CATALOG_TABLES} RESTART IDENTITY"))
@@ -94,7 +95,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         import gc
 
         gc.collect()
-        if os.path.exists(self.test_dir):
+        if self.test_dir.exists():
             shutil.rmtree(self.test_dir, ignore_errors=True)
 
     @patch("requests.get")
@@ -132,8 +133,8 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         """Engine DataIngestion loads from Feather files when present without touching network."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
-        cat_feather = os.path.join(self.test_dir, "market_catalog_mmap.feather")
-        brands_feather = os.path.join(self.test_dir, "market_brands_mmap.feather")
+        cat_feather = self.test_dir / "market_catalog_mmap.feather"
+        brands_feather = self.test_dir / "market_brands_mmap.feather"
 
         cat_sample = pd.DataFrame([{"Name": "Sample Item", "clean_text": "sample item"}])
         brands_sample = pd.DataFrame([{"Brand Name": "Sample Brand"}])
@@ -175,7 +176,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 2)
         self.assertEqual(cat_df.iloc[0]["Name"], "Anchor Butter 200g")
         self.assertEqual(brands_df.iloc[0]["Brand Name"], "Anchor")
-        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "market_catalog_mmap.feather")))
+        self.assertTrue((self.test_dir / "market_catalog_mmap.feather").exists())
 
     @patch("requests.get")
     def test_get_classifier_dicts_uses_database_without_network(self, mock_get):
@@ -195,7 +196,7 @@ class TestCacheFallbackIsolation(unittest.TestCase):
         """Engine _load_flavor_data reads food_brands_mmap.feather without network or DB."""
         mock_get.side_effect = ConnectionError("Network is disconnected!")
 
-        flavors_feather = os.path.join(self.test_dir, "food_brands_mmap.feather")
+        flavors_feather = self.test_dir / "food_brands_mmap.feather"
         flavors_df = pd.DataFrame(
             [
                 {

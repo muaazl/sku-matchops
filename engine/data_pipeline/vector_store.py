@@ -800,6 +800,53 @@ class VectorStore:
 
     # --- Classifier Tag Methods ---
 
+    def has_tags_synced(self, domain: str, dict_type: str, expected_count: int) -> bool:
+        """Returns True when Qdrant already holds at least expected_count tags for dict_type under EMBEDDING_MODEL."""
+        if expected_count <= 0:
+            return True
+        collection_name = f"{domain}_tags"
+        try:
+            self._ensure_collection(collection_name)
+            type_filter = Filter(
+                must=[FieldCondition(key="dict_type", match=MatchValue(value=dict_type))]
+            )
+            count_res = self._call_with_retry(
+                "count",
+                self.client.count,
+                collection_name=collection_name,
+                count_filter=type_filter,
+            )
+            if count_res.count >= expected_count:
+                scroll_res = self._call_with_retry(
+                    "scroll",
+                    self.client.scroll,
+                    collection_name=collection_name,
+                    scroll_filter=type_filter,
+                    limit=1,
+                    with_payload=["embedding_model"],
+                    with_vectors=False,
+                )
+                sample_pts = (
+                    scroll_res[0] if isinstance(scroll_res, (tuple, list)) and scroll_res else []
+                )
+                existing_model = (
+                    (sample_pts[0].payload or {}).get("embedding_model") if sample_pts else None
+                )
+                if existing_model == config.EMBEDDING_MODEL:
+                    logger.info(
+                        f"[QDRANT] Collection '{collection_name}' already contains {count_res.count} items for ({dict_type}). Skipping redundant upsert."
+                    )
+                    return True
+                logger.info(
+                    f"[QDRANT] Re-upserting '{collection_name}' ({dict_type}): "
+                    f"model changed ({existing_model!r} -> {config.EMBEDDING_MODEL!r})."
+                )
+        except Exception as e:
+            logger.warning(
+                f"[QDRANT] Could not check existing count for {collection_name} ({dict_type}): {e}"
+            )
+        return False
+
     def upsert_tags(
         self,
         tags: list[str],
@@ -818,48 +865,8 @@ class VectorStore:
         collection_name = f"{domain}_tags"
         self._ensure_collection(collection_name)
 
-        if not force:
-            try:
-                type_filter = Filter(
-                    must=[FieldCondition(key="dict_type", match=MatchValue(value=dict_type))]
-                )
-                count_res = self._call_with_retry(
-                    "count",
-                    self.client.count,
-                    collection_name=collection_name,
-                    count_filter=type_filter,
-                )
-                if count_res.count >= len(set(tags)):
-                    scroll_res = self._call_with_retry(
-                        "scroll",
-                        self.client.scroll,
-                        collection_name=collection_name,
-                        scroll_filter=type_filter,
-                        limit=1,
-                        with_payload=["embedding_model"],
-                        with_vectors=False,
-                    )
-                    sample_pts = (
-                        scroll_res[0]
-                        if isinstance(scroll_res, (tuple, list)) and scroll_res
-                        else []
-                    )
-                    existing_model = (
-                        (sample_pts[0].payload or {}).get("embedding_model") if sample_pts else None
-                    )
-                    if existing_model == config.EMBEDDING_MODEL:
-                        logger.info(
-                            f"[QDRANT] Collection '{collection_name}' already contains {count_res.count} items for ({dict_type}). Skipping redundant upsert."
-                        )
-                        return
-                    logger.info(
-                        f"[QDRANT] Re-upserting '{collection_name}' ({dict_type}): "
-                        f"model changed ({existing_model!r} -> {config.EMBEDDING_MODEL!r})."
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"[QDRANT] Could not check existing count for {collection_name} ({dict_type}): {e}"
-                )
+        if not force and self.has_tags_synced(domain, dict_type, len(set(tags))):
+            return
 
         include_learned_sparse = config.has_learned_sparse() and bool(sparse_embs)
         points = []

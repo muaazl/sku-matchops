@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -46,18 +47,18 @@ class DataIngestion:
             logger.info("[LOAD] Cleared all in-memory caches.")
 
     @staticmethod
-    def _get_staged_path(sheet_name: str) -> str:
+    def _get_staged_path(sheet_name: str) -> Path:
         """Returns the local staging filepath for a given sheet name."""
         safe_name = (
             "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in sheet_name) + ".csv"
         )
-        return os.path.join(config.STAGING_DIR, safe_name)
+        return Path(config.STAGING_DIR) / safe_name
 
     @staticmethod
     def is_sheet_staged(sheet_name: str) -> bool:
         """Checks if a sheet has already been staged locally."""
         path = DataIngestion._get_staged_path(sheet_name)
-        return os.path.exists(path) and os.path.getsize(path) > 0
+        return path.is_file() and path.stat().st_size > 0
 
     @staticmethod
     def _download_sheet_with_retries(
@@ -156,18 +157,17 @@ class DataIngestion:
                 content = DataIngestion._download_sheet_with_retries(
                     sheet_id, sheet_name, max_retries=max_retries
                 )
-                with open(staged_path, "w", encoding="utf-8") as f:
-                    f.write(content)
+                staged_path.write_text(content, encoding="utf-8")
 
                 file_size_kb = len(content.encode("utf-8")) / 1024.0
                 content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
                 manifest["sheets"][sheet_name] = {
-                    "path": staged_path,
+                    "path": str(staged_path),
                     "hash": content_hash,
                     "size_kb": round(file_size_kb, 2),
                     "usages": usages,
                 }
-                staged_files[sheet_name] = staged_path
+                staged_files[sheet_name] = str(staged_path)
                 logger.info(
                     f"[STAGE] ✓ ({idx}/{total}) Staged '{sheet_name}' ({file_size_kb:.1f} KB)."
                 )
@@ -187,7 +187,7 @@ class DataIngestion:
             map_path = DataIngestion._get_staged_path(map_name)
             cat_path = DataIngestion._get_staged_path(cat_name)
 
-            if os.path.exists(cat_path):
+            if cat_path.exists():
                 try:
                     cat_df = pd.read_csv(cat_path, dtype=str)
                     col_bt = next(
@@ -219,7 +219,7 @@ class DataIngestion:
                         )
                         grouped.columns = ["basictype", "generic keywords"]
                         grouped.to_csv(map_path, index=False, encoding="utf-8")
-                        staged_files[map_name] = map_path
+                        staged_files[map_name] = str(map_path)
                         logger.info(
                             f"[STAGE] ✓ Built on-the-fly BT→GK map for '{d.upper()}' ({len(grouped)} entries)."
                         )
@@ -228,10 +228,9 @@ class DataIngestion:
                         f"[STAGE] Could not generate on-the-fly BT-GK map for '{d}': {gen_err}"
                     )
 
-        manifest_path = os.path.join(config.STAGING_DIR, "staging_manifest.json")
+        manifest_path = Path(config.STAGING_DIR) / "staging_manifest.json"
         try:
-            with open(manifest_path, "w", encoding="utf-8") as f:
-                json.dump(manifest, f, indent=2)
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         except Exception:
             pass
 
@@ -308,12 +307,13 @@ class DataIngestion:
     @staticmethod
     def cleanup_staged_sheets():
         """Cleans up temporary staged Google Sheet CSV files and removes the staging directory."""
-        if not os.path.exists(config.STAGING_DIR):
+        staging_dir = Path(config.STAGING_DIR)
+        if not staging_dir.exists():
             return
 
         try:
-            shutil.rmtree(config.STAGING_DIR, ignore_errors=True)
-            logger.info(f"[STAGE] Removed temporary staging folder: {config.STAGING_DIR}")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            logger.info(f"[STAGE] Removed temporary staging folder: {staging_dir}")
         except Exception as e:
             logger.warning(f"[STAGE] Error while cleaning up staging directory: {e}")
 
@@ -326,9 +326,8 @@ class DataIngestion:
     ) -> pd.DataFrame:
         """Helper to fetch a specific Google Sheet tab as a CSV, reading from staged cache if available."""
         staged_path = DataIngestion._get_staged_path(sheet_name)
-        if os.path.exists(staged_path) and os.path.getsize(staged_path) > 0:
-            with open(staged_path, "rb") as f:
-                content_bytes = f.read()
+        if staged_path.is_file() and staged_path.stat().st_size > 0:
+            content_bytes = staged_path.read_bytes()
         else:
             text = DataIngestion._download_sheet_with_retries(sheet_id, sheet_name)
             content_bytes = text.encode("utf-8")
@@ -376,9 +375,10 @@ class DataIngestion:
 
             # Check local Feather cache
             if not force_fetch:
-                cat_feather = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
-                brands_feather = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
-                if os.path.exists(cat_feather) and os.path.exists(brands_feather):
+                cache_dir = Path(config.CACHE_DIR)
+                cat_feather = cache_dir / f"{domain}_catalog_mmap.feather"
+                brands_feather = cache_dir / f"{domain}_brands_mmap.feather"
+                if cat_feather.exists() and brands_feather.exists():
                     try:
                         cat_df = pd.read_feather(cat_feather)
                         brands_df = pd.read_feather(brands_feather)
@@ -430,15 +430,13 @@ class DataIngestion:
         cat_staged = DataIngestion._get_staged_path(sheet_name)
         brand_staged = DataIngestion._get_staged_path(brand_sheet)
 
-        if os.path.exists(cat_staged) and os.path.getsize(cat_staged) > 0:
-            with open(cat_staged, encoding="utf-8") as f:
-                catalog_text = f.read()
+        if cat_staged.is_file() and cat_staged.stat().st_size > 0:
+            catalog_text = cat_staged.read_text(encoding="utf-8")
         else:
             catalog_text = DataIngestion._download_sheet_with_retries(sheet_id, sheet_name)
 
-        if os.path.exists(brand_staged) and os.path.getsize(brand_staged) > 0:
-            with open(brand_staged, encoding="utf-8") as f:
-                brands_text = f.read()
+        if brand_staged.is_file() and brand_staged.stat().st_size > 0:
+            brands_text = brand_staged.read_text(encoding="utf-8")
         else:
             brands_text = DataIngestion._download_sheet_with_retries(sheet_id, brand_sheet)
 
@@ -544,8 +542,9 @@ class DataIngestion:
         try:
             import pyarrow.feather as feather
 
-            cat_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
-            brands_cache_path = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
+            cache_dir = Path(config.CACHE_DIR)
+            cat_cache_path = cache_dir / f"{domain}_catalog_mmap.feather"
+            brands_cache_path = cache_dir / f"{domain}_brands_mmap.feather"
 
             cat_df_feather = cat_df.copy()
             if "entities" in cat_df_feather.columns:
@@ -572,10 +571,10 @@ class DataIngestion:
         force_fetch: bool = False,
     ) -> dict[str, list[str]]:
         """Loads tag dictionaries from local JSON cache or staged sheets."""
-        dicts_cache = os.path.join(config.CACHE_DIR, f"{domain}_classifier_dicts.json")
-        if not force_fetch and os.path.exists(dicts_cache):
+        dicts_cache = Path(config.CACHE_DIR) / f"{domain}_classifier_dicts.json"
+        if not force_fetch and dicts_cache.exists():
             try:
-                with open(dicts_cache, encoding="utf-8") as f:
+                with dicts_cache.open(encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"[LOAD] Failed to read JSON dict cache: {e}")
@@ -668,8 +667,8 @@ class DataIngestion:
         cat_df: pd.DataFrame | None = None,
     ) -> dict[str, list[str]]:
         """Loads or builds BT-GK map in memory."""
-        cache_path = os.path.join(config.CACHE_DIR, f"{domain}_bt_gk_cache.pkl")
-        if not force_fetch and os.path.exists(cache_path):
+        cache_path = Path(config.CACHE_DIR) / f"{domain}_bt_gk_cache.pkl"
+        if not force_fetch and cache_path.exists():
             try:
                 import joblib
 

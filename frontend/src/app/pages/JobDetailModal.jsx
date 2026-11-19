@@ -45,6 +45,38 @@ export default function JobDetailModal({ jobId, open, onClose }) {
   });
 
   const isActive = job?.status === 'running' || job?.status === 'queued';
+  const [liveEta, setLiveEta] = useState(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    setLiveEta(job?.eta_seconds ?? null);
+  }, [job?.eta_seconds, job?.progress_pct, job?.current_stage, job?.status]);
+
+  useEffect(() => {
+    if (!open || job?.status !== 'running') return undefined;
+    const timer = setInterval(() => {
+      setLiveEta((prev) => (typeof prev === 'number' && prev > 1 ? prev - 1 : prev));
+      setNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [open, job?.status]);
+
+  const liveDurationText = (() => {
+    if (job?.duration_minutes !== null && job?.duration_minutes !== undefined) {
+      return fmtDuration(job.duration_minutes);
+    }
+    if (job?.status === 'running' && job?.started_at) {
+      const str = String(job.started_at);
+      const hasOffset = /Z$|[+-]\d{2}:?\d{2}$/.test(str);
+      const iso = str.includes('T') ? str : str.replace(' ', 'T');
+      const startMs = new Date(hasOffset ? iso : `${iso}Z`).getTime();
+      if (!Number.isNaN(startMs)) {
+        const elapsedSec = Math.max(1, Math.floor((nowMs - startMs) / 1000));
+        return fmtEta(elapsedSec);
+      }
+    }
+    return fmtDuration(job?.duration_minutes);
+  })();
 
   useEffect(() => {
     if (!open || !jobId || !isActive || sseFallback) return undefined;
@@ -121,7 +153,7 @@ export default function JobDetailModal({ jobId, open, onClose }) {
                   <Typography component="span" variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
                     {Math.round(job.progress_pct || 0)}%
                   </Typography>{' '}
-                  | ETA: {fmtEta(job.eta_seconds)}
+                  | ETA: {fmtEta(liveEta ?? job.eta_seconds)}
                 </Typography>
               </Box>
               <Box sx={{ width: '100%', mb: 3 }}>
@@ -192,7 +224,7 @@ export default function JobDetailModal({ jobId, open, onClose }) {
                     Duration
                   </Typography>
                   <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
-                    {fmtDuration(job.duration_minutes)}
+                    {liveDurationText}
                   </Typography>
                 </Box>
               </Box>

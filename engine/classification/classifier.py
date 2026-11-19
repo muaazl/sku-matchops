@@ -2,7 +2,7 @@ import contextlib
 import hashlib
 import json
 import logging
-import os
+from pathlib import Path
 
 import joblib
 import numpy as np
@@ -36,7 +36,7 @@ def _tqdm_joblib(total: int, desc: str):
         pbar.close()
 
 
-class ZeroShotClassifier:
+class TaxonomyClassifier:
     """
     Classifies SKU Basic Type and a third tag (Region/Category) using active embedding vectors.
 
@@ -50,19 +50,27 @@ class ZeroShotClassifier:
     dataset-specific quirks that the model cannot know from food names alone.
     """
 
+    @property
+    def cache_dir(self) -> Path:
+        return getattr(self, "_cache_dir", Path(config.CACHE_DIR))
+
+    @cache_dir.setter
+    def cache_dir(self, value) -> None:
+        self._cache_dir = Path(value or config.CACHE_DIR)
+
     def __init__(
         self,
         model,
         domain: str,
         descriptions: dict,
-        cache_dir: str | None = None,
+        cache_dir: Path | str | None = None,
         cat_df: pd.DataFrame = None,
         brands_df: pd.DataFrame = None,
         force_retrain: bool = False,
     ):
         self.model = model
         self.domain = domain
-        self.cache_dir = cache_dir or config.CACHE_DIR
+        self.cache_dir = Path(cache_dir or config.CACHE_DIR)
         self._trained = False
         self._price_scaler = None
         self.cat_df = cat_df if cat_df is not None else pd.DataFrame()
@@ -136,6 +144,8 @@ class ZeroShotClassifier:
             logger.warning(
                 f"[{domain.upper()}] ColdStartRouter initialization failed: {router_err}"
             )
+        self.cat_df = pd.DataFrame()
+        self.brands_df = pd.DataFrame()
 
     def _load_arcface_model(self):
         """
@@ -144,10 +154,10 @@ class ZeroShotClassifier:
         """
         import onnxruntime as ort
 
-        onnx_path = config.get_bt_arcface_onnx_path(self.domain)
-        labels_path = config.get_bt_arcface_labels_path(self.domain)
+        onnx_path = Path(config.get_bt_arcface_onnx_path(self.domain))
+        labels_path = Path(config.get_bt_arcface_labels_path(self.domain))
 
-        if not os.path.exists(onnx_path) or not os.path.exists(labels_path):
+        if not onnx_path.exists() or not labels_path.exists():
             raise RuntimeError(
                 f"[FAIL-FAST] Domain '{self.domain}' is configured with BT_MODEL='arcface', "
                 f"but required ONNX model file '{onnx_path}' or label mapping '{labels_path}' is missing. "
@@ -156,8 +166,23 @@ class ZeroShotClassifier:
             )
 
         try:
-            with open(labels_path, encoding="utf-8") as f:
+            with labels_path.open(encoding="utf-8") as f:
                 meta = json.load(f)
+            trained_emb = meta.get("embedding_model")
+            if trained_emb and trained_emb != config.EMBEDDING_MODEL:
+                raise RuntimeError(
+                    f"[FAIL-FAST] ArcFace model for '{self.domain}' was trained with "
+                    f"'{trained_emb}', but active EMBEDDING_MODEL is '{config.EMBEDDING_MODEL}'. "
+                    f"Revert EMBEDDING_MODEL to '{trained_emb}' or run "
+                    f"'python -m scripts.sync --arcface rebuild --domain {self.domain}'."
+                )
+            expected_dim = config.EMBEDDING_DIM + 1
+            actual_dim = meta.get("input_dim")
+            if actual_dim is not None and actual_dim != expected_dim:
+                raise RuntimeError(
+                    f"[FAIL-FAST] ArcFace input_dim ({actual_dim}) != expected ({expected_dim}) "
+                    f"for '{self.domain}'. Run 'python -m scripts.sync --arcface rebuild --domain {self.domain}'."
+                )
             self._arcface_classes = meta["classes"]
             scaler_info = meta.get("price_scaler", {})
             from sklearn.preprocessing import StandardScaler
@@ -206,23 +231,35 @@ class ZeroShotClassifier:
     # ── Internal helpers ──────────────────────────────────────
 
     def _embed_cached(self, texts: list[str], cache_key: str) -> np.ndarray:
-        """Embed a list of texts with disk caching."""
-        os.makedirs(self.cache_dir, exist_ok=True)
-        fingerprint = hashlib.md5("|".join(texts).encode()).hexdigest()
-        # One file per input set, so different dictionaries (e.g. the test DB's) never evict each other
-        cache_file = os.path.join(self.cache_dir, f"{cache_key}_{fingerprint[:12]}.pkl")
+        """Embed a list of texts with disk caching, keyed by text content and active EMBEDDING_MODEL."""
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        fingerprint = hashlib.md5(
+            f"{config.EMBEDDING_MODEL}||{'|'.join(texts)}".encode()
+        ).hexdigest()
+        # One file per input set and embedding model, so different dictionaries/models never collide
+        cache_file = self.cache_dir / f"{cache_key}_{fingerprint[:12]}.pkl"
 
-        if os.path.exists(cache_file):
+        if cache_file.exists():
             try:
                 cached = joblib.load(cache_file)
-                if cached.get("fingerprint") == fingerprint:
+                if cached.get("fingerprint") == fingerprint and cached.get("embedding_model") in (
+                    None,
+                    config.EMBEDDING_MODEL,
+                ):
                     return cached["embeddings"]
             except Exception:
                 pass
 
         out = self.model.encode(texts)
         embs = out["dense"]
-        joblib.dump({"fingerprint": fingerprint, "embeddings": embs}, cache_file)
+        joblib.dump(
+            {
+                "fingerprint": fingerprint,
+                "embedding_model": config.EMBEDDING_MODEL,
+                "embeddings": embs,
+            },
+            cache_file,
+        )
         return embs
 
     def _embed_weighted_sku_incremental(
@@ -240,11 +277,11 @@ class ZeroShotClassifier:
         if not names_list:
             return np.empty((0, config.EMBEDDING_DIM))
 
-        cache_file = os.path.join(self.cache_dir, f"{self.domain}_weighted_skus_cache.pkl")
-        os.makedirs(self.cache_dir, exist_ok=True)
+        cache_file = self.cache_dir / f"{self.domain}_weighted_skus_cache.pkl"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         sku_cache = {}
-        if os.path.exists(cache_file):
+        if cache_file.exists():
             try:
                 loaded_cache = joblib.load(cache_file)
                 cached_model = (
@@ -252,9 +289,12 @@ class ZeroShotClassifier:
                     if isinstance(loaded_cache, dict)
                     else None
                 )
-                if isinstance(loaded_cache, dict) and cached_model in (
-                    None,
-                    config.EMBEDDING_MODEL,
+                has_model_marker = (self.cache_dir / "qdrant_embedding_models.json").exists() or (
+                    self.cache_dir / "active_embedding_model.txt"
+                ).exists()
+                if isinstance(loaded_cache, dict) and (
+                    cached_model == config.EMBEDDING_MODEL
+                    or (cached_model is None and not has_model_marker)
                 ):
                     sku_cache = loaded_cache
             except Exception:
@@ -336,19 +376,30 @@ class ZeroShotClassifier:
             from sklearn.multiclass import OneVsRestClassifier
             from sklearn.preprocessing import LabelEncoder, MultiLabelBinarizer
 
-            cache_file = os.path.join(self.cache_dir, f"{self.domain}_classifier_model.pkl")
-            HASH_STORAGE_PATH = os.path.join(config.CACHE_DIR, "model_hashes.json")
+            cache_file = self.cache_dir / f"{self.domain}_classifier_model.pkl"
+            HASH_STORAGE_PATH = Path(config.CACHE_DIR) / "model_hashes.json"
             domain_hash_key = f"{self.domain}_training_state"
 
-            current_hash = calculate_df_hash(self.cat_df, domain=self.domain)
             old_bt_clf, old_bt_enc = None, None
             old_third_tag_clf, old_third_tag_enc = None, None
 
             # Load from cache if cache exists and not forced
-            if os.path.exists(cache_file):
+            if cache_file.exists():
                 try:
                     cached = joblib.load(cache_file)
-                    if not force_retrain:
+                    cached_emb = cached.get("embedding_model") if isinstance(cached, dict) else None
+                    has_model_marker = (
+                        self.cache_dir / "qdrant_embedding_models.json"
+                    ).exists() or (self.cache_dir / "active_embedding_model.txt").exists()
+                    model_ok = cached_emb == config.EMBEDDING_MODEL or (
+                        cached_emb is None and not has_model_marker
+                    )
+                    if not model_ok:
+                        logger.info(
+                            f"[TRAIN] [{self.domain.upper()}] Classifier cache model mismatch "
+                            f"({cached_emb!r} != {config.EMBEDDING_MODEL!r}); retraining..."
+                        )
+                    elif not force_retrain:
                         self._bt_enc = cached["bt_enc"]
                         self._bt_clf = cached["bt_clf"]
                         self._third_tag_enc = cached["third_tag_enc"]
@@ -367,6 +418,7 @@ class ZeroShotClassifier:
                 except Exception as e:
                     logger.warning(f"[TRAIN] Cache corrupt for {self.domain}, retraining: {e}")
 
+            current_hash = calculate_df_hash(self.cat_df, domain=self.domain)
             logger.info(f"[TRAIN] Training classifier model for {self.domain}...")
 
             df = self.cat_df.fillna("")
@@ -458,9 +510,10 @@ class ZeroShotClassifier:
             )
 
             # Save to cache
-            os.makedirs(self.cache_dir, exist_ok=True)
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
             joblib.dump(
                 {
+                    "embedding_model": config.EMBEDDING_MODEL,
                     "bt_enc": self._bt_enc,
                     "bt_clf": self._bt_clf,
                     "third_tag_enc": self._third_tag_enc,
@@ -475,14 +528,14 @@ class ZeroShotClassifier:
             if current_hash:
                 try:
                     stored_hashes = {}
-                    if os.path.exists(HASH_STORAGE_PATH):
+                    if HASH_STORAGE_PATH.exists():
                         try:
-                            with open(HASH_STORAGE_PATH, encoding="utf-8") as f:
+                            with HASH_STORAGE_PATH.open(encoding="utf-8") as f:
                                 stored_hashes = json.load(f)
                         except Exception:
                             stored_hashes = {}
                     stored_hashes[domain_hash_key] = current_hash
-                    with open(HASH_STORAGE_PATH, "w", encoding="utf-8") as f:
+                    with HASH_STORAGE_PATH.open("w", encoding="utf-8") as f:
                         json.dump(stored_hashes, f, indent=4)
                 except Exception as hash_err:
                     logger.warning(f"[TRAIN] Failed to write model hash: {hash_err}")
@@ -542,9 +595,9 @@ class ZeroShotClassifier:
             third_tag_clf.warm_start = True
             third_tag_clf.fit(X, y_third_tag)
         else:
-            third_tag_clf = LogisticRegression(
-                max_iter=1000, C=5.0, class_weight="balanced"
-            ).fit(X, y_third_tag)
+            third_tag_clf = LogisticRegression(max_iter=1000, C=5.0, class_weight="balanced").fit(
+                X, y_third_tag
+            )
 
         n_gk_tags = len(self._gk_enc.classes_)
         logger.info(

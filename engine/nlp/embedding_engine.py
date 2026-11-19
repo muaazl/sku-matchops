@@ -7,6 +7,7 @@ import threading
 import zlib
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import joblib
 import numpy as np
@@ -50,10 +51,11 @@ class EmbeddingEngine:
             opts.inter_op_num_threads = 1
             return opts
 
-        def _read_manifest(path: str) -> dict:
-            if os.path.exists(path):
+        def _read_manifest(path: Path | str) -> dict:
+            p = Path(path)
+            if p.exists():
                 try:
-                    with open(path, encoding="utf-8") as f:
+                    with p.open(encoding="utf-8") as f:
                         data = json.load(f)
                         return data if isinstance(data, dict) else {}
                 except Exception:
@@ -61,8 +63,8 @@ class EmbeddingEngine:
             return {}
 
         def _load_embedding():
-            emb_onnx = config.EMBEDDING_ONNX
-            if not os.path.exists(emb_onnx):
+            emb_onnx = Path(config.EMBEDDING_ONNX)
+            if not emb_onnx.exists():
                 raise FileNotFoundError(
                     f"[FAIL-FAST] Required INT8 ONNX embedding model missing at '{emb_onnx}'. "
                     f"Run 'python -m scripts.sync --models sync --model-target embedding' first."
@@ -79,16 +81,23 @@ class EmbeddingEngine:
             )
 
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    os.path.dirname(emb_onnx),
-                    local_files_only=True,
-                    trust_remote_code=True,
-                    fix_mistral_regex=True,
-                )
+                try:
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        str(emb_onnx.parent),
+                        local_files_only=True,
+                        trust_remote_code=True,
+                        fix_mistral_regex=True,
+                    )
+                except TypeError:
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        str(emb_onnx.parent),
+                        local_files_only=True,
+                        trust_remote_code=True,
+                    )
                 if getattr(self.tokenizer, "padding_side", None) == "left":
                     self.tokenizer.padding_side = "right"
                 self.bi_session = ort.InferenceSession(
-                    emb_onnx,
+                    str(emb_onnx),
                     _create_sess_options(),
                     providers=["CPUExecutionProvider"],
                 )
@@ -113,8 +122,8 @@ class EmbeddingEngine:
             )
 
         def _load_reranker():
-            rerank_onnx = config.RERANKER_ONNX
-            if not os.path.exists(rerank_onnx):
+            rerank_onnx = Path(config.RERANKER_ONNX)
+            if not rerank_onnx.exists():
                 raise FileNotFoundError(
                     f"[FAIL-FAST] Required INT8 ONNX reranker model missing at '{rerank_onnx}'. "
                     f"Run 'python -m scripts.sync --models sync --model-target reranker' first."
@@ -148,14 +157,22 @@ class EmbeddingEngine:
             )
 
             try:
-                self.rerank_tokenizer = AutoTokenizer.from_pretrained(
-                    os.path.dirname(rerank_onnx),
-                    local_files_only=True,
-                    trust_remote_code=True,
-                    fix_mistral_regex=True,
-                )
+                try:
+                    self.rerank_tokenizer = AutoTokenizer.from_pretrained(
+                        str(rerank_onnx.parent),
+                        local_files_only=True,
+                        trust_remote_code=True,
+                        fix_mistral_regex=True,
+                    )
+                except TypeError:
+                    self.rerank_tokenizer = AutoTokenizer.from_pretrained(
+                        str(rerank_onnx.parent),
+                        local_files_only=True,
+                        trust_remote_code=True,
+                        fix_mistral_regex=False,
+                    )
                 self.cross_session = ort.InferenceSession(
-                    rerank_onnx,
+                    str(rerank_onnx),
                     _create_sess_options(),
                     providers=["CPUExecutionProvider"],
                 )
@@ -296,67 +313,172 @@ class EmbeddingEngine:
         )
 
         if missing_texts:
-            all_dense = []
-            all_bm25: list[dict[int, float]] = []
-            all_learned_sparse: list[dict[int, float] | None] = []
+            max_cache_size = int(os.getenv("STR_CACHE_MAX_SIZE", "4096"))
+            raw_ids_list = None
+            if pooling == "last_token":
+                try:
+                    raw_tok = self.tokenizer(
+                        missing_texts, padding=False, truncation=True, max_length=512
+                    )
+                    cand_ids = (
+                        raw_tok["input_ids"]
+                        if isinstance(raw_tok, dict) or hasattr(raw_tok, "__getitem__")
+                        else None
+                    )
+                    if (
+                        cand_ids is not None
+                        and len(cand_ids) == len(missing_texts)
+                        and all(hasattr(x, "__len__") and len(x) > 0 for x in cand_ids)
+                    ):
+                        raw_ids_list = cand_ids
+                except Exception:
+                    raw_ids_list = None
 
-            batch_starts = range(0, len(missing_texts), batch_size)
-            if len(missing_texts) > batch_size:
-                batch_starts = tqdm(
-                    batch_starts,
-                    desc=f"[EMBED] Encoding ({len(missing_texts)} texts)",
-                    unit="batch",
-                    mininterval=1.0,
-                    leave=False,
-                )
+            if raw_ids_list is not None:
+                len_groups: dict[int, list[int]] = {}
+                long_indices: list[int] = []
+                for idx_t, tok_ids in enumerate(raw_ids_list):
+                    t_len = len(tok_ids)
+                    if t_len <= 24:
+                        len_groups.setdefault(t_len, []).append(idx_t)
+                    else:
+                        long_indices.append(idx_t)
 
-            for i in batch_starts:
-                batch = missing_texts[i : i + batch_size]
-                inputs = self.tokenizer(
-                    batch, padding=True, truncation=True, max_length=512, return_tensors="np"
-                )
-                ort_inputs = self._filter_session_inputs(
-                    self.bi_session, {k: v.astype(np.int64) for k, v in inputs.items()}
-                )
+                sub_batches: list[list[int]] = []
+                for seq_len in sorted(len_groups.keys()):
+                    g_indices = len_groups[seq_len]
+                    for start_g in range(0, len(g_indices), batch_size):
+                        sub_batches.append(g_indices[start_g : start_g + batch_size])
 
-                with ONNX_INFERENCE_SECONDS.labels(model="embed").time():
-                    outputs = self.bi_session.run(None, ort_inputs)
-                dense_vecs = outputs[0]
+                if long_indices:
+                    long_indices.sort(key=lambda idx_t: len(raw_ids_list[idx_t]))
+                    for start_l in range(0, len(long_indices), batch_size):
+                        sub_batches.append(long_indices[start_l : start_l + batch_size])
 
-                if dense_vecs.ndim == 3:
-                    dense_vecs = self._pool_hidden_states(
-                        dense_vecs, inputs["attention_mask"], pooling=pooling
+                batch_iter = sub_batches
+                if len(missing_texts) > batch_size:
+                    batch_iter = tqdm(
+                        sub_batches,
+                        desc=f"[EMBED] Encoding ({len(missing_texts)} texts)",
+                        unit="batch",
+                        mininterval=1.0,
+                        leave=False,
                     )
 
-                norms = np.linalg.norm(dense_vecs, axis=1, keepdims=True)
-                norms = np.where(norms == 0, 1e-12, norms)
-                all_dense.append(dense_vecs / norms)
+                pad_id = int(getattr(self.tokenizer, "pad_token_id", 0) or 0)
+                for sub_idx_list in batch_iter:
+                    max_sub_len = max(len(raw_ids_list[idx_t]) for idx_t in sub_idx_list)
+                    min_sub_len = min(len(raw_ids_list[idx_t]) for idx_t in sub_idx_list)
+                    if max_sub_len == min_sub_len:
+                        ids_np = np.array(
+                            [raw_ids_list[idx_t] for idx_t in sub_idx_list], dtype=np.int64
+                        )
+                        mask_np = np.ones_like(ids_np, dtype=np.int64)
+                    else:
+                        ids_np = np.full((len(sub_idx_list), max_sub_len), pad_id, dtype=np.int64)
+                        mask_np = np.zeros((len(sub_idx_list), max_sub_len), dtype=np.int64)
+                        for b_i, idx_t in enumerate(sub_idx_list):
+                            row_ids = raw_ids_list[idx_t]
+                            r_len = len(row_ids)
+                            ids_np[b_i, :r_len] = row_ids
+                            mask_np[b_i, :r_len] = 1
+                    ort_inputs = self._filter_session_inputs(
+                        self.bi_session, {"input_ids": ids_np, "attention_mask": mask_np}
+                    )
+                    with ONNX_INFERENCE_SECONDS.labels(model="embed").time():
+                        outputs = self.bi_session.run(None, ort_inputs)
+                    dense_vecs = outputs[0]
+                    if dense_vecs.ndim == 3:
+                        dense_vecs = self._pool_hidden_states(dense_vecs, mask_np, pooling=pooling)
+                    norms = np.linalg.norm(dense_vecs, axis=1, keepdims=True)
+                    norms = np.where(norms == 0, 1e-12, norms)
+                    normed_dense = dense_vecs / norms
 
-                for text_item in batch:
-                    all_bm25.append(self.compute_bm25_tf(text_item))
+                    sub_sparse: list[dict[int, float] | None] = [None] * len(sub_idx_list)
+                    if len(outputs) > 1:
+                        sparse_weights = outputs[1]
+                        for b in range(len(sub_idx_list)):
+                            d: dict[int, float] = {}
+                            for tok_id, w in zip(ids_np[b], sparse_weights[b]):
+                                tok_id = int(tok_id)
+                                if tok_id not in unused_tokens and w > 0:
+                                    d[tok_id] = max(d.get(tok_id, 0.0), float(w))
+                            sub_sparse[b] = d
 
-                if len(outputs) > 1:
-                    sparse_weights = outputs[1]
-                    for b in range(len(batch)):
-                        d: dict[int, float] = {}
-                        for tok_id, w in zip(inputs["input_ids"][b], sparse_weights[b]):
-                            tok_id = int(tok_id)
-                            if tok_id not in unused_tokens and w > 0:
-                                d[tok_id] = max(d.get(tok_id, 0.0), float(w))
-                        all_learned_sparse.append(d)
-                else:
-                    all_learned_sparse.extend([None] * len(batch))
+                    with cache_lock:
+                        for local_i, orig_t_idx in enumerate(sub_idx_list):
+                            text_item = missing_texts[orig_t_idx]
+                            entry = (
+                                normed_dense[local_i],
+                                self.compute_bm25_tf(text_item),
+                                sub_sparse[local_i],
+                            )
+                            resolved[text_item] = entry
+                            self._str_cache[text_item] = entry
+                            self._str_cache.move_to_end(text_item)
+                        while len(self._str_cache) > max_cache_size:
+                            self._str_cache.popitem(last=False)
+            else:
+                all_dense = []
+                all_bm25: list[dict[int, float]] = []
+                all_learned_sparse: list[dict[int, float] | None] = []
 
-            flat_dense = np.vstack(all_dense) if all_dense else np.array([])
-            max_cache_size = int(os.getenv("STR_CACHE_MAX_SIZE", "25000"))
-            with cache_lock:
-                for i, text in enumerate(missing_texts):
-                    entry = (flat_dense[i], all_bm25[i], all_learned_sparse[i])
-                    resolved[text] = entry
-                    self._str_cache[text] = entry
-                    self._str_cache.move_to_end(text)
-                while len(self._str_cache) > max_cache_size:
-                    self._str_cache.popitem(last=False)
+                batch_starts = range(0, len(missing_texts), batch_size)
+                if len(missing_texts) > batch_size:
+                    batch_starts = tqdm(
+                        batch_starts,
+                        desc=f"[EMBED] Encoding ({len(missing_texts)} texts)",
+                        unit="batch",
+                        mininterval=1.0,
+                        leave=False,
+                    )
+
+                for i in batch_starts:
+                    batch = missing_texts[i : i + batch_size]
+                    inputs = self.tokenizer(
+                        batch, padding=True, truncation=True, max_length=512, return_tensors="np"
+                    )
+                    ort_inputs = self._filter_session_inputs(
+                        self.bi_session, {k: v.astype(np.int64) for k, v in inputs.items()}
+                    )
+
+                    with ONNX_INFERENCE_SECONDS.labels(model="embed").time():
+                        outputs = self.bi_session.run(None, ort_inputs)
+                    dense_vecs = outputs[0]
+
+                    if dense_vecs.ndim == 3:
+                        dense_vecs = self._pool_hidden_states(
+                            dense_vecs, inputs["attention_mask"], pooling=pooling
+                        )
+
+                    norms = np.linalg.norm(dense_vecs, axis=1, keepdims=True)
+                    norms = np.where(norms == 0, 1e-12, norms)
+                    all_dense.append(dense_vecs / norms)
+
+                    for text_item in batch:
+                        all_bm25.append(self.compute_bm25_tf(text_item))
+
+                    if len(outputs) > 1:
+                        sparse_weights = outputs[1]
+                        for b in range(len(batch)):
+                            d: dict[int, float] = {}
+                            for tok_id, w in zip(inputs["input_ids"][b], sparse_weights[b]):
+                                tok_id = int(tok_id)
+                                if tok_id not in unused_tokens and w > 0:
+                                    d[tok_id] = max(d.get(tok_id, 0.0), float(w))
+                            all_learned_sparse.append(d)
+                    else:
+                        all_learned_sparse.extend([None] * len(batch))
+
+                flat_dense = np.vstack(all_dense) if all_dense else np.array([])
+                with cache_lock:
+                    for i, text in enumerate(missing_texts):
+                        entry = (flat_dense[i], all_bm25[i], all_learned_sparse[i])
+                        resolved[text] = entry
+                        self._str_cache[text] = entry
+                        self._str_cache.move_to_end(text)
+                    while len(self._str_cache) > max_cache_size:
+                        self._str_cache.popitem(last=False)
 
         first_non_empty = next(iter(resolved.values()), None)
         dim = first_non_empty[0].shape[0] if first_non_empty is not None else config.EMBEDDING_DIM
@@ -392,7 +514,10 @@ class EmbeddingEngine:
         return self.encode([text], batch_size=1)
 
     def _score_listwise_lbnl(
-        self, pairs: list[list[str]], batch_size: int = config.ONNX_BATCH_SIZE
+        self,
+        pairs: list[list[str]],
+        batch_size: int = config.ONNX_BATCH_SIZE,
+        progress_callback=None,
     ) -> np.ndarray:
         """
         Scores [query, doc] pairs via listwise Last-But-Not-Late (LBNL) INT8 ONNX inference,
@@ -421,6 +546,8 @@ class EmbeddingEngine:
 
         results = np.zeros(len(pairs), dtype=np.float32)
         block_size = max(1, int(batch_size))
+        total_blocks = sum((len(dm) + block_size - 1) // block_size for dm in query_groups.values())
+        done_blocks = 0
 
         max_prompt_tokens = 8192
         sys_prefix = (
@@ -432,9 +559,12 @@ class EmbeddingEngine:
             "<|im_end|>\n<|im_start|>user\n"
         )
 
+        if progress_callback and total_blocks > 0:
+            progress_callback(0, total_blocks)
+
         # shortcut: sequential per-query LBNL pass over up to block_size=32 candidates (~12-15s/query on CPU); swap to GPU EP for high-volume batching.
         for query_text, doc_map in query_groups.items():
-            unique_docs = list(doc_map.keys())
+            unique_docs = sorted(doc_map.keys())
             for start in range(0, len(unique_docs), block_size):
                 chunk_docs = unique_docs[start : start + block_size]
                 query_suffix = (
@@ -486,6 +616,10 @@ class EmbeddingEngine:
                         f"[EMBED] LBNL readout token mismatch (docs={len(doc_positions)}/{len(chunk_docs)}, "
                         f"query={len(query_positions)}); assigning 0.0 scores for block."
                     )
+                    del proj_out, ort_inputs, inputs
+                    done_blocks += 1
+                    if progress_callback:
+                        progress_callback(done_blocks, total_blocks)
                     continue
 
                 emb_seq = proj_out[0] if proj_out.ndim == 3 else proj_out
@@ -499,16 +633,24 @@ class EmbeddingEngine:
                 d_norms = np.where(d_norms == 0, 1e-12, d_norms)
                 d_vecs = d_vecs / d_norms
                 cos_scores = (d_vecs @ q_vec).astype(np.float32)
+                del proj_out, emb_seq, ort_inputs, inputs
 
                 for doc_idx, doc_text in enumerate(chunk_docs):
                     score_val = float(cos_scores[doc_idx])
                     for orig_idx in doc_map[doc_text]:
                         results[orig_idx] = score_val
 
+                done_blocks += 1
+                if progress_callback:
+                    progress_callback(done_blocks, total_blocks)
+
         return results
 
     def score_cross_encoder(
-        self, pairs: list[list[str]], batch_size: int = config.ONNX_BATCH_SIZE
+        self,
+        pairs: list[list[str]],
+        batch_size: int = config.ONNX_BATCH_SIZE,
+        progress_callback=None,
     ) -> np.ndarray:
         """Scores candidate pairs using INT8 ONNX Reranker (listwise LBNL or cross-encoder)."""
         if not pairs:
@@ -522,12 +664,17 @@ class EmbeddingEngine:
             self.rerank_tokenizer, "encode"
         ):
             logger.debug(f"[EMBED] Scoring {len(pairs)} pairs with Listwise LBNL INT8 Reranker...")
-            return self._score_listwise_lbnl(pairs, batch_size=batch_size)
+            return self._score_listwise_lbnl(
+                pairs, batch_size=batch_size, progress_callback=progress_callback
+            )
 
         logger.debug(f"[EMBED] Scoring {len(pairs)} pairs with Cross-Encoder INT8 ONNX...")
         # Dynamic INT8 quantizes activations per-batch, so preserve exact batch composition.
         scores = []
-        for i in range(0, len(pairs), batch_size):
+        total_batches = (len(pairs) + batch_size - 1) // batch_size
+        if progress_callback and total_batches > 0:
+            progress_callback(0, total_batches)
+        for batch_idx, i in enumerate(range(0, len(pairs), batch_size), 1):
             batch = pairs[i : i + batch_size]
             texts1 = [p[0] for p in batch]
             texts2 = [p[1] for p in batch]
@@ -550,6 +697,8 @@ class EmbeddingEngine:
             else:
                 arr = arr.reshape(-1)
             scores.extend(arr.tolist())
+            if progress_callback:
+                progress_callback(batch_idx, total_batches)
 
         out = np.array(scores, dtype=np.float32)
         if getattr(self, "_score_activation", "identity") == "sigmoid":
@@ -731,11 +880,12 @@ class EmbeddingEngine:
         """
         Encodes a dictionary of keywords incrementally, using disk caching to skip unchanged items.
         """
-        cache_path = os.path.join(config.CACHE_DIR, f"{domain}_{dict_key}_incremental.pkl")
-        os.makedirs(config.CACHE_DIR, exist_ok=True)
+        cache_dir = Path(config.CACHE_DIR)
+        cache_path = cache_dir / f"{domain}_{dict_key}_incremental.pkl"
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
         item_cache: dict = {}
-        if os.path.exists(cache_path):
+        if cache_path.exists():
             try:
                 loaded = joblib.load(cache_path)
                 if (

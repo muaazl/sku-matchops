@@ -68,17 +68,17 @@ def test_cross_dish_contamination_filter():
 class TestAuditAlignment:
     @classmethod
     def setup_class(cls):
-        import os
+        from pathlib import Path
 
         import httpx
 
         from engine import config
 
-        meta_path = os.path.join(config.CACHE_DIR, "food_catalog_metadata.pkl")
+        meta_path = Path(config.CACHE_DIR) / "food_catalog_metadata.pkl"
         if (
-            not os.path.exists(config.EMBEDDING_ONNX)
-            or not os.path.exists(config.get_bt_arcface_onnx_path("food"))
-            or not os.path.exists(meta_path)
+            not Path(config.EMBEDDING_ONNX).exists()
+            or not Path(config.get_bt_arcface_onnx_path("food")).exists()
+            or not meta_path.exists()
         ):
             pytest.skip("Local ONNX models or synced food catalog cache not found on disk")
         try:

@@ -19,6 +19,7 @@ from urllib3.util.retry import Retry
 from engine import config
 from engine.core.grpc_utils import GRPC_CHANNEL_OPTIONS, grpc_metadata, result_to_pipeline_proto
 from engine.core.observability import SKUS_PROCESSED, trace_context
+from engine.core.resource_loader import trim_memory
 from engine.core.security import validate_outbound_url
 from engine.pipeline.processor import process_request
 from engine.pipeline.task_queue import get_task_queue, release_active_tasks, run_worker
@@ -235,6 +236,7 @@ def _run_legacy_job(payload: dict[str, Any]) -> None:
         with _state_lock:
             _cancelled_jobs.discard(job_id)
             _cancel_checked.pop(job_id, None)
+        trim_memory()
 
 
 def _run_queued_job(payload: dict[str, Any]) -> None:
@@ -270,6 +272,7 @@ def _run_queued_job(payload: dict[str, Any]) -> None:
                 _queue_jobs.discard(job_id)
                 _cancelled_jobs.discard(job_id)
                 _cancel_checked.pop(job_id, None)
+            trim_memory()
 
 
 def _execute_job(payload: dict[str, Any]) -> None:
@@ -307,7 +310,7 @@ def _execute_job(payload: dict[str, Any]) -> None:
         is_terminal = pct >= 100.0 or pct <= 0.0
         stage_changed = stage != last_stage
         time_elapsed = (now - last_progress_time) >= 0.4
-        pct_changed = abs(pct - last_progress_pct) >= 2.0
+        pct_changed = abs(pct - last_progress_pct) >= 0.25 or (now - last_progress_time) >= 1.5
 
         if not (is_terminal or stage_changed or (time_elapsed and pct_changed)):
             return

@@ -1,7 +1,7 @@
 import enum
 import logging
-import os
 import threading
+from pathlib import Path
 from typing import Any
 
 import joblib
@@ -14,7 +14,7 @@ from engine.nlp.embedding_engine import EmbeddingEngine
 logger = logging.getLogger("matchops.cold_start_router")
 
 
-class ClassLifecycleTier(enum.Enum):
+class ClassLifecycleTier(enum.IntEnum):
     """Lifecycle tier of a Basic Type category based on historical manual examples N_c."""
 
     TIER_1_ZERO_SHOT = 1  # N_c == 0 (Pure Zero-Shot Cross-Encoder)
@@ -28,14 +28,22 @@ class TaxonomyLifecycleRegistry:
     Eliminates per-inference Qdrant count latency by maintaining taxonomy counts in memory.
     """
 
+    @property
+    def cache_dir(self) -> Path:
+        return getattr(self, "_cache_dir", Path(config.CACHE_DIR))
+
+    @cache_dir.setter
+    def cache_dir(self, value) -> None:
+        self._cache_dir = Path(value or config.CACHE_DIR)
+
     def __init__(
         self,
         domain: str = config.DOMAIN_MARKET,
-        cache_dir: str | None = None,
+        cache_dir: Path | str | None = None,
         few_shot_threshold: int = config.LIFECYCLE_FEW_SHOT_THRESHOLD,
     ):
         self.domain = domain
-        self.cache_dir = cache_dir or config.CACHE_DIR
+        self.cache_dir = Path(cache_dir or config.CACHE_DIR)
         self.few_shot_threshold = few_shot_threshold
         self._lock = threading.RLock()
 
@@ -172,8 +180,8 @@ class TaxonomyLifecycleRegistry:
                     counts = {str(k): int(v) for k, v in vc.items() if str(k).strip()}
             else:
                 # Fall back to cached Feather file
-                feather_path = os.path.join(self.cache_dir, f"{self.domain}_catalog_mmap.feather")
-                if os.path.exists(feather_path):
+                feather_path = self.cache_dir / f"{self.domain}_catalog_mmap.feather"
+                if feather_path.exists():
                     try:
                         f_df = pd.read_feather(feather_path)
                         for col in ("basictype", "Basic Type", "basic_type"):
@@ -212,15 +220,24 @@ class TaxonomyLifecycleRegistry:
         force_rebuild: bool,
     ):
         """Precomputes or loads L2-normalized centroid vectors for all warm classes (N_c >= 15)."""
-        cache_path = os.path.join(self.cache_dir, f"{self.domain}_warm_centroids.pkl")
-        os.makedirs(self.cache_dir, exist_ok=True)
+        cache_path = self.cache_dir / f"{self.domain}_warm_centroids.pkl"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        if not force_rebuild and os.path.exists(cache_path):
+        if not force_rebuild and cache_path.exists():
             try:
                 cached = joblib.load(cache_path)
                 cached_classes = cached.get("classes", [])
+                cached_emb = cached.get("embedding_model") if isinstance(cached, dict) else None
+                has_model_marker = (self.cache_dir / "qdrant_embedding_models.json").exists() or (
+                    self.cache_dir / "active_embedding_model.txt"
+                ).exists()
+                model_ok = cached_emb == config.EMBEDDING_MODEL or (
+                    cached_emb is None and not has_model_marker
+                )
                 # Compare the warm set used at build time ("classes" can be a subset: warm classes without cached SKU vectors get no centroid)
-                if set(cached.get("warm_classes", cached_classes)) == set(self.warm_classes):
+                if model_ok and set(cached.get("warm_classes", cached_classes)) == set(
+                    self.warm_classes
+                ):
                     self.warm_centroids = cached["centroids"]
                     self.warm_index_to_class = cached_classes
                     self.class_to_warm_index = {
@@ -252,14 +269,14 @@ class TaxonomyLifecycleRegistry:
         df_clean = cat_df.dropna(subset=[bt_col]).copy()
         df_clean[bt_col] = df_clean[bt_col].astype(str).str.strip()
 
-        # fillna("") first: keys must match classifier training (df.fillna("")), not "nan"
+        # Cast to "string" before fillna("") so all-NaN float64 columns don't raise Pandas4Warning
         names = (
-            df_clean["Name"].fillna("").astype(str).str.strip().tolist()
+            df_clean["Name"].astype("string").fillna("").str.strip().tolist()
             if "Name" in df_clean.columns
             else [""] * len(df_clean)
         )
         descs = (
-            df_clean["Description"].fillna("").astype(str).str.strip().tolist()
+            df_clean["Description"].astype("string").fillna("").str.strip().tolist()
             if "Description" in df_clean.columns
             else [""] * len(df_clean)
         )
@@ -269,7 +286,7 @@ class TaxonomyLifecycleRegistry:
             else ("Category" if "Category" in df_clean.columns else "")
         )
         cats = (
-            df_clean[col_cat].fillna("").astype(str).str.strip().tolist()
+            df_clean[col_cat].astype("string").fillna("").str.strip().tolist()
             if col_cat
             else [""] * len(df_clean)
         )
@@ -278,8 +295,8 @@ class TaxonomyLifecycleRegistry:
         valid_warm_classes = []
 
         # Fast path: leverage already computed weighted_skus_cache without invoking neural net
-        weighted_cache_path = os.path.join(self.cache_dir, f"{self.domain}_weighted_skus_cache.pkl")
-        if os.path.exists(weighted_cache_path):
+        weighted_cache_path = self.cache_dir / f"{self.domain}_weighted_skus_cache.pkl"
+        if weighted_cache_path.exists():
             try:
                 sku_cache = joblib.load(weighted_cache_path)
                 keys = [
@@ -318,6 +335,7 @@ class TaxonomyLifecycleRegistry:
 
             joblib.dump(
                 {
+                    "embedding_model": config.EMBEDDING_MODEL,
                     "classes": self.warm_index_to_class,
                     "centroids": self.warm_centroids,
                     "warm_classes": list(self.warm_classes),
@@ -354,6 +372,14 @@ class Tier1ZeroShotClassifier:
     Method: Reranker Text Classification (configured RERANKER_MODEL).
     Formats pairs: (sku_name, "Basic Type: {bt_name} - {bt_description}").
     """
+
+    @property
+    def cache_dir(self) -> Path:
+        return getattr(self, "_cache_dir", Path(config.CACHE_DIR))
+
+    @cache_dir.setter
+    def cache_dir(self, value) -> None:
+        self._cache_dir = Path(value or config.CACHE_DIR)
 
     def __init__(
         self,
@@ -515,6 +541,14 @@ class Tier2FewShotClassifier:
         W(w | x) = sum_{i in top-k, w in GK_i} sim(x, x_i) / sum_{i in top-k} sim(x, x_i)
     """
 
+    @property
+    def cache_dir(self) -> Path:
+        return getattr(self, "_cache_dir", Path(config.CACHE_DIR))
+
+    @cache_dir.setter
+    def cache_dir(self, value) -> None:
+        self._cache_dir = Path(value or config.CACHE_DIR)
+
     def __init__(
         self,
         registry: TaxonomyLifecycleRegistry,
@@ -653,6 +687,14 @@ class Tier3CentroidClassifier:
         softmax((sku_embedding @ prototypes.T) / tau)
     """
 
+    @property
+    def cache_dir(self) -> Path:
+        return getattr(self, "_cache_dir", Path(config.CACHE_DIR))
+
+    @cache_dir.setter
+    def cache_dir(self, value) -> None:
+        self._cache_dir = Path(value or config.CACHE_DIR)
+
     def __init__(
         self,
         registry: TaxonomyLifecycleRegistry,
@@ -709,8 +751,16 @@ class ColdStartRouter:
       Tier 1: Pure Zero-Shot (N_c = 0)
       Tier 2: Few-Shot Instance Matching (1 <= N_c < 15) + ML-kNN Keyword Propagation
       Tier 3: Warm Centroid Matrix Multiplication (N_c >= 15)
-    Acts as a high-precision fallback for ZeroShotClassifier when primary models lack coverage.
+    Acts as a high-precision fallback for TaxonomyClassifier when primary models lack coverage.
     """
+
+    @property
+    def cache_dir(self) -> Path:
+        return getattr(self, "_cache_dir", Path(config.CACHE_DIR))
+
+    @cache_dir.setter
+    def cache_dir(self, value) -> None:
+        self._cache_dir = Path(value or config.CACHE_DIR)
 
     def __init__(
         self,
@@ -719,14 +769,14 @@ class ColdStartRouter:
         vector_store: Any,
         descriptions: dict[str, Any],
         cat_df: pd.DataFrame | None = None,
-        cache_dir: str | None = None,
+        cache_dir: Path | str | None = None,
         few_shot_threshold: int = config.LIFECYCLE_FEW_SHOT_THRESHOLD,
         tau: float = config.COLD_START_TAU,
     ):
         self.domain = domain
         self.embed_engine = embed_engine
         self.vector_store = vector_store
-        self.cache_dir = cache_dir or config.CACHE_DIR
+        self.cache_dir = Path(cache_dir or config.CACHE_DIR)
         self.tau = tau
 
         # 1. Initialize Taxonomy Registry

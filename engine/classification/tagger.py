@@ -426,7 +426,7 @@ def tag_all_skus(
         if gks:
             router_gks[i] = gks
         if confidence < REVIEW_THRESHOLD:
-            bt_results[i] = ("", confidence, source)
+            bt_results[i] = ("", 0.0, source)
             continue
         # Flavor conflict check for Food domain
         extracted_flavors = flavors_per_sku[i]
@@ -612,7 +612,17 @@ def tag_all_skus(
         # 8. Batch Cross-Encoder Reranking
         scored_candidates_per_item = {list_idx: [] for list_idx in range(len(needs_search_indices))}
         if all_rerank_pairs:
-            raw_scores = reranker.predict(all_rerank_pairs)
+
+            def _gk_rerank_cb(done: int, total: int) -> None:
+                if is_cancelled and is_cancelled():
+                    raise InterruptedError("Job cancelled")
+                if progress_callback and total > 0:
+                    progress_callback(70.0 + (20.0 * (done / total)))
+
+            try:
+                raw_scores = reranker.predict(all_rerank_pairs, progress_callback=_gk_rerank_cb)
+            except TypeError:
+                raw_scores = reranker.predict(all_rerank_pairs)
             if isinstance(raw_scores, float) or (
                 hasattr(raw_scores, "item") and raw_scores.ndim == 0
             ):

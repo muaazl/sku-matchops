@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -15,11 +15,11 @@ from engine.pipeline.processor import process_request
 
 
 def _require_synced_pipeline(domain: str = "food") -> None:
-    meta_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_metadata.pkl")
+    meta_path = Path(config.CACHE_DIR) / f"{domain}_catalog_metadata.pkl"
     if (
-        not os.path.exists(config.EMBEDDING_ONNX)
-        or not os.path.exists(config.get_bt_arcface_onnx_path(domain))
-        or not os.path.exists(meta_path)
+        not Path(config.EMBEDDING_ONNX).exists()
+        or not Path(config.get_bt_arcface_onnx_path(domain)).exists()
+        or not meta_path.exists()
     ):
         pytest.skip(f"Local ONNX models or synced '{domain}' catalog cache not found on disk")
     try:

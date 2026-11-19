@@ -9,7 +9,10 @@ import pandas as pd
 from engine import config
 from engine.nlp.text_cleaner import TextPipeline
 from engine.utils.flavor_utils import build_food_flavors_info, triage_input_flavors
-from engine.utils.weight_utils import resolve_weight_bypass_candidate
+from engine.utils.weight_utils import (
+    resolve_bt_consensus_indices,
+    resolve_weight_bypass_candidate,
+)
 
 logger = logging.getLogger("matchops.matcher")
 
@@ -328,8 +331,11 @@ class SKUMatcher:
                     or self.classifier is None
                     or len({cat_bts_lower[idx] for idx in cat_indices}) <= 1
                 ):
+                    consensus_indices = resolve_bt_consensus_indices(
+                        cat_records, cat_indices, cat_bts_lower=cat_bts_lower
+                    )
                     bypass_results[i] = (
-                        cat_records[cat_indices[0]],
+                        cat_records[consensus_indices[0]],
                         1.0,
                         "High Confidence",
                         "Exact Text Match",
@@ -352,8 +358,11 @@ class SKUMatcher:
                     or self.classifier is None
                     or len({cat_bts_lower[idx] for idx in cand_indices}) <= 1
                 ):
+                    consensus_cands = resolve_bt_consensus_indices(
+                        cat_records, cand_indices, cat_bts_lower=cat_bts_lower
+                    )
                     selected_idx, weight_reason = resolve_weight_bypass_candidate(
-                        cat_records, cand_indices, input_w_data
+                        cat_records, consensus_cands, input_w_data
                     )
                     bypass_results[i] = (
                         cat_records[selected_idx],
@@ -407,12 +416,10 @@ class SKUMatcher:
 
         for i, cat_indices in pending_exact.items():
             conf_bt = bt_filters[i]
-            selected_idx = cat_indices[0]
-            if conf_bt:
-                conf_bt_norm = conf_bt.strip().lower()
-                bt_matched = [idx for idx in cat_indices if cat_bts_lower[idx] == conf_bt_norm]
-                if bt_matched:
-                    selected_idx = bt_matched[0]
+            consensus_indices = resolve_bt_consensus_indices(
+                cat_records, cat_indices, conf_bt=conf_bt, cat_bts_lower=cat_bts_lower
+            )
+            selected_idx = consensus_indices[0]
             bypass_results[i] = (
                 cat_records[selected_idx],
                 1.0,
@@ -422,12 +429,9 @@ class SKUMatcher:
 
         for i, cand_indices in pending_fuzzy.items():
             conf_bt = bt_filters[i]
-            valid_cands = cand_indices
-            if conf_bt:
-                conf_bt_norm = conf_bt.strip().lower()
-                bt_matched = [idx for idx in cand_indices if cat_bts_lower[idx] == conf_bt_norm]
-                if bt_matched:
-                    valid_cands = bt_matched
+            valid_cands = resolve_bt_consensus_indices(
+                cat_records, cand_indices, conf_bt=conf_bt, cat_bts_lower=cat_bts_lower
+            )
             if valid_cands:
                 selected_idx, weight_reason = resolve_weight_bypass_candidate(
                     cat_records, valid_cands, input_w_data_list[i]
@@ -590,26 +594,48 @@ class SKUMatcher:
                     all_cands_list.extend(cands_for_type)
 
             all_cands_list.sort(
-                key=lambda c: (-c.get("_qdrant_score_", 0.0), c.get("clean_text", ""))
+                key=lambda c: (
+                    -round(float(c.get("_qdrant_score_", 0.0) or 0.0), 6),
+                    str(c.get("clean_text", "")),
+                    TextPipeline.format_catalog_row_for_reranker(c, domain=self.domain),
+                    str(c.get("basictype", c.get("BasicType", ""))),
+                    str(c.get("db_uid", "")),
+                )
             )
 
             seen_keys = set()
+            seen_formatted = set()
             rerank_limit = getattr(config, "MATCHER_RERANK_CANDIDATES", 30)
             for cand_row in all_cands_list:
-                if len(seen_keys) >= rerank_limit:
-                    break
                 cand_key = cand_row.get("db_uid") or cand_row.get("clean_text", "")
-                if cand_key not in seen_keys:
-                    seen_keys.add(cand_key)
-                    formatted_cand = TextPipeline.format_catalog_row_for_reranker(
-                        cand_row, domain=self.domain
-                    )
-                    cross_pairs.append([formatted_query, formatted_cand])
-                    pair_map.append((i, cand_key))
+                if cand_key in seen_keys:
+                    continue
+                formatted_cand = TextPipeline.format_catalog_row_for_reranker(
+                    cand_row, domain=self.domain
+                )
+                if formatted_cand not in seen_formatted and len(seen_formatted) >= rerank_limit:
+                    continue
+                seen_formatted.add(formatted_cand)
+                seen_keys.add(cand_key)
+                cross_pairs.append([formatted_query, formatted_cand])
+                pair_map.append((i, cand_key))
 
         cross_scores_list = []
         if cross_pairs:
-            cross_scores_list = self.embedder.score_cross_encoder(cross_pairs)
+
+            def _rerank_cb(done: int, total: int) -> None:
+                if progress_callback and total > 0:
+                    progress_callback(
+                        50.0 + (25.0 * (done / total)),
+                        f"Reranking {done} of {total}...",
+                    )
+
+            try:
+                cross_scores_list = self.embedder.score_cross_encoder(
+                    cross_pairs, progress_callback=_rerank_cb
+                )
+            except TypeError:
+                cross_scores_list = self.embedder.score_cross_encoder(cross_pairs)
 
         if progress_callback:
             progress_callback(75.0)
@@ -632,6 +658,7 @@ class SKUMatcher:
                 key=lambda item: (
                     -float(np.round(item[0], 3)),
                     str(item[1].get("clean_text", "")),
+                    str(item[1].get("db_uid", "")),
                 )
             )
             return scored

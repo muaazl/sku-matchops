@@ -64,27 +64,34 @@ def startup_event():
 
     ensure_backend_grpc_server()
 
-    # Verify and initialize database tables on startup
+    # Verify and initialize database tables on startup (fail fast)
     try:
         init_db()
+        from sqlalchemy import inspect
+
+        from backend.app.db.schema import metadata as db_metadata
+
+        existing_tables = set(inspect(get_engine()).get_table_names())
+        missing_tables = sorted(set(db_metadata.tables.keys()) - existing_tables)
+        if missing_tables:
+            raise RuntimeError(f"Missing required PostgreSQL tables: {', '.join(missing_tables)}")
         logger.info("Database schemas and tables verified.")
     except Exception as e:
-        logger.error(f"Failed to initialize database tables on startup: {e}")
+        logger.error(f"FATAL: Failed to initialize/verify database tables on startup: {e}")
+        raise
 
     try:
         sync_rules_everywhere()
     except Exception as e:
         logger.warning(f"Failed to sync rules on startup: {e}")
 
-    # Jobs left in 'queued'/'running' state belong to in-memory queue/progress state that
-    # doesn't survive a restart of the backend or the engine. Flip them to 'failed' so they
-    # show up as actionable unless still held by the Redis queue.
-    try:
-        queue = get_task_queue()
-        live_job_ids = list(queue.tracked_job_ids()) if queue is not None else []
-    except Exception as e:
-        logger.warning(f"Redis queue unreachable at startup ({e}); treating no jobs as queued.")
-        live_job_ids = []
+    # Redis is required (no fallback): fail fast if unreachable
+    queue = get_task_queue()
+    if queue is None or not queue.ping():
+        raise RuntimeError(
+            "FATAL: Redis is required and unreachable at startup. Check REDIS_URL and redis container."
+        )
+    live_job_ids = list(queue.tracked_job_ids())
 
     try:
         with get_engine().begin() as conn:

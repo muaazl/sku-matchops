@@ -1,7 +1,7 @@
 import functools
 import logging
-import os
 import re
+from pathlib import Path
 
 import pandas as pd
 
@@ -160,9 +160,9 @@ def _load_flavor_data():
             )
         return _FLAVOR_CACHE
 
-    brands_cache = os.path.join(config.CACHE_DIR, "food_brands_mmap.feather")
+    brands_cache = Path(config.CACHE_DIR) / "food_brands_mmap.feather"
     brands_df = pd.DataFrame()
-    if os.path.exists(brands_cache):
+    if brands_cache.exists():
         try:
             brands_df = pd.read_feather(brands_cache)
         except Exception as e:

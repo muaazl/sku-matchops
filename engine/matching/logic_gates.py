@@ -247,10 +247,17 @@ class LogicGates:
                     reasons.append(f"BasicType Match ({predicted_bt})")
                 else:
                     is_fuzzy_bypass = False
-                    score -= 0.15
-                    reasons.append(
-                        f"BasicType Mismatch: catalog has '{cand_bt}' vs predicted '{predicted_bt}'"
+                    pred_bt_lower = predicted_bt.strip().lower()
+                    strong_lexical_match = (
+                        pred_bt_lower not in input_no_weights
+                        and len(cat_no_weights.split()) >= 2
+                        and fuzz.token_set_ratio(input_no_weights, cat_no_weights) >= 85.0
                     )
+                    if not strong_lexical_match:
+                        score -= 0.15
+                        reasons.append(
+                            f"BasicType Mismatch: catalog has '{cand_bt}' vs predicted '{predicted_bt}'"
+                        )
 
         # Cap after BT bump so unspecified-flavor inputs never reach High Confidence
         if unspecified_input_flavor:

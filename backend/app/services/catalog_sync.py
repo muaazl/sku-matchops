@@ -2,9 +2,9 @@ import hashlib
 import json
 import logging
 import math
-import os
 import time
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -29,16 +29,10 @@ from backend.app.db.session import get_connection
 logger = logging.getLogger("matchops.catalog_sync")
 
 
-def _get_staged_path(sheet_name: str) -> str:
-    staging_dir = os.path.join(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        ),
-        "data",
-        "staged_sheets",
-    )
+def _get_staged_path(sheet_name: str) -> Path:
+    staging_dir = Path(__file__).resolve().parents[3] / "data" / "staged_sheets"
     safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in sheet_name) + ".csv"
-    return os.path.join(staging_dir, safe_name)
+    return staging_dir / safe_name
 
 
 def _download_sheet_with_retries(
@@ -86,10 +80,9 @@ def _fetch_sheet_as_csv(
     header: int | None = 0,
     dtype: Any = None,
 ) -> pd.DataFrame:
-    staged_path = _get_staged_path(sheet_name)
-    if os.path.exists(staged_path) and os.path.getsize(staged_path) > 0:
-        with open(staged_path, "rb") as f:
-            content_bytes = f.read()
+    staged_path = Path(_get_staged_path(sheet_name))
+    if staged_path.is_file() and staged_path.stat().st_size > 0:
+        content_bytes = staged_path.read_bytes()
     else:
         text_data = _download_sheet_with_retries(sheet_id, sheet_name)
         content_bytes = text_data.encode("utf-8")
@@ -138,18 +131,16 @@ def sync_catalog_to_database(
         f"[SYNC] [{domain.upper()}] Loading catalog and brands from staged cache / Google Sheets..."
     )
 
-    cat_staged = _get_staged_path(sheet_name)
-    brand_staged = _get_staged_path(brand_sheet)
+    cat_staged = Path(_get_staged_path(sheet_name))
+    brand_staged = Path(_get_staged_path(brand_sheet))
 
-    if os.path.exists(cat_staged) and os.path.getsize(cat_staged) > 0:
-        with open(cat_staged, encoding="utf-8") as f:
-            catalog_text = f.read()
+    if cat_staged.is_file() and cat_staged.stat().st_size > 0:
+        catalog_text = cat_staged.read_text(encoding="utf-8")
     else:
         catalog_text = _download_sheet_with_retries(sheet_id, sheet_name)
 
-    if os.path.exists(brand_staged) and os.path.getsize(brand_staged) > 0:
-        with open(brand_staged, encoding="utf-8") as f:
-            brands_text = f.read()
+    if brand_staged.is_file() and brand_staged.stat().st_size > 0:
+        brands_text = brand_staged.read_text(encoding="utf-8")
     else:
         brands_text = _download_sheet_with_retries(sheet_id, brand_sheet)
 

@@ -1,14 +1,14 @@
-import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
 
 from engine import config
-from engine.classification.classifier import ZeroShotClassifier
+from engine.classification.classifier import TaxonomyClassifier
 from engine.classification.cold_start_router import (
     ClassLifecycleTier,
     ColdStartRouter,
@@ -22,13 +22,13 @@ from engine.nlp.embedding_engine import EmbeddingEngine
 
 class TestColdStartRouter(unittest.TestCase):
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+        self.test_dir = Path(tempfile.mkdtemp())
         self.orig_cache_dir = config.CACHE_DIR
         config.CACHE_DIR = self.test_dir
 
     def tearDown(self):
         config.CACHE_DIR = self.orig_cache_dir
-        if os.path.exists(self.test_dir):
+        if self.test_dir.exists():
             shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_taxonomy_lifecycle_registry_partitioning(self):
@@ -225,9 +225,9 @@ class TestColdStartRouter(unittest.TestCase):
         self.assertEqual(batch_results[0][0], "Liquid Detergent")
         self.assertEqual(batch_results[1][0], "Fabric Softener")
 
-    @patch.object(ZeroShotClassifier, "_load_arcface_model", return_value=None)
+    @patch.object(TaxonomyClassifier, "_load_arcface_model", return_value=None)
     def test_router_integration_as_classifier_fallback(self, _mock_load):
-        """Tests that ColdStartRouter acts as a seamless fallback inside ZeroShotClassifier."""
+        """Tests that ColdStartRouter acts as a seamless fallback inside TaxonomyClassifier."""
         descriptions = {
             "bt_descriptions": {
                 "Standard Coffee": "Traditional brewed filter coffee",
@@ -242,7 +242,7 @@ class TestColdStartRouter(unittest.TestCase):
         }
 
         # Initialize classifier with "logreg" model without pre-existing training data
-        clf = ZeroShotClassifier(
+        clf = TaxonomyClassifier(
             model=mock_embed,
             domain="market",
             descriptions=descriptions,
@@ -276,18 +276,19 @@ class TestColdStartRouter(unittest.TestCase):
             }
         )
         vec = np.ones(1024, dtype=np.float32)
+        weighted_cache_path = self.test_dir / "market_weighted_skus_cache.pkl"
         joblib.dump(
             {f"item {i}||||": vec for i in range(20)},
-            os.path.join(self.test_dir, "market_weighted_skus_cache.pkl"),
+            weighted_cache_path,
         )
 
         registry = TaxonomyLifecycleRegistry(domain="market", cache_dir=self.test_dir)
         registry.sync_from_catalog(["Mature"], {}, cat_df=cat_df)
         self.assertEqual(registry.warm_index_to_class, ["Mature"])
-        self.assertTrue(os.path.exists(os.path.join(self.test_dir, "market_warm_centroids.pkl")))
+        self.assertTrue((self.test_dir / "market_warm_centroids.pkl").exists())
 
         # Second boot must load the small centroid cache, not the SKU cache
-        os.remove(os.path.join(self.test_dir, "market_weighted_skus_cache.pkl"))
+        weighted_cache_path.unlink()
         registry2 = TaxonomyLifecycleRegistry(domain="market", cache_dir=self.test_dir)
         registry2.sync_from_catalog(["Mature"], {}, cat_df=cat_df)
         self.assertEqual(registry2.warm_index_to_class, ["Mature"])

@@ -1,7 +1,7 @@
 import hmac
 import logging
-import os
 from collections import deque
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Security
 from fastapi.security.api_key import APIKeyHeader
@@ -189,13 +189,13 @@ def get_logs(lines: int = Query(500, ge=1, le=20000)):
     """
     Returns the last N lines of the application logs.
     """
-    log_file = config.LOG_FILE
+    log_file = Path(config.LOG_FILE)
 
-    if not os.path.exists(log_file):
+    if not log_file.exists():
         return {"logs": "Log file not found."}
 
     try:
-        with open(log_file, encoding="utf-8", errors="ignore") as f:
+        with log_file.open(encoding="utf-8", errors="ignore") as f:
             last_lines = deque(f, maxlen=lines)
             return {"logs": "".join(last_lines)}
     except Exception as e:

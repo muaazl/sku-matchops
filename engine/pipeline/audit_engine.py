@@ -12,7 +12,10 @@ from engine.nlp.text_cleaner import TextPipeline
 from engine.pipeline.processor import RerankerWrapper
 from engine.rules_engine import run_rules_engine
 from engine.utils.flavor_utils import triage_input_flavors
-from engine.utils.weight_utils import resolve_weight_bypass_candidate
+from engine.utils.weight_utils import (
+    resolve_bt_consensus_indices,
+    resolve_weight_bypass_candidate,
+)
 
 
 def _run_audit_template_enrichment(
@@ -289,28 +292,13 @@ def run_sku_audit(
             if isinstance(cat_indices, int):
                 cat_indices = [cat_indices]
 
-            selected_idx = None
-            if bt_filter:
-                conf_bt_norm = bt_filter.strip().lower()
-                bt_matched = [
-                    idx
-                    for idx in cat_indices
-                    if str(
-                        pipeline.raw_catalog.iloc[idx].get(
-                            "basictype", pipeline.raw_catalog.iloc[idx].get("BasicType", "")
-                        )
-                        or ""
-                    )
-                    .strip()
-                    .lower()
-                    == conf_bt_norm
-                ]
-                if bt_matched:
-                    selected_idx = bt_matched[0]
-                else:
-                    selected_idx = cat_indices[0]
-            else:
-                selected_idx = cat_indices[0]
+            consensus_indices = resolve_bt_consensus_indices(
+                pipeline.raw_catalog,
+                cat_indices,
+                conf_bt=bt_filter,
+                cat_bts_lower=getattr(pipeline, "_catalog_bts_lower", None),
+            )
+            selected_idx = consensus_indices[0] if consensus_indices else None
 
             if selected_idx is not None:
                 exact_bypass_row = pipeline.raw_catalog.iloc[selected_idx]
@@ -327,26 +315,12 @@ def run_sku_audit(
             if isinstance(cand_indices, int):
                 cand_indices = [cand_indices]
 
-            valid_cands = cand_indices
-            if bt_filter:
-                conf_bt_norm = bt_filter.strip().lower()
-                bt_matched = [
-                    idx
-                    for idx in cand_indices
-                    if str(
-                        pipeline.raw_catalog.iloc[idx].get(
-                            "basictype", pipeline.raw_catalog.iloc[idx].get("BasicType", "")
-                        )
-                        or ""
-                    )
-                    .strip()
-                    .lower()
-                    == conf_bt_norm
-                ]
-                if bt_matched:
-                    valid_cands = bt_matched
-                else:
-                    valid_cands = []
+            valid_cands = resolve_bt_consensus_indices(
+                pipeline.raw_catalog,
+                cand_indices,
+                conf_bt=bt_filter,
+                cat_bts_lower=getattr(pipeline, "_catalog_bts_lower", None),
+            )
 
             if valid_cands:
                 selected_idx, weight_reason = resolve_weight_bypass_candidate(
@@ -414,19 +388,29 @@ def run_sku_audit(
             all_cands_records.extend(df_pool.to_dict(orient="records"))
 
     all_cands_records.sort(
-        key=lambda c: (-float(c.get("_qdrant_score_", 0.0) or 0.0), str(c.get("clean_text", "")))
+        key=lambda c: (
+            -round(float(c.get("_qdrant_score_", 0.0) or 0.0), 6),
+            str(c.get("clean_text", "")),
+            TextPipeline.format_catalog_row_for_reranker(c, domain=domain),
+            str(c.get("basictype", c.get("BasicType", ""))),
+            str(c.get("db_uid", "")),
+        )
     )
 
     seen_cand_keys = set()
+    seen_formatted = set()
     rerank_records = []
     rerank_limit = getattr(config, "MATCHER_RERANK_CANDIDATES", 30)
     for cand_row in all_cands_records:
-        if len(seen_cand_keys) >= rerank_limit:
-            break
         cand_key = cand_row.get("db_uid") or cand_row.get("clean_text", "")
-        if cand_key not in seen_cand_keys:
-            seen_cand_keys.add(cand_key)
-            rerank_records.append(cand_row)
+        if cand_key in seen_cand_keys:
+            continue
+        formatted_cand = TextPipeline.format_catalog_row_for_reranker(cand_row, domain=domain)
+        if formatted_cand not in seen_formatted and len(seen_formatted) >= rerank_limit:
+            continue
+        seen_formatted.add(formatted_cand)
+        seen_cand_keys.add(cand_key)
+        rerank_records.append(cand_row)
 
     candidates = pd.DataFrame(rerank_records) if rerank_records else pd.DataFrame()
 
@@ -587,7 +571,11 @@ def run_sku_audit(
 
         # Mirror SKUMatcher score_candidates ordering
         scored_pool.sort(
-            key=lambda item: (-float(np.round(item[0], 3)), str(item[1].get("clean_text", "")))
+            key=lambda item: (
+                -float(np.round(item[0], 3)),
+                str(item[1].get("clean_text", "")),
+                str(item[1].get("db_uid", "")),
+            )
         )
 
         res_list = []
@@ -938,15 +926,25 @@ def run_sku_audit(
                 )
 
                 clf = clf_results[0]
-                bt_tag = str(clf.get("suggested_bt", ""))
-                bt_conf = float(clf.get("bt_confidence", 0.0))
+                bt_tag = str(clf.get("suggested_bt", "") or "").strip()
+                bt_conf = float(clf.get("bt_confidence", 0.0) or 0.0) if bt_tag else 0.0
                 gk_str = str(clf.get("suggested_gk", ""))
                 gk_conf = float(clf.get("gk_confidence", 0.0))
                 tt_val = str(clf.get("suggested_region", clf.get("suggested_category", "")))
                 tt_conf = float(clf.get("region_confidence", clf.get("category_confidence", 0.0)))
 
-                matcher_norm = min(float(win_score), 1.0)
-                classifier_won = bt_conf > matcher_norm
+                scale_factor = (
+                    0.75 / max(float(config.CONFIDENCE_THRESHOLD_HIGH), 0.01)
+                    if float(config.CONFIDENCE_THRESHOLD_HIGH) < 0.75
+                    else 1.0
+                )
+                matcher_norm = min(float(win_score) * scale_factor, 1.0)
+                matcher_bt_confirmed = "BasicType Match (" in str(
+                    win_reasons or ""
+                ) and win_status not in ("Low / Rejected", "Rejected")
+                classifier_won = (
+                    bool(bt_tag) and not matcher_bt_confirmed and bt_conf > matcher_norm
+                )
                 pipeline_source = "Classifier" if classifier_won else "Matcher"
 
                 if classifier_won:

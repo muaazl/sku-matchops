@@ -34,8 +34,11 @@ class RerankerWrapper:
     def __init__(self, embed_engine):
         self.embed_engine = embed_engine
 
-    def predict(self, pairs):
-        return self.embed_engine.score_cross_encoder(pairs)
+    def predict(self, pairs, progress_callback=None):
+        try:
+            return self.embed_engine.score_cross_encoder(pairs, progress_callback=progress_callback)
+        except TypeError:
+            return self.embed_engine.score_cross_encoder(pairs)
 
 
 def _build_sku_dataframe(skus: list[dict[str, Any]]) -> pd.DataFrame:
@@ -166,6 +169,46 @@ def process_request(
     start_time = time.time()
     total_skus = len(skus)
     stage_timings: dict[str, float] = {}
+    _eta_state: dict[str, Any] = {
+        "stage": None,
+        "stage_t0": start_time,
+        "stage_p0": 0.0,
+        "fast_rate": 0.5,
+    }
+
+    def compute_eta(stage: str, pct: float) -> int | None:
+        now = time.time()
+        p = float(pct)
+        if p <= 1.0:
+            return None
+        if p >= 100.0:
+            return 0
+        if stage != _eta_state["stage"]:
+            elapsed_prev = now - _eta_state["stage_t0"]
+            dp_prev = p - _eta_state["stage_p0"]
+            if (
+                _eta_state["stage"] in ("embedding", "vector_search")
+                and dp_prev > 1.0
+                and elapsed_prev > 0.1
+            ):
+                _eta_state["fast_rate"] = max(0.05, min(2.0, elapsed_prev / dp_prev))
+            _eta_state["stage"] = stage
+            _eta_state["stage_t0"] = now
+            _eta_state["stage_p0"] = p
+
+        dt = max(0.0, now - _eta_state["stage_t0"])
+        dp = p - _eta_state["stage_p0"]
+        if dp >= 0.25 and dt >= 0.2:
+            stage_rate = dt / dp
+            if stage == "reranking":
+                rerank_end = 75.0 if task == "matcher" else (90.0 if task == "classifier" else 52.5)
+                rem_rerank = max(0.0, rerank_end - p)
+                rem_after = max(0.0, 100.0 - max(p, rerank_end))
+                return max(1, int(rem_rerank * stage_rate + rem_after * _eta_state["fast_rate"]))
+            return max(1, int((100.0 - p) * stage_rate))
+
+        elapsed = max(0.1, now - start_time)
+        return max(1, int((elapsed / (p / 100.0)) - elapsed))
 
     # Food domain flavor entity enrichment
     if domain == config.DOMAIN_FOOD:
@@ -174,8 +217,10 @@ def process_request(
         ner_engine = get_ner_engine(domain)
         if ner_engine:
             sku_texts = [
-                TextPipeline.build_ner_input(
-                    sku.get("name", ""), sku.get("description", ""), sku.get("category", "")
+                TextPipeline.prep_for_ner(
+                    TextPipeline.build_ner_input(
+                        sku.get("name", ""), sku.get("description", ""), sku.get("category", "")
+                    )
                 )
                 for sku in skus
             ]
@@ -197,18 +242,16 @@ def process_request(
 
         def matcher_cb(pct, msg=None):
             check_cancel()
-            elapsed = max(0.1, time.time() - start_time)
             p = float(pct)
             if p < 30.0:
                 stage = "embedding"
-            elif p < 60.0:
+            elif p < 50.0:
                 stage = "vector_search"
-            elif p < 85.0:
+            elif p < 75.0:
                 stage = "reranking"
             else:
                 stage = "writing_results"
-            eta = max(1, int((elapsed / (p / 100.0)) - elapsed)) if p > 1.0 else None
-            emit_progress(stage, p, eta)
+            emit_progress(stage, p, compute_eta(stage, p))
 
         t_matcher_start = time.perf_counter()
         results_df = matcher.process_inputs(input_df, progress_callback=matcher_cb)
@@ -296,21 +339,15 @@ def process_request(
             ):
                 check_cancel()
                 overall_pct = ((_start + (float(pct) / 100.0) * _len) / total_skus) * 100.0
-                elapsed = max(0.1, time.time() - start_time)
                 if overall_pct < 15.0:
                     stage = "embedding"
-                elif overall_pct < 40.0:
+                elif overall_pct < 45.0:
                     stage = "vector_search"
-                elif overall_pct < 70.0:
+                elif overall_pct < 90.0:
                     stage = "reranking"
                 else:
                     stage = "classifying"
-                eta = (
-                    max(1, int((elapsed / (overall_pct / 100.0)) - elapsed))
-                    if overall_pct > 1.0
-                    else None
-                )
-                emit_progress(stage, overall_pct, eta)
+                emit_progress(stage, overall_pct, compute_eta(stage, overall_pct))
 
             chunk_results = tag_all_skus(
                 sku_names=sku_names,
@@ -416,19 +453,13 @@ def process_request(
             overall_pct = float(pct) * 0.70
             if overall_pct < 20.0:
                 stage = "embedding"
-            elif overall_pct < 45.0:
+            elif overall_pct < 35.0:
                 stage = "vector_search"
-            elif overall_pct < 65.0:
+            elif overall_pct < 52.5:
                 stage = "reranking"
             else:
                 stage = "classifying"
-            elapsed = max(0.1, time.time() - start_time)
-            eta = (
-                max(1, int((elapsed / (overall_pct / 100.0)) - elapsed))
-                if overall_pct > 1.0
-                else None
-            )
-            emit_progress(stage, overall_pct, eta)
+            emit_progress(stage, overall_pct, compute_eta(stage, overall_pct))
 
         t_pipe_match_start = time.perf_counter()
         match_df = matcher.process_inputs(input_df, progress_callback=matcher_pipeline_cb)
@@ -528,13 +559,9 @@ def process_request(
                     check_cancel()
                     chunk_overall_esc_pct = (_start + (float(pct) / 100.0) * _len) / total_esc
                     overall_pct = 70.0 + (chunk_overall_esc_pct * 20.0)
-                    elapsed = max(0.1, time.time() - start_time)
-                    eta = (
-                        max(1, int((elapsed / (overall_pct / 100.0)) - elapsed))
-                        if overall_pct > 1.0
-                        else None
+                    emit_progress(
+                        "classifying", overall_pct, compute_eta("classifying", overall_pct)
                     )
-                    emit_progress("classifying", overall_pct, eta)
 
                 clf_results = tag_all_skus(
                     sku_names=sku_names,
@@ -559,9 +586,26 @@ def process_request(
 
                     row["escalated"] = True
 
-                    matcher_norm = min(float(row.get("score", 0.0)), 1.0)
-                    clf_confidence = float(clf.get("bt_confidence") or 0.0)
-                    classifier_won = clf_confidence > matcher_norm
+                    raw_m_score = float(row.get("score", 0.0))
+                    scale_factor = (
+                        0.75 / max(float(config.CONFIDENCE_THRESHOLD_HIGH), 0.01)
+                        if float(config.CONFIDENCE_THRESHOLD_HIGH) < 0.75
+                        else 1.0
+                    )
+                    matcher_norm = min(raw_m_score * scale_factor, 1.0)
+                    clf_bt_tag = str(clf.get("suggested_bt") or "").strip()
+                    clf_confidence = float(clf.get("bt_confidence") or 0.0) if clf_bt_tag else 0.0
+                    prior_notes = str(row.get("logic_notes") or "")
+                    prior_status = str(row.get("status") or "")
+                    matcher_bt_confirmed = (
+                        "BasicType Match (" in prior_notes
+                        and prior_status not in ("Low / Rejected", "Rejected")
+                    )
+                    classifier_won = (
+                        bool(clf_bt_tag)
+                        and not matcher_bt_confirmed
+                        and clf_confidence > matcher_norm
+                    )
                     row["pipeline_source"] = "Classifier" if classifier_won else "Matcher"
 
                     if classifier_won:

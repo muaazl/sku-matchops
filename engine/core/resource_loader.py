@@ -3,17 +3,18 @@ SKU MatchOps Engine - Model & Resource Loader
 Handles loading, warm-up, and singleton caching of ML pipelines, NER, and Classifiers.
 """
 
+import ctypes
 import gc
 import logging
-import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pandas as pd
 
 from engine import config
-from engine.classification.classifier import ZeroShotClassifier
+from engine.classification.classifier import TaxonomyClassifier
 from engine.classification.loader import (
     augment_bt_gk_map_with_training,
     build_bt_third_tag_map_from_catalog,
@@ -33,7 +34,7 @@ from engine.rules_engine.loader import start_invalidation_listener
 logger = logging.getLogger("matchops.engine.loader")
 
 _pipelines: dict[str, SKUMatcher] = {}
-_classifiers: dict[str, ZeroShotClassifier] = {}
+_classifiers: dict[str, TaxonomyClassifier] = {}
 _domain_ner_engines: dict[str, NEREngine] = {}
 _vector_store = None
 _loader_lock = threading.RLock()
@@ -64,6 +65,15 @@ def reset_statuses(clear_caches: bool = False) -> None:
         for domain in _model_statuses:
             _model_statuses[domain]["pipeline"] = "idle"
             _model_statuses[domain]["classifier"] = "idle"
+
+
+def trim_memory() -> None:
+    """Runs Python GC and returns freed glibc heap arenas to the OS on Linux."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 
 
 def are_all_models_ready() -> bool:
@@ -191,7 +201,7 @@ def get_pipeline(
             raise e
 
 
-def get_classifier(domain: str, force_reset: bool = False) -> ZeroShotClassifier:
+def get_classifier(domain: str, force_reset: bool = False) -> TaxonomyClassifier:
     if domain not in (config.DOMAIN_MARKET, config.DOMAIN_FOOD):
         raise ValueError(f"Unknown domain '{domain}'. Must be 'market' or 'food'.")
 
@@ -203,7 +213,7 @@ def get_classifier(domain: str, force_reset: bool = False) -> ZeroShotClassifier
     return _build_classifier(domain, force_reset)
 
 
-def _build_classifier(domain: str, force_reset: bool) -> ZeroShotClassifier:
+def _build_classifier(domain: str, force_reset: bool) -> TaxonomyClassifier:
     # Serialize concurrent builds of THIS domain only (market/food still build in parallel).
     with _classifier_build_locks[domain]:
         # Re-check: another thread may have just finished training this domain's classifier
@@ -217,7 +227,7 @@ def _build_classifier(domain: str, force_reset: bool) -> ZeroShotClassifier:
         return _train_classifier(domain, force_reset)
 
 
-def _train_classifier(domain: str, force_reset: bool) -> ZeroShotClassifier:
+def _train_classifier(domain: str, force_reset: bool) -> TaxonomyClassifier:
     try:
         logger.info(f"[{domain.upper()}] Building classifier...")
         sys.stdout.flush()
@@ -260,6 +270,12 @@ def _train_classifier(domain: str, force_reset: bool) -> ZeroShotClassifier:
         ):
             tag_list = dicts.get(tag_key, [])
             if tag_list:
+                if (
+                    not force_reset
+                    and hasattr(vector_store, "has_tags_synced")
+                    and vector_store.has_tags_synced(domain, dict_type, len(set(tag_list)))
+                ):
+                    continue
                 tag_embs = embed_engine.embed_dictionary_incremental(domain, dict_type, tag_list)
                 vector_store.upsert_tags(
                     tag_list,
@@ -270,11 +286,19 @@ def _train_classifier(domain: str, force_reset: bool) -> ZeroShotClassifier:
                     force=force_reset,
                     bm25_embs=tag_embs.get("bm25"),
                 )
+                del tag_embs
 
-        classifier = ZeroShotClassifier(
+        classifier = TaxonomyClassifier(
             embed_engine, domain, descriptions, cat_df=cat_df, brands_df=brands_df
         )
         classifier.ner_engine = ner_engine
+        if getattr(classifier, "cold_start_router", None) is not None and hasattr(
+            classifier.cold_start_router, "registry"
+        ):
+            try:
+                classifier.cold_start_router.registry.ensure_zero_shot_embeddings(embed_engine)
+            except Exception as zs_err:
+                logger.debug(f"[{domain.upper()}] Deferred zero-shot embedding warmup: {zs_err}")
 
         with _loader_lock:
             _classifiers[domain] = classifier
@@ -387,10 +411,11 @@ def _fetch_snapshot_from_backend(domain: str) -> bool:
     api_key = getattr(config, "API_KEY", "bismillah")
     headers = {"X-API-Key": api_key}
 
-    os.makedirs(config.CACHE_DIR, exist_ok=True)
-    cat_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_mmap.feather")
-    brands_path = os.path.join(config.CACHE_DIR, f"{domain}_brands_mmap.feather")
-    dicts_path = os.path.join(config.CACHE_DIR, f"{domain}_classifier_dicts.json")
+    cache_dir = Path(config.CACHE_DIR)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cat_path = cache_dir / f"{domain}_catalog_mmap.feather"
+    brands_path = cache_dir / f"{domain}_brands_mmap.feather"
+    dicts_path = cache_dir / f"{domain}_classifier_dicts.json"
 
     try:
         # 1. Catalog Feather
@@ -411,10 +436,8 @@ def _fetch_snapshot_from_backend(domain: str) -> bool:
         if r_brands.status_code != 200:
             return False
 
-        with open(cat_path, "wb") as f:
-            f.write(r_cat.content)
-        with open(brands_path, "wb") as f:
-            f.write(r_brands.content)
+        cat_path.write_bytes(r_cat.content)
+        brands_path.write_bytes(r_brands.content)
 
         # 3. Dictionaries JSON (optional best effort)
         try:
@@ -424,8 +447,7 @@ def _fetch_snapshot_from_backend(domain: str) -> bool:
                 timeout=1.5,
             )
             if r_dicts.status_code == 200:
-                with open(dicts_path, "w", encoding="utf-8") as f:
-                    f.write(r_dicts.text)
+                dicts_path.write_text(r_dicts.text, encoding="utf-8")
         except Exception as dict_err:
             logger.warning(f"[ENGINE] Failed to fetch dictionary snapshot for {domain}: {dict_err}")
 
@@ -474,7 +496,7 @@ def _bg_load_models(reload: bool = False) -> None:
                 embed_engine.warmup()
             if hasattr(ner_engine, "warmup"):
                 ner_engine.warmup()
-            gc.collect()
+            trim_memory()
         except Exception as e:
             logger.warning(f"[ENGINE] Warmup failed: {e}")
 
@@ -490,7 +512,7 @@ def _bg_load_models(reload: bool = False) -> None:
                     get_pipeline(d)
                 except Exception as e:
                     logger.error(f"[ENGINE] Failed to pre-load domain {d}: {e}")
-                gc.collect()
+                trim_memory()
 
             logger.info("[ENGINE] All ML models loaded and cached successfully.")
             from engine.pipeline.worker_runner import start_queue_worker

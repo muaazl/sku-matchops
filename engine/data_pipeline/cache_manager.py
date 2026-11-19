@@ -1,8 +1,8 @@
 import hashlib
 import json
 import logging
-import os
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import joblib
@@ -146,15 +146,16 @@ class CacheManager:
         """Performs incremental updates to the vector store based on row-level changes."""
         from engine.nlp.text_cleaner import TextPipeline
 
-        os.makedirs(config.CACHE_DIR, exist_ok=True)
+        cache_dir = Path(config.CACHE_DIR)
+        cache_dir.mkdir(parents=True, exist_ok=True)
 
-        hash_file = os.path.join(config.CACHE_DIR, f"{domain}_row_hashes.json")
-        processed_df_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_metadata.pkl")
+        hash_file = cache_dir / f"{domain}_row_hashes.json"
+        processed_df_path = cache_dir / f"{domain}_catalog_metadata.pkl"
 
         old_hashes = {}
-        if os.path.exists(hash_file):
+        if hash_file.exists():
             try:
-                with open(hash_file) as f:
+                with hash_file.open(encoding="utf-8") as f:
                     old_hashes = json.load(f)
             except Exception:
                 pass
@@ -182,7 +183,7 @@ class CacheManager:
             processed_catalog[col] = None
 
         # Attempt to load pre-calculated entities and metadata from disk cache
-        if not os.path.exists(processed_df_path):
+        if not processed_df_path.exists():
             if not check_for_updates and not force_sync:
                 raise RuntimeError(
                     f"[CATALOG SYNC ERROR] Catalog metadata cache for domain '{domain.upper()}' was not found at '{processed_df_path}'. "
@@ -422,7 +423,7 @@ class CacheManager:
         )
         joblib.dump(processed_catalog, processed_df_path)
 
-        with open(hash_file, "w") as f:
+        with hash_file.open("w", encoding="utf-8") as f:
             json.dump(new_hashes, f)
 
         logger.info(f"[CACHE] [{domain.upper()}] Sync complete.")
@@ -434,16 +435,17 @@ class CacheManager:
         """
         Returns cached classifier data (BT-GK maps) or builds them if the catalog has changed.
         """
-        os.makedirs(config.CACHE_DIR, exist_ok=True)
-        cache_path = os.path.join(config.CACHE_DIR, f"{domain}_bt_gk_cache.pkl")
-        hash_path = os.path.join(config.CACHE_DIR, f"{domain}_bt_gk_hash.txt")
+        cache_dir = Path(config.CACHE_DIR)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / f"{domain}_bt_gk_cache.pkl"
+        hash_path = cache_dir / f"{domain}_bt_gk_hash.txt"
 
         current_hash = self._hash_df(cat_df, domain=domain)
 
         # Validate cache by comparing catalog hashes
-        if os.path.exists(cache_path) and os.path.exists(hash_path):
+        if cache_path.exists() and hash_path.exists():
             try:
-                stored_hash = open(hash_path).read().strip()
+                stored_hash = hash_path.read_text(encoding="utf-8").strip()
                 if stored_hash == current_hash:
                     cached = joblib.load(cache_path)
                     logger.info(
@@ -465,7 +467,6 @@ class CacheManager:
             payload = {"bt_gk_map": bt_gk_map, "umbrella": umbrella}
 
         joblib.dump(payload, cache_path)
-        with open(hash_path, "w") as f:
-            f.write(current_hash or "")
+        hash_path.write_text(current_hash or "", encoding="utf-8")
 
         return payload

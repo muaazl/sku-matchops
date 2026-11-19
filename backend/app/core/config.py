@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -34,17 +35,13 @@ AUTO_THRESHOLD = float(os.getenv("AUTO_THRESHOLD", "0.80"))
 REVIEW_THRESHOLD = float(os.getenv("REVIEW_THRESHOLD", "0.50"))
 
 # --- Logging ---
-LOG_DIR = os.getenv(
-    "LOG_DIR",
-    os.path.join(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        ),
-        "data",
-        "logs",
-    ),
+LOG_DIR = Path(
+    os.getenv(
+        "LOG_DIR",
+        str(Path(__file__).resolve().parents[3] / "data" / "logs"),
+    )
 )
-LOG_FILE = os.getenv("LOG_FILE", os.path.join(LOG_DIR, "backend.log"))
+LOG_FILE = Path(os.getenv("LOG_FILE", str(LOG_DIR / "backend.log")))
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text")
 
 # --- Authentication & Access Control ---

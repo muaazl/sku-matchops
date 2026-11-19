@@ -1,8 +1,8 @@
 import csv
 import logging
-import os
 import re
 import time
+from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -29,10 +29,10 @@ def process_upload(skus, outlet_id, job_id, progress_callback, is_cancelled, has
         raise ValueError("No SKUs provided for upload")
 
     # Create temporary CSV
-    temp_csv_path = os.path.join(os.path.dirname(__file__), f"temp_upload_{job_id}.csv")
+    temp_csv_path = Path(__file__).resolve().parent / f"temp_upload_{job_id}.csv"
     try:
         keys = skus[0].keys()
-        with open(temp_csv_path, "w", newline="", encoding="utf-8") as f:
+        with temp_csv_path.open("w", newline="", encoding="utf-8") as f:
             dict_writer = csv.DictWriter(f, fieldnames=keys)
             dict_writer.writeheader()
             dict_writer.writerows(skus)
@@ -243,7 +243,7 @@ def process_upload(skus, outlet_id, job_id, progress_callback, is_cancelled, has
                 )
 
     finally:
-        if os.path.exists(temp_csv_path):
-            os.remove(temp_csv_path)
+        if temp_csv_path.exists():
+            temp_csv_path.unlink()
 
     return {"results": results, "pages_processed": pages_processed}

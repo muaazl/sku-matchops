@@ -72,12 +72,12 @@ class NEREngine:
     # ─────────────────────────────────────────────────────────────
 
     def _load_model(self):
-        import os
+        from pathlib import Path
 
         from gliner import GLiNER
 
-        onnx_path = config.GLINER_ONNX
-        if not os.path.exists(onnx_path):
+        onnx_path = Path(config.GLINER_ONNX)
+        if not onnx_path.exists():
             raise FileNotFoundError(
                 f"[FAIL-FAST] Required GLiNER ONNX model missing at '{onnx_path}'. "
                 f"Run 'python -m scripts.sync --models sync --model-target gliner' first."
@@ -85,9 +85,9 @@ class NEREngine:
 
         try:
             self.model = GLiNER.from_pretrained(
-                config.GLINER_MODEL,
+                str(config.GLINER_MODEL),
                 load_onnx_model=True,
-                onnx_model_file=os.path.basename(onnx_path),
+                onnx_model_file=onnx_path.name,
                 local_files_only=True,
                 fix_mistral_regex=True,
             )

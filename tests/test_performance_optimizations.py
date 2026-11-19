@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 import engine.rules_engine.evaluator as eval_mod
-from engine.classification.classifier import ZeroShotClassifier
+from engine.classification.classifier import TaxonomyClassifier
 from engine.classification.tagger import _resolve_flavors_from_text
 from engine.nlp.text_cleaner import UnitUtils
 from engine.rules_engine.evaluator import _extract_flavors_from_sku
@@ -79,7 +79,7 @@ class TestPerformanceOptimizations(unittest.TestCase):
         res_empty = _resolve_flavors_from_text("", flavors_dict)
         self.assertEqual(res_empty, set())
 
-    @patch.object(ZeroShotClassifier, "_load_arcface_model", return_value=None)
+    @patch.object(TaxonomyClassifier, "_load_arcface_model", return_value=None)
     def test_batch_predict_third_tag_and_gk(self, _mock_load):
         import tempfile
 
@@ -103,7 +103,7 @@ class TestPerformanceOptimizations(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            clf = ZeroShotClassifier(
+            clf = TaxonomyClassifier(
                 mock_model, domain="food", descriptions=descriptions, cache_dir=tmpdir
             )
             clf._trained = False
