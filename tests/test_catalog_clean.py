@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from backend.app.api.endpoints.catalog import search_catalog
+from backend.api.endpoints.catalog_router import search_catalog
 
 
 def test_catalog_search_dataset_catalog_no_duplicate_keys():
@@ -23,7 +23,7 @@ def test_catalog_search_dataset_catalog_no_duplicate_keys():
     )
     mock_conn.execute.return_value.fetchall.return_value = [mock_row]
 
-    with patch("backend.app.api.endpoints.catalog.get_connection", return_value=mock_conn):
+    with patch("backend.repositories.catalog_repository.get_connection", return_value=mock_conn):
         res = search_catalog(dataset="catalog", domain="market", page=1, page_size=25)
 
     assert "results" in res
@@ -77,7 +77,7 @@ def test_catalog_search_dataset_brands_no_redundant_aliases():
     mock_row = (1, "Anchor", "Anchor Butter", False, False, False, False, 42)
     mock_conn.execute.return_value.fetchall.return_value = [mock_row]
 
-    with patch("backend.app.api.endpoints.catalog.get_connection", return_value=mock_conn):
+    with patch("backend.repositories.catalog_repository.get_connection", return_value=mock_conn):
         res = search_catalog(dataset="brands", domain="market", page=1, page_size=25)
 
     assert len(res["results"]) == 1
@@ -99,7 +99,7 @@ def test_catalog_search_dataset_bt_gk_map_no_redundant_name():
     mock_row = (1, "Staple Pins", "Stationery, Staple Pins", 2, 10)
     mock_conn.execute.return_value.fetchall.return_value = [mock_row]
 
-    with patch("backend.app.api.endpoints.catalog.get_connection", return_value=mock_conn):
+    with patch("backend.repositories.catalog_repository.get_connection", return_value=mock_conn):
         res = search_catalog(dataset="bt_gk_map", domain="market", page=1, page_size=25)
 
     assert len(res["results"]) == 1
@@ -119,7 +119,7 @@ def test_catalog_snapshot_feather_endpoints():
     import pandas as pd
     import pyarrow.feather as feather
 
-    from backend.app.api.endpoints.catalog import (
+    from backend.api.endpoints.catalog_router import (
         get_brands_feather_snapshot,
         get_catalog_feather_snapshot,
         get_dictionaries_snapshot,
@@ -131,11 +131,11 @@ def test_catalog_snapshot_feather_endpoints():
 
     with (
         patch(
-            "backend.app.api.endpoints.catalog.get_catalog_and_brands",
+            "backend.services.catalog_service.get_catalog_and_brands",
             return_value=(mock_cat, mock_brands),
         ),
         patch(
-            "backend.app.api.endpoints.catalog.get_classifier_dicts",
+            "backend.services.catalog_service.get_classifier_dicts",
             return_value=mock_dicts,
         ),
     ):
@@ -165,8 +165,8 @@ def test_engine_fetches_snapshot_from_backend(tmp_path):
     import pandas as pd
     import pyarrow.feather as feather
 
-    from engine import config
-    from engine.core.resource_loader import _fetch_snapshot_from_backend
+    from engine.core import config
+    from engine.pipelines.runtime_pipeline import _fetch_snapshot_from_backend
 
     orig_cache = config.CACHE_DIR
     try:

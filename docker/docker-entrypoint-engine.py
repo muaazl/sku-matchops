@@ -96,7 +96,7 @@ def main():
 
     # Prune stale volume caches if host active_embedding_model.txt changed
     host_marker = Path("/host_cache/active_embedding_model.txt")
-    vol_marker = Path("/app/engine/data/cache/active_embedding_model.txt")
+    vol_marker = Path("/app/data/cache/active_embedding_model.txt")
     if host_marker.exists() and vol_marker.exists():
         if (
             host_marker.read_text(encoding="utf-8").strip()
@@ -106,17 +106,19 @@ def main():
                 "[SYNC] Host active_embedding_model.txt changed; clearing stale volume cache...",
                 flush=True,
             )
-            for f in Path("/app/engine/data/cache").iterdir():
+            for f in Path("/app/data/cache").iterdir():
                 if f.is_file():
                     f.unlink(missing_ok=True)
 
     # Sync from host bind-mounts to fast Docker volumes if present
-    sync_host_directory("/host_models", "/app/engine/models", "model")
-    sync_host_directory("/host_cache", "/app/engine/data/cache", "cache")
+    sync_host_directory("/host_models", "/app/data/models", "model")
+    sync_host_directory("/host_cache", "/app/data/cache", "cache")
 
     # Run synchronous pre-flight startup checks (fails fast on any mismatch or missing artifact)
     try:
-        subprocess.run([sys.executable, "-m", "engine.core.startup_checks"], check=True)
+        subprocess.run(
+            [sys.executable, "-m", "engine.pipelines.startup_check_pipeline"], check=True
+        )
     except subprocess.CalledProcessError:
         print("FATAL: Engine pre-flight startup checks failed. Aborting startup.", flush=True)
         sys.exit(1)

@@ -76,7 +76,7 @@ _DOMAIN_FOOD = "food"
 
 
 def _ensure_dirs() -> None:
-    from engine import config
+    from engine.core import config
 
     Path(config.ONNX_DIR).mkdir(parents=True, exist_ok=True)
     Path(config.EMBEDDING_ROOT_DIR).mkdir(parents=True, exist_ok=True)
@@ -112,7 +112,7 @@ def _remove_onnx_artifacts(base_onnx_path: Path | str) -> None:
 
 
 def _qdrant_state_path() -> Path:
-    from engine import config
+    from engine.core import config
 
     return Path(config.CACHE_DIR) / "qdrant_embedding_models.json"
 
@@ -123,7 +123,7 @@ def _get_qdrant_embedding_model(domain: str) -> str:
 
 
 def _record_qdrant_embedding_model(domain: str) -> None:
-    from engine import config
+    from engine.core import config
 
     path = _qdrant_state_path()
     Path(config.CACHE_DIR).mkdir(parents=True, exist_ok=True)
@@ -133,13 +133,13 @@ def _record_qdrant_embedding_model(domain: str) -> None:
 
 
 def _active_emb_marker_path() -> Path:
-    from engine import config
+    from engine.core import config
 
     return Path(config.CACHE_DIR) / "active_embedding_model.txt"
 
 
 def _record_active_embedding_model() -> None:
-    from engine import config
+    from engine.core import config
 
     marker = _active_emb_marker_path()
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -148,7 +148,7 @@ def _record_active_embedding_model() -> None:
 
 def _ensure_clean_embedding_caches_for_model() -> None:
     """Wipes embedding caches if the active EMBEDDING_MODEL in .env differs from cached vectors."""
-    from engine import config
+    from engine.core import config
 
     marker = _active_emb_marker_path()
     if not marker.exists():
@@ -167,7 +167,7 @@ def _ensure_clean_embedding_caches_for_model() -> None:
 
 def wipe_embedding_caches() -> None:
     """Deletes stale embedding-dependent disk caches before re-syncing an embedding model."""
-    from engine import config
+    from engine.core import config
 
     cache_dir = Path(config.CACHE_DIR)
     if not cache_dir.exists():
@@ -380,13 +380,17 @@ def _resolve_hf_source(repo_id: str) -> str:
 
 def _load_hf_component(loader_fn, source: str, fallback_repo: str, local_only: bool, **kwargs):
     """Loads a HuggingFace model/config/tokenizer with fallback to remote download if local files are missing."""
+    optional_keys = ("fix_mistral_regex", "attn_implementation")
     try:
         return loader_fn(source, local_files_only=local_only, **kwargs)
-    except TypeError as type_err:
-        if "fix_mistral_regex" in kwargs:
-            clean_kwargs = {k: v for k, v in kwargs.items() if k != "fix_mistral_regex"}
-            return _load_hf_component(loader_fn, source, fallback_repo, local_only, **clean_kwargs)
-        raise type_err
+    except (TypeError, ValueError) as arg_err:
+        for opt_k in optional_keys:
+            if opt_k in kwargs:
+                clean_kwargs = {k: v for k, v in kwargs.items() if k != opt_k}
+                return _load_hf_component(
+                    loader_fn, source, fallback_repo, local_only, **clean_kwargs
+                )
+        raise arg_err
     except (FileNotFoundError, OSError, Exception) as exc:
         if local_only and source != fallback_repo:
             logger.warning(
@@ -395,8 +399,8 @@ def _load_hf_component(loader_fn, source: str, fallback_repo: str, local_only: b
             )
             try:
                 return loader_fn(fallback_repo, local_files_only=False, **kwargs)
-            except TypeError:
-                clean_kwargs = {k: v for k, v in kwargs.items() if k != "fix_mistral_regex"}
+            except (TypeError, ValueError):
+                clean_kwargs = {k: v for k, v in kwargs.items() if k not in optional_keys}
                 return loader_fn(fallback_repo, local_files_only=False, **clean_kwargs)
         raise
 
@@ -555,7 +559,7 @@ if nn is not None:
 
 
 def _detect_pooling_mode(source_path: str, hf_id: str, model_id: str, hf_config) -> str:
-    from engine import config
+    from engine.core import config
 
     override = getattr(config, "EMBEDDING_POOLING", "auto")
     if override in ("cls", "mean", "last_token"):
@@ -642,7 +646,7 @@ def _has_saved_tokenizer(target_dir: Path | str) -> bool:
 
 def export_embedding(force: bool = False, require_int8: bool = True) -> bool:
     """Exports configured EMBEDDING_MODEL to FP32 ONNX. Returns True if a new export ran."""
-    from engine import config
+    from engine.core import config
 
     target_dir = Path(config.EMBEDDING_DIR)
     onnx_fp32 = Path(config.EMBEDDING_ONNX_FP32)
@@ -689,17 +693,25 @@ def export_embedding(force: bool = False, require_int8: bool = True) -> bool:
     sparse_linear = _load_sparse_linear(source, hf_id, model_id, hidden_size)
     has_sparse = sparse_linear is not None
 
+    is_mistral_emb = any(k in model_id.lower() for k in ("mistral", "mixtral"))
     tokenizer = _load_hf_component(
         AutoTokenizer.from_pretrained,
         source,
         hf_id,
         local_only,
         trust_remote_code=True,
-        fix_mistral_regex=True,
+        fix_mistral_regex=is_mistral_emb,
     )
     tokenizer.padding_side = "right"
+    emb_load_kwargs: dict = {"trust_remote_code": True}
+    if "qwen" in str(getattr(hf_config, "model_type", "")).lower() or "jina" in model_id.lower():
+        emb_load_kwargs["attn_implementation"] = "eager"
     hf_model = _load_hf_component(
-        AutoModel.from_pretrained, source, hf_id, local_only, trust_remote_code=True
+        AutoModel.from_pretrained,
+        source,
+        hf_id,
+        local_only,
+        **emb_load_kwargs,
     )
     hf_model.eval()
     wrapper = EmbeddingONNXWrapper(hf_model, pooling=pooling, sparse_linear=sparse_linear)
@@ -752,7 +764,7 @@ def export_embedding(force: bool = False, require_int8: bool = True) -> bool:
 
 def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
     """Exports configured RERANKER_MODEL to FP32 ONNX. Returns True if a new export ran."""
-    from engine import config
+    from engine.core import config
 
     target_dir = Path(config.RERANKER_DIR)
     onnx_fp32 = Path(config.RERANKER_ONNX_FP32)
@@ -839,7 +851,12 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
 
     if arch_type == "listwise_lbnl":
         hf_model = _load_hf_component(
-            AutoModel.from_pretrained, source, model_id, local_only, trust_remote_code=True
+            AutoModel.from_pretrained,
+            source,
+            model_id,
+            local_only,
+            trust_remote_code=True,
+            attn_implementation="eager",
         )
         hf_model.eval()
         wrapper = RerankerONNXWrapper(hf_model, arch_type="listwise_lbnl")
@@ -863,6 +880,7 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
                 "attention_mask": {0: "batch_size", 1: "sequence_length"},
                 "projected_embeds": {0: "batch_size", 1: "sequence_length"},
             },
+            prefer_dynamo=True,
         )
         unk_id = getattr(tokenizer, "unk_token_id", None)
         doc_id = tokenizer.convert_tokens_to_ids(doc_tok)
@@ -953,7 +971,7 @@ def export_reranker(force: bool = False, require_int8: bool = True) -> bool:
 
 
 def export_gliner(force: bool = False) -> None:
-    from engine import config
+    from engine.core import config
 
     target_dir = Path(config.GLINER_MODEL)
     onnx_file = Path(config.GLINER_ONNX)
@@ -1047,7 +1065,7 @@ def _verify_embedding_parity() -> None:
     import numpy as np
     import onnxruntime as ort
 
-    from engine import config
+    from engine.core import config
 
     fp32_model = Path(config.EMBEDDING_ONNX_FP32)
     int8_model = Path(config.EMBEDDING_ONNX_INT8)
@@ -1084,11 +1102,11 @@ def _verify_embedding_parity() -> None:
     int8_inf = (time.time() - t0) * 1000
 
     if fp32_out.ndim == 3:
-        from engine.nlp.embedding_engine import EmbeddingEngine
+        from engine.inference.embedding_model import EmbeddingModel
 
         attn = inputs["attention_mask"]
-        fp32_out = EmbeddingEngine._pool_hidden_states(fp32_out, attn, pooling)
-        int8_out = EmbeddingEngine._pool_hidden_states(int8_out, attn, pooling)
+        fp32_out = EmbeddingModel.pool_hidden_states(fp32_out, attn, pooling)
+        int8_out = EmbeddingModel.pool_hidden_states(int8_out, attn, pooling)
 
     del fp32_sess, int8_sess
     gc.collect()
@@ -1122,7 +1140,7 @@ def _verify_reranker_parity() -> None:
     import numpy as np
     import onnxruntime as ort
 
-    from engine import config
+    from engine.core import config
 
     fp32_model = Path(config.RERANKER_ONNX_FP32)
     int8_model = Path(config.RERANKER_ONNX_INT8)
@@ -1238,7 +1256,7 @@ def _verify_reranker_parity() -> None:
 
 def quantize_models(target: str = "all", force: bool = False, cleanup_fp32: bool = True) -> None:
     """Quantizes FP32 ONNX models to INT8, runs parity verification, and removes intermediate FP32."""
-    from engine import config
+    from engine.core import config
 
     if target == "gliner":
         logger.info(
@@ -1299,7 +1317,7 @@ def sync_models(
     _is_quantize_sub: bool = False,
 ) -> None:
     """Orchestrates ONNX export + isolated-subprocess INT8 quantization + verification."""
-    from engine import config
+    from engine.core import config
 
     if _is_quantize_sub or mode == "quantize":
         quantize_models(target=target, force=(mode != "quantize"), cleanup_fp32=True)
@@ -1490,10 +1508,10 @@ def reset_catalog_tables(domain: str | None = None) -> None:
     """Empties catalog tables (for one domain, or all) before a clean import."""
     from sqlalchemy import text
 
-    from backend.app.db.init import init_db
-    from backend.app.db.session import get_engine
+    from backend.core.database import get_engine
+    from backend.repositories.database_init_repository import initialize_database_schema
 
-    init_db()
+    initialize_database_schema()
     try:
         with get_engine().begin() as conn:
             if domain and domain in (_DOMAIN_MARKET, _DOMAIN_FOOD):
@@ -1523,7 +1541,7 @@ def reset_catalog_tables(domain: str | None = None) -> None:
 
 
 def wipe_local_cache_files() -> None:
-    from engine import config
+    from engine.core import config
 
     logger.info("Purging local disk cache files...")
     cache_dir = Path(config.CACHE_DIR)
@@ -1537,7 +1555,7 @@ def wipe_local_cache_files() -> None:
 
 
 def wipe_domain_cache_files(domain: str) -> None:
-    from engine import config
+    from engine.core import config
 
     logger.info(f"[{domain.upper()}] Purging local disk cache files...")
     cache_dir = Path(config.CACHE_DIR)
@@ -1552,8 +1570,8 @@ def wipe_domain_cache_files(domain: str) -> None:
 
 def sync_db(domain: str, sheet_id: str, mode: str):
     """Syncs or rebuilds Google Sheets/Sample data into PostgreSQL."""
-    from backend.app.db.init import init_db
-    from backend.app.services.catalog_sync import (
+    from backend.repositories.database_init_repository import initialize_database_schema
+    from backend.services.catalog_sync_service import (
         compute_and_store_dictionary_counts,
         sync_bt_gk_map_to_database,
         sync_catalog_to_database,
@@ -1563,7 +1581,7 @@ def sync_db(domain: str, sheet_id: str, mode: str):
     if mode == "rebuild":
         reset_catalog_tables(domain)
     else:
-        init_db()
+        initialize_database_schema()
 
     cat_df, _ = sync_catalog_to_database(sheet_id, domain=domain)
     sync_classifier_dictionaries_to_database(sheet_id, domain=domain)
@@ -1577,9 +1595,9 @@ def sync_cache(domain: str, sheet_id: str, mode: str) -> None:
     import joblib
     import pyarrow.feather as feather
 
-    from engine import config
-    from engine.data_pipeline.cache_manager import CacheManager
-    from engine.data_pipeline.ingestion import DataIngestion
+    from engine.core import config
+    from engine.pipelines.ingestion_pipeline import DataIngestion
+    from engine.preprocessing.weight_preprocessor import populate_basic_nlp_features
 
     Path(config.CACHE_DIR).mkdir(parents=True, exist_ok=True)
     if mode == "rebuild":
@@ -1632,7 +1650,7 @@ def sync_cache(domain: str, sheet_id: str, mode: str) -> None:
         logger.info(f"[{domain.upper()}] Classifier dictionaries JSON already present — skipped.")
 
     if rebuild or not metadata_path.exists():
-        meta_df = CacheManager.populate_basic_nlp_features(cat_df.copy())
+        meta_df = populate_basic_nlp_features(cat_df.copy())
         joblib.dump(meta_df, metadata_path)
         logger.info(f"[{domain.upper()}] Catalog NLP metadata pickle saved.")
     else:
@@ -1641,13 +1659,16 @@ def sync_cache(domain: str, sheet_id: str, mode: str) -> None:
 
 def sync_qdrant(domain: str, mode: str) -> None:
     """Syncs or rebuilds Qdrant vector collections and classifier models."""
-    from engine import config
-    from engine.core.resource_loader import _get_vector_store, get_classifier, get_pipeline
+    from engine.core import config
+    from engine.pipelines.runtime_pipeline import _get_vector_store, get_classifier, get_pipeline
 
     _ensure_clean_embedding_caches_for_model()
     vs = _get_vector_store()
     do_full_rebuild = mode == "rebuild"
-    collections = [vs._get_collection_name(domain), f"{domain}_tags"]
+    collections = [
+        vs.resolve_catalog_collection_name(domain),
+        vs.resolve_tags_collection_name(domain),
+    ]
 
     if not do_full_rebuild:
         prev_qdrant_model = _get_qdrant_embedding_model(domain)
@@ -1684,7 +1705,7 @@ def sync_qdrant(domain: str, mode: str) -> None:
                 logger.warning(f"[{domain.upper()}] Could not delete collection '{col}': {e}")
     else:
         try:
-            remote_hashes = vs.get_existing_hashes(domain)
+            remote_hashes = vs.fetch_existing_hashes(domain)
         except Exception as e:
             logger.warning(f"[{domain.upper()}] Could not fetch existing hashes from Qdrant: {e}")
             remote_hashes = {}
@@ -1710,6 +1731,9 @@ def sync_qdrant(domain: str, mode: str) -> None:
     clf_cache_path = Path(config.CACHE_DIR) / f"{domain}_classifier_model.pkl"
     need_classifier_train = do_full_rebuild or not clf_cache_path.exists()
 
+    if config.get_bt_model(domain) == "arcface":
+        sync_arcface(domain, mode="sync")
+
     logger.info(f"[{domain.upper()}] Training classifier & syncing catalog vectors to Qdrant...")
     get_classifier(domain, force_reset=need_classifier_train)
     get_pipeline(domain, check_for_updates=True, force_sync=do_full_rebuild)
@@ -1731,7 +1755,7 @@ def load_catalog_data(
     """Loads and standardizes labeled catalog data for ArcFace BT training."""
     import pandas as pd
 
-    from engine import config
+    from engine.core import config
 
     df = pd.DataFrame()
     if from_sample:
@@ -1748,7 +1772,7 @@ def load_catalog_data(
         )
         df = pd.read_excel(sample_path, sheet_name=sheet_name)
     else:
-        from engine.data_pipeline.ingestion import DataIngestion
+        from engine.pipelines.ingestion_pipeline import DataIngestion
 
         cat_df, _ = DataIngestion.load_catalog(config.GOOGLE_SHEET_ID, domain=domain)
         if not cat_df.empty:
@@ -1814,7 +1838,7 @@ def extract_embeddings(
     import numpy as np
     import pandas as pd
 
-    from engine import config
+    from engine.core import config
 
     cdir = Path(cache_dir or config.CACHE_DIR)
     cdir.mkdir(parents=True, exist_ok=True)
@@ -1853,7 +1877,7 @@ def extract_embeddings(
             f"[{domain.upper()}] Embedding {len(missing_indices)} SKUs "
             f"({len(keys) - len(missing_indices)} from cache)..."
         )
-        from engine.core.resource_loader import _get_shared_models
+        from engine.pipelines.runtime_pipeline import _get_shared_models
 
         embed_engine, _ = _get_shared_models()
         embs = embed_engine.embed_weighted_sku(
@@ -1895,8 +1919,8 @@ def train_bt_arcface(
     from torch.utils.data import DataLoader, TensorDataset
     from tqdm import tqdm
 
-    from engine import config
-    from engine.classification.models.arcface_bt import BTArcFaceNet, FocalLoss
+    from engine.core import config
+    from engine.inference.arcface_model import BTArcFaceNet, FocalLoss
 
     t_start = time.time()
     arcface_dir = Path(output_dir or config.get_arcface_dir())
@@ -2062,7 +2086,7 @@ def sync_arcface(
     sample_file: Path | str = "data/sample/SampleData.xlsx",
 ) -> None:
     """Trains ArcFace INT8 head if rebuilding or if missing / mismatched with EMBEDDING_DIM."""
-    from engine import config
+    from engine.core import config
 
     _ensure_clean_embedding_caches_for_model()
     onnx_path = Path(config.get_bt_arcface_onnx_path(domain))
@@ -2119,11 +2143,11 @@ def resolve_stage_modes(args: argparse.Namespace) -> dict[str, str | None]:
 
 def _get_sheet_id(need_engine: bool) -> str | None:
     if need_engine:
-        from engine import config
+        from engine.core import config
 
         return config.GOOGLE_SHEET_ID
     try:
-        from backend.app.core import config as backend_config
+        from backend.core import config as backend_config
 
         return backend_config.GOOGLE_SHEET_ID
     except Exception:
@@ -2215,10 +2239,6 @@ def run(
                 wipe_domain_cache_files(domain)
             sync_cache(domain, sheet_id, cache_mode)
 
-        if qdrant_mode:
-            logger.info(f"[{domain.upper()}] --qdrant ({qdrant_mode})...")
-            sync_qdrant(domain, qdrant_mode)
-
         if arcface_mode:
             logger.info(f"[{domain.upper()}] --arcface ({arcface_mode})...")
             sync_arcface(
@@ -2228,6 +2248,10 @@ def run(
                 from_sample=from_sample,
                 sample_file=sample_file,
             )
+
+        if qdrant_mode:
+            logger.info(f"[{domain.upper()}] --qdrant ({qdrant_mode})...")
+            sync_qdrant(domain, qdrant_mode)
 
     if not keep_staged:
         logger.info("\n>>> CLEANING UP TEMPORARY STAGED SHEETS <<<")

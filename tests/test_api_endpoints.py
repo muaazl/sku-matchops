@@ -71,7 +71,7 @@ def seeded_data(pg):
 def test_health_endpoint():
     """Verify that GET /health returns status 200 and 'ok'."""
     with patch(
-        "backend.app.api.routes.get_engine_health",
+        "backend.services.engine_gateway_service.get_engine_health",
         return_value={
             "status": "ok",
             "loaded_domains": ["market", "food"],
@@ -101,7 +101,7 @@ def test_rules_crud_lifecycle():
         "actions": [{"action_type": "set_bt", "value": "Soft Drink"}],
     }
 
-    with patch("backend.app.services.rules_service.sync_rules_everywhere"):
+    with patch("backend.services.rule_service.sync_rules_everywhere"):
         create_resp = client.post("/rules", json=rule_payload)
         assert create_resp.status_code == 200
         rule_id = create_resp.json()["rule_id"]
@@ -178,7 +178,7 @@ def test_jobs_list_filters_stats_and_retry(seeded_data):
     assert {d["domain"] for d in stats_data["domainBreakdown"]} == {"market", "food"}
 
     with patch(
-        "backend.app.api.endpoints.jobs.enqueue_job",
+        "backend.services.job_service.enqueue_job",
         return_value={"job_id": "job_retry_1", "status": "queued"},
     ) as mock_enq:
         retry_ok = client.post("/jobs/job_1/retry")
@@ -219,7 +219,7 @@ def test_audit_logged_inference_endpoints_and_api_requests_inspector(seeded_data
     """Verify /match, /classify, /pipeline log redacted audit entries retrievable via /api-requests."""
     for path in ("/match", "/classify", "/pipeline"):
         with patch(
-            "backend.app.api.routes.enqueue_job",
+            "backend.services.job_service.enqueue_job",
             return_value={
                 "job_id": f"job_{path.strip('/')}",
                 "status": "queued",
@@ -257,7 +257,7 @@ def test_audit_logged_inference_endpoints_and_api_requests_inspector(seeded_data
 def test_interactive_suggest_audit_and_rerun_rules():
     """Verify /interactive/suggest, /interactive/audit, and /interactive/rerun-rules."""
     with patch(
-        "backend.app.api.endpoints.interactive.rerun_rules_via_engine",
+        "backend.services.engine_gateway_service.rerun_rules_via_engine",
         return_value={
             "suggested_bt": "Soft Drink",
             "suggested_gk": "Beverage",
@@ -280,7 +280,7 @@ def test_interactive_suggest_audit_and_rerun_rules():
     assert isinstance(rerun_resp.json()["rules_applied"], str)
 
     with patch(
-        "backend.app.api.endpoints.interactive.engine_suggest_tags",
+        "backend.services.engine_gateway_service.suggest_tags",
         return_value={
             "status": "success",
             "sku_name": "Chicken Noodles",
@@ -300,7 +300,7 @@ def test_interactive_suggest_audit_and_rerun_rules():
     assert suggest_resp.json()["is_match"] is True
 
     with patch(
-        "backend.app.api.endpoints.interactive.engine_run_sku_audit",
+        "backend.services.engine_gateway_service.run_sku_audit",
         return_value={"input": {"sku_name": "Chicken Noodles"}, "final_output": {"score": 0.9}},
     ):
         audit_resp = client.post(
@@ -311,7 +311,7 @@ def test_interactive_suggest_audit_and_rerun_rules():
     assert audit_resp.json()["final_output"]["score"] == 0.9
 
     with patch(
-        "backend.app.api.endpoints.interactive.engine_suggest_tags",
+        "backend.services.engine_gateway_service.suggest_tags",
         side_effect=ValueError("invalid domain"),
     ):
         assert (
@@ -420,11 +420,11 @@ def test_batches_merchant_fetch_models_logs_and_upload(seeded_data, tmp_path):
     assert batch_ok.json()["filename"] == "supermarket.csv"
     assert client.get("/batches/missing_batch").status_code == 404
 
-    from backend.app.schemas.models import SKUItem
+    from backend.schemas.sku_schema import SKUItem
 
     portal_url = "https://uni-portal-api.pickme.lk/food/v1/t0001/food/place/skus/csv/{merchantid}"
     with patch(
-        "backend.app.api.endpoints.batches.fetch_merchant_csv",
+        "backend.services.portal_service.fetch_merchant_csv",
         return_value={
             "skus": [SKUItem(name="Rice Bowl", price=750.0, description="", category="Rice")],
             "auth_failed": False,
@@ -444,7 +444,7 @@ def test_batches_merchant_fetch_models_logs_and_upload(seeded_data, tmp_path):
     assert len(mf_ok.json()["rows"]) == 1
 
     with patch(
-        "backend.app.api.endpoints.batches.fetch_merchant_csv",
+        "backend.services.portal_service.fetch_merchant_csv",
         return_value={"skus": [], "auth_failed": True, "error": "MER-4007 token expired"},
     ):
         assert (
@@ -475,12 +475,15 @@ def test_batches_merchant_fetch_models_logs_and_upload(seeded_data, tmp_path):
 
     with (
         patch(
-            "backend.app.api.endpoints.models.trigger_load_models",
+            "backend.services.engine_gateway_service.trigger_load_models",
             return_value={"status": "loading"},
         ),
-        patch("backend.app.api.endpoints.models.get_models_status", return_value={"ready": True}),
         patch(
-            "backend.app.api.endpoints.models.reload_engine_models",
+            "backend.services.engine_gateway_service.get_models_status",
+            return_value={"ready": True},
+        ),
+        patch(
+            "backend.services.engine_gateway_service.reload_engine_models",
             return_value={"status": "reloaded"},
         ),
     ):
@@ -490,7 +493,7 @@ def test_batches_merchant_fetch_models_logs_and_upload(seeded_data, tmp_path):
 
     fake_log = tmp_path / "backend.log"
     fake_log.write_text("line1\nline2\nline3\n", encoding="utf-8")
-    with patch("backend.app.api.routes.config.LOG_FILE", str(fake_log)):
+    with patch("backend.core.config.LOG_FILE", str(fake_log)):
         logs_resp = client.get("/logs", params={"lines": 2})
     assert logs_resp.status_code == 200
     assert logs_resp.json()["logs"] == "line2\nline3\n"
@@ -505,7 +508,7 @@ def test_batches_merchant_fetch_models_logs_and_upload(seeded_data, tmp_path):
     )
 
     # Non-host-managed upload dispatches to engine client
-    with patch("backend.app.api.endpoints.upload.dispatch_upload_job") as mock_dispatch:
+    with patch("backend.services.engine_gateway_service.dispatch_upload_job") as mock_dispatch:
         up_resp = client.post(
             "/upload",
             json={

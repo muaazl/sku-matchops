@@ -1,9 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from engine.rules_engine.actions import apply_actions
-from engine.rules_engine.engine import run_rules_engine
-from engine.rules_engine.loader import Rule
+from engine.pipelines.rules_evaluation_pipeline import apply_actions, run_rules_engine
+from engine.pipelines.rules_loader_pipeline import Rule
 
 
 class TestRulesActions(unittest.TestCase):
@@ -116,8 +115,8 @@ class TestRulesEngineOrchestrator(unittest.TestCase):
         self.assertEqual(result, record)
         self.assertNotIn("rules_applied", result)
 
-    @patch("engine.rules_engine.engine.get_rules")
-    @patch("engine.rules_engine.engine.evaluate_conditions")
+    @patch("engine.pipelines.rules_evaluation_pipeline.get_rules")
+    @patch("engine.pipelines.rules_evaluation_pipeline.evaluate_conditions")
     def test_rules_run_in_priority_order(self, mock_eval, mock_get_rules):
         # Rules for a domain now run as a single flat list, ordered by priority
         # (the loader's get_rules() already sorts them, so the engine just iterates in order).
@@ -141,8 +140,8 @@ class TestRulesEngineOrchestrator(unittest.TestCase):
         self.assertEqual(len(result["rules_applied"]), 3)
         self.assertEqual([r["rule_id"] for r in result["rules_applied"]], rule_ids_in_order)
 
-    @patch("engine.rules_engine.engine.get_rules")
-    @patch("engine.rules_engine.engine.evaluate_conditions")
+    @patch("engine.pipelines.rules_evaluation_pipeline.get_rules")
+    @patch("engine.pipelines.rules_evaluation_pipeline.evaluate_conditions")
     def test_rules_applied_provenance_and_preservation(self, mock_eval, mock_get_rules):
         r1 = MagicMock(spec=Rule)
         r1.rule_id = "R_BT_01"

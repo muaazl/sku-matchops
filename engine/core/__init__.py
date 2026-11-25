@@ -1,1 +1,1 @@
-"""Core engine infrastructure: configuration, database, and model lifecycle management."""
+"""Core engine infrastructure: configuration, observability, ONNX runtime factory, and security."""

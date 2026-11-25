@@ -521,7 +521,7 @@ def run_upload_job(
     t0 = time.time()
     print("[3/3] Running Chrome bulk-upload automation on port 9222...", flush=True)
     try:
-        from engine.pipeline.uploader import process_upload
+        from engine.pipelines.upload_pipeline import process_upload
 
         process_upload(
             skus=skus,

@@ -14,8 +14,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from backend.app.core import config as backend_config
-from engine import config
+from backend.core import config as backend_config
+from engine.core import config
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL", "postgresql+psycopg://matchops:matchops@localhost:5432/matchops_test"
@@ -87,16 +87,16 @@ def pg():
     global _pg_error
     if _pg_error is None:
         try:
-            from backend.app.db.init import init_db
+            from backend.repositories.database_init_repository import initialize_database_schema
 
             _create_database_if_missing(TEST_DATABASE_URL)
-            init_db()
+            initialize_database_schema()
             _pg_error = ""
         except Exception as e:
             _pg_error = f"PostgreSQL not available at {TEST_DATABASE_URL}: {e}"
     if _pg_error:
         pytest.skip(_pg_error)
 
-    from backend.app.db.session import get_engine
+    from backend.core.database import get_engine
 
     return get_engine()

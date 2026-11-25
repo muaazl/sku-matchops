@@ -3,11 +3,11 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-import engine.rules_engine.evaluator as eval_mod
-from engine.classification.classifier import TaxonomyClassifier
-from engine.classification.tagger import _resolve_flavors_from_text
-from engine.nlp.text_cleaner import UnitUtils
-from engine.rules_engine.evaluator import _extract_flavors_from_sku
+import engine.pipelines.rules_evaluation_pipeline as eval_mod
+from engine.pipelines.classification_pipeline import TaxonomyClassifier
+from engine.pipelines.rules_evaluation_pipeline import _extract_flavors_from_sku
+from engine.preprocessing.flavor_preprocessor import extract_canonical_flavors
+from engine.preprocessing.text_normalizer import extract_normalized_weight
 
 
 class TestPerformanceOptimizations(unittest.TestCase):
@@ -27,7 +27,7 @@ class TestPerformanceOptimizations(unittest.TestCase):
             ("Salt 750mg", (0.75, "g", "solid")),
         ]
         for text, expected in test_cases:
-            res = UnitUtils.get_normalized_weight(text)
+            res = extract_normalized_weight(text)
             self.assertIsNotNone(res, f"Failed for {text}")
             self.assertEqual(res[0], expected[0], f"Value mismatch for {text}")
             self.assertEqual(res[1], expected[1], f"Unit mismatch for {text}")
@@ -73,10 +73,10 @@ class TestPerformanceOptimizations(unittest.TestCase):
 
     def test_tagger_resolve_flavors_from_text(self):
         flavors_dict = {"chicken": "chicken", "beef": "beef", "chili": "chili"}
-        res = _resolve_flavors_from_text("Spicy Chili Chicken Wings", flavors_dict)
+        res = extract_canonical_flavors("Spicy Chili Chicken Wings", flavors_dict)
         self.assertEqual(res, {"chili", "chicken"})
 
-        res_empty = _resolve_flavors_from_text("", flavors_dict)
+        res_empty = extract_canonical_flavors("", flavors_dict)
         self.assertEqual(res_empty, set())
 
     @patch.object(TaxonomyClassifier, "_load_arcface_model", return_value=None)

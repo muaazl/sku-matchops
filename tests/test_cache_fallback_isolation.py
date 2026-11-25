@@ -9,15 +9,15 @@ import pandas as pd
 import pytest
 from sqlalchemy import text
 
-from backend.app.db.session import get_engine
-from backend.app.services.catalog_service import (
+from backend.core.database import get_engine
+from backend.services.catalog_service import (
     get_bt_gk_cache,
     get_catalog_and_brands,
     get_classifier_dicts,
 )
-from engine import config
-from engine.data_pipeline.ingestion import DataIngestion
-from engine.rules_engine.evaluator import _load_flavor_data, clear_flavor_cache
+from engine.core import config
+from engine.pipelines.ingestion_pipeline import DataIngestion
+from engine.pipelines.rules_evaluation_pipeline import _load_flavor_data, clear_flavor_cache
 
 _CATALOG_TABLES = "catalog_items, brand_flavors, classifier_dictionaries, bt_gk_map"
 

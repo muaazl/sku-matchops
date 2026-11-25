@@ -59,14 +59,8 @@ data/logs/
 data/qdrant/
 data/postgres/
 data/cache/
-backend/data/
-backend/data/postgres/
-backend/data/exports/
-engine/data/
-engine/data/cache/
-engine/data/qdrant/
-engine/models/*
-!engine/models/**/.gitkeep
+data/models/*
+!data/models/**/.gitkeep
 
 # Models, Engine Caching, Vector Stores & Exports
 models/*

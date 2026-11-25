@@ -11,9 +11,9 @@ import pandas as pd
 import torch
 from sklearn.preprocessing import StandardScaler
 
-from engine import config
-from engine.classification.classifier import TaxonomyClassifier
-from engine.classification.models.arcface_bt import BTArcFaceNet, FocalLoss
+from engine.core import config
+from engine.inference.arcface_model import BTArcFaceNet, FocalLoss
+from engine.pipelines.classification_pipeline import TaxonomyClassifier
 
 
 class TestArcFaceBT(unittest.TestCase):
@@ -288,7 +288,7 @@ class TestArcFaceBT(unittest.TestCase):
 
     def test_tagger_metadata_includes_active_model(self):
         """Tagger batch classification output dicts must include 'model' and 'bt_model'."""
-        from engine.classification.tagger import tag_all_skus
+        from engine.pipelines.classification_pipeline import tag_all_skus
 
         clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
         clf.domain = config.DOMAIN_FOOD

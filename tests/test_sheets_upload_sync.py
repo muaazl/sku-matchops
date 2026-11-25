@@ -2,7 +2,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.app.api.routes import api_router
+from backend.api.router import api_router
 from scripts.ops import sync_sheets
 
 
@@ -64,7 +64,7 @@ def test_run_upload_job_executes_host_playwright_and_marks_done(monkeypatch):
     )
     monkeypatch.setattr(sync_sheets, "check_backend_health", lambda _url: False)
 
-    import engine.pipeline.uploader as uploader
+    import engine.pipelines.upload_pipeline as uploader
 
     def fake_process_upload(
         skus, outlet_id, job_id, progress_callback, is_cancelled, has_more_jobs=False
@@ -108,7 +108,7 @@ def test_run_upload_job_rejects_invalid_outlet_prefix(monkeypatch):
 
 
 def test_target_page_size_thresholds():
-    from engine.pipeline.uploader import _target_page_size
+    from engine.pipelines.upload_pipeline import _target_page_size
 
     assert _target_page_size(1) is None
     assert _target_page_size(10) is None
@@ -124,9 +124,8 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
     from sqlalchemy import create_engine, event, text
     from sqlalchemy.pool import StaticPool
 
-    import backend.app.api.endpoints.upload as upload_ep
-    from backend.app.core.security import Principal
-    from backend.app.schemas.models import UploadJobStateUpdate, UploadRequest
+    import backend.api.endpoints.upload_router as upload_ep
+    from backend.schemas.upload_schema import UploadJobStateUpdate, UploadRequest
 
     sqlite_eng = create_engine(
         "sqlite:///:memory:",
@@ -156,22 +155,31 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
 
     dispatched = []
     completions = []
-    monkeypatch.setattr(upload_ep, "get_engine", lambda: sqlite_eng)
-    monkeypatch.setattr(upload_ep, "dispatch_upload_job", lambda **kw: dispatched.append(kw))
+    monkeypatch.setattr("backend.repositories.job_repository.get_engine", lambda: sqlite_eng)
     monkeypatch.setattr(
-        upload_ep,
-        "register_and_dispatch_job",
+        "backend.services.engine_gateway_service.dispatch_upload_job",
+        lambda **kw: dispatched.append(kw),
+    )
+    monkeypatch.setattr(
+        "backend.services.job_service.register_and_dispatch_job",
         lambda **kw: (
             kw["dispatch_fn"]("77"),
             {"job_id": "77", "status": "queued", "total_skus": kw["total_items"]},
         )[1],
     )
-    monkeypatch.setattr(upload_ep, "set_job_progress", lambda *a, **kw: None)
-    monkeypatch.setattr(upload_ep, "clear_job_progress", lambda *a, **kw: None)
-    monkeypatch.setattr(upload_ep, "publish_job_event", lambda *a, **kw: None)
-    monkeypatch.setattr(upload_ep, "record_job_completion", lambda **kw: completions.append(kw))
-
-    principal = Principal(username="ops", role="admin")
+    monkeypatch.setattr(
+        "backend.repositories.job_progress_repository.set_job_progress", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        "backend.repositories.job_progress_repository.clear_job_progress", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        "backend.repositories.job_progress_repository.publish_job_event", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        "backend.services.job_callback_service.record_job_completion",
+        lambda **kw: completions.append(kw),
+    )
 
     created = upload_ep.trigger_upload(
         UploadRequest(
@@ -181,7 +189,6 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
             host_managed=True,
             skus=[{"Name": "Burger", "RefID": "R1"}],
         ),
-        principal=principal,
     )
     assert created["job_id"] == "77"
     assert dispatched == []
@@ -189,7 +196,6 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
     r_prog = upload_ep.update_host_upload_job(
         "77",
         UploadJobStateUpdate(status="running", stage="uploading", progress_pct=25.0),
-        principal=principal,
     )
     assert r_prog == {"status": "running", "cancel_requested": False}
 
@@ -202,7 +208,6 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
     r_cancel = upload_ep.update_host_upload_job(
         "77",
         UploadJobStateUpdate(status="running", stage="uploading", progress_pct=50.0),
-        principal=principal,
     )
     assert r_cancel["cancel_requested"] is True
 
@@ -214,7 +219,6 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
     r_done = upload_ep.update_host_upload_job(
         "77",
         UploadJobStateUpdate(status="completed", duration_minutes=0.5),
-        principal=principal,
     )
     assert r_done["status"] == "completed"
     assert len(completions) == 1
@@ -226,7 +230,7 @@ def test_host_managed_upload_endpoints_unit(monkeypatch):
 def test_host_managed_upload_endpoint_lifecycle(monkeypatch):
     dispatched = []
     monkeypatch.setattr(
-        "backend.app.api.endpoints.upload.dispatch_upload_job",
+        "backend.services.engine_gateway_service.dispatch_upload_job",
         lambda **kw: dispatched.append(kw),
     )
 

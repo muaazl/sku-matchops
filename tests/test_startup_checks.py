@@ -1,12 +1,11 @@
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import joblib
 import pytest
 
-from engine.core import startup_checks
+from engine.pipelines import startup_check_pipeline as startup_checks
 
 
 def test_check_active_embedding_model_missing(tmp_path: Path):
@@ -47,18 +46,15 @@ def test_check_qdrant_detects_same_dim_model_mismatch_and_empty_collection(tmp_p
     )
 
     fake_vs = MagicMock()
-    fake_vs.client.get_collections.return_value = []
-    fake_vs.client.collection_exists.return_value = True
-    fake_vs.client.get_collection.side_effect = [
-        SimpleNamespace(points_count=100),  # market
-        SimpleNamespace(points_count=0),  # food (empty)
-    ]
+    fake_vs.verify_connection.return_value = []
+    fake_vs.check_collection_exists.return_value = True
+    fake_vs.count_collection_points.side_effect = [100, 0]
     fake_vs.get_collection_schema_mismatch.return_value = None
 
     with (
         patch.object(startup_checks.config, "CACHE_DIR", tmp_path),
         patch.object(startup_checks.config, "EMBEDDING_MODEL", "BAAI/bge-m3"),
-        patch("engine.data_pipeline.vector_store.VectorStore", return_value=fake_vs),
+        patch("engine.vector_store.vector_store.VectorStore", return_value=fake_vs),
     ):
         errs = startup_checks.check_qdrant()
 
@@ -125,7 +121,7 @@ def test_check_redis_fails_when_unreachable():
 
 
 def test_classifier_load_arcface_model_fails_on_embedding_model_mismatch(tmp_path: Path):
-    from engine.classification.classifier import TaxonomyClassifier
+    from engine.pipelines.classification_pipeline import TaxonomyClassifier
 
     onnx_path = tmp_path / "food_bt_arcface_int8.onnx"
     labels_path = tmp_path / "food_bt_arcface_labels.json"
@@ -146,15 +142,15 @@ def test_classifier_load_arcface_model_fails_on_embedding_model_mismatch(tmp_pat
 
     with (
         patch(
-            "engine.classification.classifier.config.get_bt_arcface_onnx_path",
+            "engine.core.config.get_bt_arcface_onnx_path",
             return_value=onnx_path,
         ),
         patch(
-            "engine.classification.classifier.config.get_bt_arcface_labels_path",
+            "engine.core.config.get_bt_arcface_labels_path",
             return_value=labels_path,
         ),
-        patch("engine.classification.classifier.config.EMBEDDING_MODEL", "BAAI/bge-m3"),
-        patch("engine.classification.classifier.config.EMBEDDING_DIM", 1024),
+        patch("engine.core.config.EMBEDDING_MODEL", "BAAI/bge-m3"),
+        patch("engine.core.config.EMBEDDING_DIM", 1024),
     ):
         with pytest.raises(
             RuntimeError, match="trained with 'jinaai/jina-embeddings-v5-text-small'"

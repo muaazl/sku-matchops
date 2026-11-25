@@ -6,22 +6,27 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from engine import config
-from engine.classification.tagger import tag_all_skus
-from engine.core.resource_loader import get_pipeline
-from engine.nlp.embedding_engine import EmbeddingEngine
-from engine.pipeline.audit_engine import run_sku_audit
-from engine.pipeline.processor import process_request
+from engine.core import config
+from engine.inference.reranker_model import RerankerModel
+from engine.pipelines.audit_pipeline import run_sku_audit
+from engine.pipelines.classification_pipeline import tag_all_skus
+from engine.pipelines.request_pipeline import process_request
+from engine.pipelines.runtime_pipeline import get_pipeline
 
 
 def _require_synced_pipeline(domain: str = "food") -> None:
     meta_path = Path(config.CACHE_DIR) / f"{domain}_catalog_metadata.pkl"
+    active_marker = Path(config.CACHE_DIR) / "active_embedding_model.txt"
+    synced_emb = active_marker.read_text(encoding="utf-8").strip() if active_marker.exists() else ""
     if (
         not Path(config.EMBEDDING_ONNX).exists()
         or not Path(config.get_bt_arcface_onnx_path(domain)).exists()
         or not meta_path.exists()
+        or (synced_emb and synced_emb != config.EMBEDDING_MODEL)
     ):
-        pytest.skip(f"Local ONNX models or synced '{domain}' catalog cache not found on disk")
+        pytest.skip(
+            f"Local ONNX models or synced '{domain}' catalog cache not found or not yet synced for active EMBEDDING_MODEL"
+        )
     try:
         r = httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0)
         if r.status_code >= 500:
@@ -135,7 +140,7 @@ class TestDefectFixes:
         """Verify classifier produces reasoning and pipeline escalation chains matcher note + classifier reasoning."""
         _require_synced_pipeline("food")
         # 1. tag_all_skus produces 'reasoning'
-        from engine.core.resource_loader import (
+        from engine.pipelines.runtime_pipeline import (
             _get_shared_models,
             _get_vector_store,
             get_classifier,
@@ -210,7 +215,7 @@ class TestDefectFixes:
 
 def test_cross_encoder_empty_pairs_and_sentinel_handling():
     """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if session is uninitialized."""
-    embed = EmbeddingEngine.__new__(EmbeddingEngine)
+    embed = RerankerModel.__new__(RerankerModel)
     embed.cross_session = None
     embed.rerank_tokenizer = None
 

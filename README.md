@@ -92,7 +92,7 @@ docker compose exec engine python -m scripts.sync --from-staged --cache rebuild 
 ```
 
 > [!IMPORTANT]
-> **First-Run Model Downloads**: On the very first run, the system automatically downloads the configured **`EMBEDDING_MODEL`**, **`RERANKER_MODEL`**, and **GLiNER Medium** and exports/quantizes them cleanly to ONNX. Subsequent runs use cached models in `engine/models/` and initialize almost instantly.
+> **First-Run Model Downloads**: On the very first run, the system automatically downloads the configured **`EMBEDDING_MODEL`**, **`RERANKER_MODEL`**, and **GLiNER Medium** and exports/quantizes them cleanly to ONNX. Subsequent runs use cached models in `data/models/` and initialize almost instantly.
 
 ### 4. Access Services
 - **Web Dashboard**: [http://localhost:5173](http://localhost:5173)

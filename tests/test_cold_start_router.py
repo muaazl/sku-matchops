@@ -7,9 +7,11 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 
-from engine import config
-from engine.classification.classifier import TaxonomyClassifier
-from engine.classification.cold_start_router import (
+from engine.core import config
+from engine.inference.embedding_model import EmbeddingModel
+from engine.inference.reranker_model import RerankerModel
+from engine.pipelines.classification_pipeline import TaxonomyClassifier
+from engine.pipelines.cold_start_pipeline import (
     ClassLifecycleTier,
     ColdStartRouter,
     TaxonomyLifecycleRegistry,
@@ -17,7 +19,6 @@ from engine.classification.cold_start_router import (
     Tier2FewShotClassifier,
     Tier3CentroidClassifier,
 )
-from engine.nlp.embedding_engine import EmbeddingEngine
 
 
 class TestColdStartRouter(unittest.TestCase):
@@ -100,14 +101,16 @@ class TestColdStartRouter(unittest.TestCase):
             sample_count=0,
         )
 
-        mock_embed = MagicMock(spec=EmbeddingEngine)
+        mock_embed = MagicMock(spec=EmbeddingModel)
+        mock_rerank = MagicMock(spec=RerankerModel)
         # Mock reranker returning strong cosine similarity score (0.92)
-        mock_embed.score_cross_encoder.return_value = np.array([0.92], dtype=np.float32)
+        mock_rerank.score_cross_encoder.return_value = np.array([0.92], dtype=np.float32)
 
         tier1 = Tier1ZeroShotClassifier(
             embed_engine=mock_embed,
             registry=registry,
             confidence_threshold=0.50,
+            rerank_engine=mock_rerank,
         )
 
         sku_name = "Eco Clean Zero Waste Dishwasher Tablets 30pk"
@@ -118,8 +121,8 @@ class TestColdStartRouter(unittest.TestCase):
         self.assertEqual(source, "zero-shot")
 
         # Verify pair formatting: (sku_name, "Basic Type: {bt_name} - {bt_description}")
-        mock_embed.score_cross_encoder.assert_called_once()
-        call_pairs = mock_embed.score_cross_encoder.call_args[0][0]
+        mock_rerank.score_cross_encoder.assert_called_once()
+        call_pairs = mock_rerank.score_cross_encoder.call_args[0][0]
         self.assertEqual(len(call_pairs), 1)
         self.assertEqual(call_pairs[0][0], sku_name)
         self.assertEqual(
@@ -235,7 +238,7 @@ class TestColdStartRouter(unittest.TestCase):
             }
         }
 
-        mock_embed = MagicMock(spec=EmbeddingEngine)
+        mock_embed = MagicMock(spec=EmbeddingModel)
         mock_embed.encode.return_value = {
             "dense": np.random.randn(2, 1024).astype(np.float32),
             "sparse": [{}, {}],
@@ -298,7 +301,7 @@ class TestColdStartRouter(unittest.TestCase):
         dim = config.EMBEDDING_DIM
         router = ColdStartRouter(
             domain="market",
-            embed_engine=MagicMock(spec=EmbeddingEngine),
+            embed_engine=MagicMock(spec=EmbeddingModel),
             vector_store=None,
             descriptions={"bt_descriptions": {}},
             cache_dir=self.test_dir,

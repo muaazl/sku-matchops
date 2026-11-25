@@ -9,9 +9,9 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from engine import config
-from engine.classification.classifier import TaxonomyClassifier
-from engine.data_pipeline.ingestion import DataIngestion
+from engine.core import config
+from engine.pipelines.classification_pipeline import TaxonomyClassifier
+from engine.pipelines.ingestion_pipeline import DataIngestion
 
 
 class TestStagingAndClassifierSync(unittest.TestCase):
@@ -42,7 +42,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         self.assertEqual(food_sheets["brands_or_flavors"], "Food_Flavors")
         self.assertEqual(food_sheets["catalog"], config.FOOD_CATALOG_SHEET)
 
-    @patch("engine.data_pipeline.ingestion.requests.get")
+    @patch("engine.pipelines.ingestion_pipeline.requests.get")
     def test_stage_all_sheets_and_cleanup(self, mock_get):
         # Mock requests response
         mock_response = MagicMock()
@@ -76,7 +76,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
             self.assertFalse(Path(path).exists())
         self.assertFalse(manifest_path.exists())
 
-    @patch("engine.data_pipeline.ingestion.requests.get")
+    @patch("engine.pipelines.ingestion_pipeline.requests.get")
     def test_download_sheet_with_retries_resilience(self, mock_get):
         # Fail twice with connection error, succeed on 3rd attempt
         fail_response = Exception("Wi-Fi disconnected")
@@ -141,8 +141,8 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         self.assertTrue(len(hashes["market_training_state"]) > 0)
         self.assertTrue(clf._trained)
 
-    @patch("engine.data_pipeline.ingestion.DataIngestion.load_catalog")
-    @patch("engine.data_pipeline.ingestion.DataIngestion.load_classifier_dictionaries")
+    @patch("engine.pipelines.ingestion_pipeline.DataIngestion.load_catalog")
+    @patch("engine.pipelines.ingestion_pipeline.DataIngestion.load_classifier_dictionaries")
     def test_rebuild_disk_caches_safe_token_count(self, mock_load_dicts, mock_load_cat):
         from scripts.sync import sync_cache
 

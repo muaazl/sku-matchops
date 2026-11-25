@@ -1,6 +1,6 @@
 """Tests for match_source normalization and attribution logic."""
 
-from backend.app.services.persistence import build_processed_sku_rows
+from backend.services.job_callback_service import build_processed_sku_rows
 
 
 def test_build_processed_sku_rows_matcher_task():

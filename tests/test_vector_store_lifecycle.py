@@ -2,8 +2,8 @@ from unittest.mock import MagicMock
 
 from qdrant_client.http.models import Modifier
 
-from engine import config
-from engine.data_pipeline.vector_store import VectorStore
+from engine.core import config
+from engine.vector_store.vector_store import VectorStore
 
 
 def test_vector_store_lifecycle_and_alias_swapping(monkeypatch):
@@ -48,8 +48,8 @@ def test_ensure_collection_uses_embedding_dim_and_bm25_idf(monkeypatch):
     store._checked_collections = set()
     store.client.collection_exists.return_value = False
 
-    monkeypatch.setattr(config, "has_learned_sparse", lambda: False)
-    store._ensure_collection("market_catalog")
+    monkeypatch.setattr(config, "check_learned_sparse_enabled", lambda: False)
+    store.ensure_collection_ready("market_catalog")
 
     kwargs = store.client.create_collection.call_args[1]
     assert kwargs["vectors_config"]["dense"].size == config.EMBEDDING_DIM
@@ -58,8 +58,8 @@ def test_ensure_collection_uses_embedding_dim_and_bm25_idf(monkeypatch):
 
     store._checked_collections.clear()
     store.client.create_collection.reset_mock()
-    monkeypatch.setattr(config, "has_learned_sparse", lambda: True)
-    store._ensure_collection("food_catalog")
+    monkeypatch.setattr(config, "check_learned_sparse_enabled", lambda: True)
+    store.ensure_collection_ready("food_catalog")
 
     kwargs_bge = store.client.create_collection.call_args[1]
     assert kwargs_bge["sparse_vectors_config"]["bm25"].modifier == Modifier.IDF
@@ -76,8 +76,8 @@ def test_search_from_vectors_uses_2way_or_3way_rrf(monkeypatch):
     store.client.query_points.return_value = MagicMock(points=[])
 
     # Non-BGE-M3: Dense + BM25 only (2-way RRF), even if sparse dict passed
-    monkeypatch.setattr(config, "has_learned_sparse", lambda: False)
-    store.search_from_vectors(
+    monkeypatch.setattr(config, "check_learned_sparse_enabled", lambda: False)
+    store.search_catalog_hybrid(
         dense_vec=np.ones(4, dtype=np.float32),
         sparse_vec_dict={10: 0.9},
         bm25_vec_dict={20: 0.5},
@@ -88,8 +88,8 @@ def test_search_from_vectors_uses_2way_or_3way_rrf(monkeypatch):
 
     # BGE-M3: Dense + BM25 + Sparse (3-way RRF)
     store.client.query_points.reset_mock()
-    monkeypatch.setattr(config, "has_learned_sparse", lambda: True)
-    store.search_from_vectors(
+    monkeypatch.setattr(config, "check_learned_sparse_enabled", lambda: True)
+    store.search_catalog_hybrid(
         dense_vec=np.ones(4, dtype=np.float32),
         sparse_vec_dict={10: 0.9},
         bm25_vec_dict={20: 0.5},
@@ -113,9 +113,9 @@ def test_ensure_collection_raises_on_schema_mismatch_and_get_existing_hashes(mon
     store.client = MagicMock()
     store._checked_collections = set()
 
-    # 1. Schema mismatch detection in _ensure_collection
+    # 1. Schema mismatch detection in ensure_collection_ready
     monkeypatch.setattr(config, "EMBEDDING_DIM", 1024)
-    monkeypatch.setattr(config, "has_learned_sparse", lambda: False)
+    monkeypatch.setattr(config, "check_learned_sparse_enabled", lambda: False)
     store.client.collection_exists.return_value = True
     bad_info = MagicMock()
     bad_info.config.params = CollectionParams(
@@ -125,10 +125,10 @@ def test_ensure_collection_raises_on_schema_mismatch_and_get_existing_hashes(mon
     store.client.get_collection.return_value = bad_info
 
     with pytest.raises(RuntimeError, match="--qdrant rebuild"):
-        store._ensure_collection("market_catalog")
+        store.ensure_collection_ready("market_catalog")
 
     # 2. Preserving row_hash in payload while excluding from searches
-    sanitized = VectorStore._sanitize_catalog_payload(
+    sanitized = VectorStore.sanitize_catalog_payload(
         {"Name": "Test Item", "row_hash": "abc123", "Price": "15.0"},
         domain="market",
     )
@@ -136,12 +136,12 @@ def test_ensure_collection_raises_on_schema_mismatch_and_get_existing_hashes(mon
 
     pt = MagicMock(payload={"db_uid": "test item#occ_1", "row_hash": "abc123"})
     store.client.scroll.return_value = ([pt], None)
-    assert store.get_existing_hashes("market") == {"test item#occ_1": "abc123"}
+    assert store.fetch_existing_hashes("market") == {"test item#occ_1": "abc123"}
 
     store._checked_collections.add(config.QDRANT_COLLECTION_MARKET)
     hit = MagicMock(payload={"Name": "Test Item", "row_hash": "abc123"}, score=0.91)
     store.client.query_points.return_value = MagicMock(points=[hit])
-    hits = store.search_from_vectors(dense_vec=[0.1, 0.2], domain="market")
+    hits = store.search_catalog_hybrid(dense_vec=[0.1, 0.2], domain="market")
     assert hits == [{"Name": "Test Item", "_qdrant_score_": 0.91}]
     assert isinstance(
         store.client.query_points.call_args.kwargs["with_payload"], PayloadSelectorExclude

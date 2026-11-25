@@ -3,17 +3,24 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 
-from engine import config
-from engine.classification.classifier import TaxonomyClassifier
-from engine.classification.cold_start_router import TaxonomyLifecycleRegistry
-from engine.data_pipeline.cache_manager import CacheManager, calculate_row_hash
-from engine.nlp.text_cleaner import TextPipeline
+from engine.core import config
+from engine.pipelines.classification_pipeline import TaxonomyClassifier
+from engine.pipelines.cold_start_pipeline import TaxonomyLifecycleRegistry
+from engine.pipelines.indexing_pipeline import CacheManager
+from engine.preprocessing.text_normalizer import format_catalog_row_for_reranker
+from engine.preprocessing.weight_preprocessor import calculate_row_hash
 from scripts import sync as sync_mod
 
 
 def test_resolve_input_category_col_never_returns_target_columns():
-    assert config.resolve_input_category_col(["Name", "SellerCategory", "category"]) == "SellerCategory"
-    assert config.resolve_input_category_col(["Name", "seller_category", "region"]) == "seller_category"
+    assert (
+        config.resolve_input_category_col(["Name", "SellerCategory", "category"])
+        == "SellerCategory"
+    )
+    assert (
+        config.resolve_input_category_col(["Name", "seller_category", "region"])
+        == "seller_category"
+    )
     assert config.resolve_input_category_col(["Name", "Category", "category", "region"]) == ""
 
 
@@ -98,10 +105,10 @@ def test_cache_manager_and_arcface_loader_and_rerank_use_seller_category(tmp_pat
     orig_cache_dir = config.CACHE_DIR
     config.CACHE_DIR = tmp_path
     try:
-        with patch("engine.data_pipeline.vector_store.VectorStore") as mock_vs_cls:
+        with patch("engine.vector_store.vector_store.VectorStore") as mock_vs_cls:
             mock_vs = mock_vs_cls.return_value
-            mock_vs._get_collection_name.return_value = "food_catalog"
-            mock_vs.client.collection_exists.return_value = False
+            mock_vs.resolve_catalog_collection_name.return_value = "food_catalog"
+            mock_vs.check_collection_exists.return_value = False
             cm = CacheManager(mock_ner, mock_embed)
             cm.manage_catalog_cache(df, pd.DataFrame(), domain="food", force_sync=True)
     finally:
@@ -112,16 +119,19 @@ def test_cache_manager_and_arcface_loader_and_rerank_use_seller_category(tmp_pat
     assert "sri lankan" not in cats_sent
 
     # 2. ArcFace load_catalog_data picks SellerCategory (not region/category)
-    with patch("engine.data_pipeline.ingestion.DataIngestion.load_catalog", return_value=(df, pd.DataFrame())):
+    with patch(
+        "engine.pipelines.ingestion_pipeline.DataIngestion.load_catalog",
+        return_value=(df, pd.DataFrame()),
+    ):
         clean_df = sync_mod.load_catalog_data("food", from_sample=False)
     assert clean_df["Category"].tolist() == [f"MENU_CAT_{i}" for i in range(12)]
 
     # 3. Reranker formatter uses SellerCategory and ignores target region/category
-    assert "SellerCategory:" not in TextPipeline.format_catalog_row_for_reranker(
+    assert "SellerCategory:" not in format_catalog_row_for_reranker(
         {"Name": "Fish Curry", "region": "Sri Lankan", "category": "Groceries"},
         domain="food",
     )
-    assert "SellerCategory: CURRIES" in TextPipeline.format_catalog_row_for_reranker(
+    assert "SellerCategory: CURRIES" in format_catalog_row_for_reranker(
         {"Name": "Fish Curry", "SellerCategory": "CURRIES", "region": "Sri Lankan"},
         domain="food",
     )

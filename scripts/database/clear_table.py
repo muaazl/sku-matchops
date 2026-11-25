@@ -10,7 +10,7 @@ PROJECT_ROOT = SCRIPT_DIR.parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app.db.session import get_engine
+from backend.core.database import get_engine
 
 
 def clear_table(table_name):

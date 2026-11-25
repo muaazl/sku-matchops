@@ -13,18 +13,20 @@ import pytest
 from fastapi import HTTPException, Response
 from starlette.requests import Request
 
-import backend.app.core.observability as b_obs
+import backend.core.observability as b_obs
 import engine.core.observability as e_obs
-from backend.app.api.routes import ready as ready_endpoint
-from backend.app.core.observability import (
+from backend.api.dependencies import RateLimiter
+from backend.api.endpoints.system_router import get_readiness_status as ready_endpoint
+from backend.api.middleware.trace_id_middleware import TraceIdMiddleware
+from backend.core.observability import (
     HTTP_REQUESTS_TOTAL,
     JsonFormatter,
     TraceIdFilter,
-    TraceIdMiddleware,
-    trace_context,
 )
-from backend.app.core.rate_limit import RateLimiter
-from backend.app.core.security import Principal
+from backend.core.observability import (
+    bind_trace_context as trace_context,
+)
+from backend.core.security import Principal
 
 
 def test_trace_context_propagation():
@@ -62,7 +64,7 @@ def test_log_filter_and_json_formatter():
 
 def test_engine_observability_context():
     """Verify engine.core.observability sets and formats trace_id."""
-    with e_obs.trace_context("eng-trace-1"):
+    with e_obs.bind_trace_context("eng-trace-1"):
         assert e_obs.TRACE_ID.get() == "eng-trace-1"
 
         logger = logging.getLogger("engine_test")
@@ -119,9 +121,9 @@ def test_readiness_probe_success():
     """Verify /ready returns 200 when DB, Redis, and Engine are all healthy."""
     response = Response()
     with (
-        patch("backend.app.api.routes.get_engine") as mock_engine,
+        patch("backend.repositories.database_init_repository.get_engine") as mock_engine,
         patch("redis.Redis.from_url") as mock_redis_cls,
-        patch("backend.app.api.routes.get_engine_health") as mock_health,
+        patch("backend.services.engine_gateway_service.get_engine_health") as mock_health,
     ):
         # DB ok
         mock_conn = MagicMock()
@@ -148,9 +150,9 @@ def test_readiness_probe_failures():
 
     # Case 1: Redis down
     with (
-        patch("backend.app.api.routes.get_engine") as mock_engine,
+        patch("backend.repositories.database_init_repository.get_engine") as mock_engine,
         patch("redis.Redis.from_url") as mock_redis_cls,
-        patch("backend.app.api.routes.get_engine_health") as mock_health,
+        patch("backend.services.engine_gateway_service.get_engine_health") as mock_health,
     ):
         mock_engine.return_value.connect.return_value.__enter__.return_value = MagicMock()
         mock_r = MagicMock()
@@ -166,9 +168,9 @@ def test_readiness_probe_failures():
     # Case 2: DB down
     response2 = Response()
     with (
-        patch("backend.app.api.routes.get_engine") as mock_engine,
+        patch("backend.repositories.database_init_repository.get_engine") as mock_engine,
         patch("redis.Redis.from_url") as mock_redis_cls,
-        patch("backend.app.api.routes.get_engine_health") as mock_health,
+        patch("backend.services.engine_gateway_service.get_engine_health") as mock_health,
     ):
         mock_engine.return_value.connect.side_effect = Exception("DB Connection timeout")
         mock_r = MagicMock()
@@ -194,7 +196,10 @@ def test_rate_limiter_allows_and_blocks():
     pipe = MagicMock()
     mock_redis.pipeline.return_value = pipe
 
-    with patch("backend.app.core.rate_limit._get_rate_limit_redis", return_value=mock_redis):
+    with patch(
+        "backend.repositories.rate_limit_repository.get_rate_limit_redis_client",
+        return_value=mock_redis,
+    ):
         # 1. Under limit (count = 3)
         pipe.execute.return_value = [3, True]
         limiter(req, principal)  # Should not raise
@@ -216,11 +221,16 @@ def test_rate_limiter_fails_open_on_redis_error():
     principal = Principal(username="alice", role="reviewer")
 
     # Redis client is None (disconnected)
-    with patch("backend.app.core.rate_limit._get_rate_limit_redis", return_value=None):
+    with patch(
+        "backend.repositories.rate_limit_repository.get_rate_limit_redis_client", return_value=None
+    ):
         limiter(req, principal)  # Should fail open without exception
 
     # Redis client raises on execute
     mock_redis = MagicMock()
     mock_redis.pipeline.side_effect = RuntimeError("Redis timeout")
-    with patch("backend.app.core.rate_limit._get_rate_limit_redis", return_value=mock_redis):
+    with patch(
+        "backend.repositories.rate_limit_repository.get_rate_limit_redis_client",
+        return_value=mock_redis,
+    ):
         limiter(req, principal)  # Should fail open without exception

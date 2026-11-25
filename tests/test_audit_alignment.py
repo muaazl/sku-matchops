@@ -1,10 +1,10 @@
 import pytest
 
-from engine.classification.loader import is_conflicting_dish_tag
-from engine.core.resource_loader import get_classifier, get_pipeline
-from engine.pipeline.audit_engine import run_sku_audit
-from engine.pipeline.processor import process_request
-from engine.rules_engine import loader
+from engine.pipelines import rules_loader_pipeline as loader
+from engine.pipelines.audit_pipeline import run_sku_audit
+from engine.pipelines.request_pipeline import process_request
+from engine.pipelines.runtime_pipeline import get_classifier, get_pipeline
+from engine.preprocessing.taxonomy_preprocessor import check_conflicting_dish_tag
 
 SEAFOOD_RULE_ID = "test_audit_seafood"
 
@@ -51,16 +51,16 @@ def seafood_rule():
 
 def test_cross_dish_contamination_filter():
     # Chop Suey Rice must be marked as conflicting dish under Fried Rice
-    assert is_conflicting_dish_tag("Chop Suey Rice", "Fried Rice") is True
-    assert is_conflicting_dish_tag("Vegetable Chop Suey Rice", "Fried Rice") is True
-    assert is_conflicting_dish_tag("Chicken Biriyani", "Fried Rice") is True
+    assert check_conflicting_dish_tag("Chop Suey Rice", "Fried Rice") is True
+    assert check_conflicting_dish_tag("Vegetable Chop Suey Rice", "Fried Rice") is True
+    assert check_conflicting_dish_tag("Chicken Biriyani", "Fried Rice") is True
 
     # Valid sub-dishes of Fried Rice must be allowed
-    assert is_conflicting_dish_tag("Devilled Fish Fried Rice", "Fried Rice") is False
-    assert is_conflicting_dish_tag("Fish Fried Rice", "Fried Rice") is False
-    assert is_conflicting_dish_tag("Seafood Fried Rice", "Fried Rice") is False
-    assert is_conflicting_dish_tag("Set Menu", "Fried Rice") is False
-    assert is_conflicting_dish_tag("Seafood", "Fried Rice") is False
+    assert check_conflicting_dish_tag("Devilled Fish Fried Rice", "Fried Rice") is False
+    assert check_conflicting_dish_tag("Fish Fried Rice", "Fried Rice") is False
+    assert check_conflicting_dish_tag("Seafood Fried Rice", "Fried Rice") is False
+    assert check_conflicting_dish_tag("Set Menu", "Fried Rice") is False
+    assert check_conflicting_dish_tag("Seafood", "Fried Rice") is False
 
 
 @pytest.mark.live_models
@@ -72,15 +72,22 @@ class TestAuditAlignment:
 
         import httpx
 
-        from engine import config
+        from engine.core import config
 
         meta_path = Path(config.CACHE_DIR) / "food_catalog_metadata.pkl"
+        active_marker = Path(config.CACHE_DIR) / "active_embedding_model.txt"
+        synced_emb = (
+            active_marker.read_text(encoding="utf-8").strip() if active_marker.exists() else ""
+        )
         if (
             not Path(config.EMBEDDING_ONNX).exists()
             or not Path(config.get_bt_arcface_onnx_path("food")).exists()
             or not meta_path.exists()
+            or (synced_emb and synced_emb != config.EMBEDDING_MODEL)
         ):
-            pytest.skip("Local ONNX models or synced food catalog cache not found on disk")
+            pytest.skip(
+                "Local ONNX models or synced food catalog cache not found or not yet synced for active EMBEDDING_MODEL"
+            )
         try:
             if httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0).status_code >= 500:
                 pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
@@ -222,9 +229,9 @@ def test_tagger_reranker_status_and_audit_matcher_exact_bypass_without_qdrant(mo
     import numpy as np
     import pandas as pd
 
-    from engine import config
-    from engine.classification.tagger import get_status
-    from engine.matching.logic_gates import LogicGates
+    from engine.core import config
+    from engine.pipelines.classification_pipeline import get_status
+    from engine.pipelines.matching_logic_pipeline import LogicGates
 
     monkeypatch.setattr(config, "CONFIDENCE_THRESHOLD_HIGH", 0.62)
     monkeypatch.setattr(config, "RERANKER_THRESHOLD", 0.30)

@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from engine.matching.logic_gates import LogicGates
+from engine.pipelines.matching_logic_pipeline import LogicGates
 
 
 class TestTextWeightPriorityMatching:
@@ -114,7 +114,7 @@ class TestTextWeightPriorityMatching:
 
     def test_token_sorted_map_multi_weight_selection(self):
         """Test that token_sorted_map selects the best pack size or provides mismatch note."""
-        from engine.matching.matcher import SKUMatcher
+        from engine.pipelines.matching_pipeline import SKUMatcher
 
         catalog_df = pd.DataFrame(
             [
@@ -173,12 +173,16 @@ class TestTextWeightPriorityMatching:
 
     def test_fractional_unit_standardization_and_reranker_nan_sanitization(self):
         """Ensure sub-unit scaling keeps decimals (500mg -> 0.5g) and NaNs never leak into rerank prompts."""
-        from engine.nlp.text_cleaner import TextPipeline
+        from engine.preprocessing.text_normalizer import (
+            format_catalog_row_for_reranker,
+            format_matcher_rerank_text,
+            standardize_sku_units,
+        )
 
-        assert "0.5g" in TextPipeline.standardize_units("Vitamin C 500mg")
-        assert "0.25g" in TextPipeline.standardize_units("Folic Acid 250mg")
+        assert "0.5g" in standardize_sku_units("Vitamin C 500mg")
+        assert "0.25g" in standardize_sku_units("Folic Acid 250mg")
 
-        prompt = TextPipeline.format_matcher_rerank_text(
+        prompt = format_matcher_rerank_text(
             name=float("nan"),
             seller_category=float("nan"),
             brand_or_flavor="nan",
@@ -187,7 +191,7 @@ class TestTextWeightPriorityMatching:
         )
         assert prompt == "Name: "
 
-        cat_prompt = TextPipeline.format_catalog_row_for_reranker(
+        cat_prompt = format_catalog_row_for_reranker(
             {
                 "Name": "Kraft Cheese 200g",
                 "Brand": float("nan"),
@@ -226,7 +230,7 @@ class TestTextWeightPriorityMatching:
             domain="food",
             predicted_bt="Waffle",
         )
-        from engine import config
+        from engine.core import config
 
         assert score < config.CONFIDENCE_THRESHOLD_HIGH
         assert status != "High Confidence"

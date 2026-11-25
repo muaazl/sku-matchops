@@ -46,11 +46,12 @@ logger = logging.getLogger("matchops.colab_train")
 
 
 def _load_gpu_embedding_engine(batch_size: int):
-    """Builds a CUDA-accelerated EmbeddingEngine compatible with TaxonomyClassifier & sync.py."""
+    """Builds a CUDA-accelerated EmbeddingModel compatible with TaxonomyClassifier & sync.py."""
     from transformers import AutoConfig, AutoModel, AutoTokenizer
 
-    from engine import config
-    from engine.nlp.embedding_engine import EmbeddingEngine
+    from engine.core import config
+    from engine.inference.embedding_model import EmbeddingModel
+    from engine.preprocessing.bm25_tokenizer import compute_bm25_tf_weights
     from scripts.sync import (
         EmbeddingONNXWrapper,
         _detect_pooling_mode,
@@ -83,8 +84,8 @@ def _load_gpu_embedding_engine(batch_size: int):
     os.environ["EMBEDDING_DIM"] = str(hidden_size)
     config.refresh_model_config()
 
-    class GpuEmbeddingEngine(EmbeddingEngine):
-        """Drop-in EmbeddingEngine replacement running PyTorch on GPU/CPU."""
+    class GpuEmbeddingEngine(EmbeddingModel):
+        """Drop-in EmbeddingModel replacement running PyTorch on GPU/CPU."""
 
         def __init__(self):
             self._cache_lock = threading.RLock()
@@ -170,7 +171,7 @@ def _load_gpu_embedding_engine(batch_size: int):
                         all_dense.append(dense_np / norms)
 
                         for text_item in batch:
-                            all_bm25.append(self.compute_bm25_tf(text_item))
+                            all_bm25.append(compute_bm25_tf_weights(text_item))
 
                         if sparse_np is not None:
                             ids_np = inputs["input_ids"].numpy()
@@ -390,17 +391,17 @@ def _train_domain_sklearn_and_caches(
     """Builds Feather caches, BT-GK map, tag incremental caches, sklearn classifiers & centroids."""
     import json
 
-    from engine import config
-    from engine.classification.classifier import TaxonomyClassifier
-    from engine.classification.loader import (
-        augment_bt_gk_map_with_training,
-        build_bt_third_tag_map_from_catalog,
-        build_descriptions,
-        build_umbrella_from_training,
+    from engine.core import config
+    from engine.inference.gliner_model import GlinerModel
+    from engine.pipelines.classification_pipeline import TaxonomyClassifier
+    from engine.pipelines.indexing_pipeline import CacheManager
+    from engine.pipelines.ingestion_pipeline import DataIngestion
+    from engine.preprocessing.taxonomy_preprocessor import (
+        augment_bt_gk_map,
+        build_bt_third_tag_map,
+        build_taxonomy_descriptions,
+        build_umbrella_gk_map,
     )
-    from engine.data_pipeline.cache_manager import CacheManager
-    from engine.data_pipeline.ingestion import DataIngestion
-    from engine.nlp.ner_engine import NEREngine
 
     os.makedirs(config.CACHE_DIR, exist_ok=True)
     DataIngestion.clear_mem_cache(domain)
@@ -411,8 +412,8 @@ def _train_domain_sklearn_and_caches(
     with dicts_cache_path.open("w", encoding="utf-8") as f:
         json.dump(dicts, f, indent=2)
 
-    # NEREngine without loading GLiNER ONNX (only used as lightweight wrapper here)
-    ner_stub = NEREngine.__new__(NEREngine)
+    # GlinerModel without loading GLiNER ONNX (only used as lightweight wrapper here)
+    ner_stub = GlinerModel.__new__(GlinerModel)
     ner_stub.labels = (
         config.FOOD_NER_LABELS if domain == config.DOMAIN_FOOD else config.MARKET_NER_LABELS
     )
@@ -423,13 +424,13 @@ def _train_domain_sklearn_and_caches(
     cache_manager = CacheManager(ner_stub, gpu_embedder)
 
     def _build_bt_gk(df):
-        bt_map = augment_bt_gk_map_with_training(df, {}, dicts.get("gk", []))
-        umbrella = build_umbrella_from_training(df)
-        third_tag_map = build_bt_third_tag_map_from_catalog(df, domain)
+        bt_map = augment_bt_gk_map(df, {}, dicts.get("gk", []))
+        umbrella = build_umbrella_gk_map(df)
+        third_tag_map = build_bt_third_tag_map(df, domain)
         return bt_map, umbrella, third_tag_map
 
     bt_gk_cache = cache_manager.get_or_build_bt_gk_cache(cat_df, domain, _build_bt_gk)
-    descriptions = build_descriptions(
+    descriptions = build_taxonomy_descriptions(
         domain,
         dicts,
         bt_gk_cache["bt_gk_map"],
@@ -511,7 +512,7 @@ def _train_domain_sklearn_and_caches(
 
 def _package_artifacts(domains: list[str], output_zip: str) -> str:
     """Zips generated cache and ArcFace artifacts with repo-relative paths."""
-    from engine import config
+    from engine.core import config
 
     output_path = Path(output_zip)
     if not output_path.is_absolute():
@@ -636,8 +637,8 @@ def main() -> None:
         os.environ["EMBEDDING_MODEL"] = args.embedding_model
 
     t0 = time.time()
-    from engine import config
-    from engine.core import resource_loader
+    from engine.core import config
+    from engine.pipelines import runtime_pipeline as resource_loader
     from scripts import sync as sync_mod
 
     if args.sheet_id:

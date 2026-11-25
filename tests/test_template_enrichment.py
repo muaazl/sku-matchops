@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from engine import config
-from engine.templates.template_suggest import suggest_tags_from_template
+from engine.core import config
+from engine.pipelines.template_pipeline import suggest_tags_from_template
 
 
 class TestTemplateEnrichmentToggles(unittest.TestCase):
@@ -16,9 +16,9 @@ class TestTemplateEnrichmentToggles(unittest.TestCase):
         config.ENABLE_TEMPLATE_TAG_ENRICHMENT = self.orig_enrichment
         config.ALLOW_UNREGISTERED_TEMPLATE_KEYWORDS = self.orig_allow_unreg
 
-    @patch("engine.templates.template_suggest.get_catalog_and_brands")
-    @patch("engine.templates.template_suggest.get_classifier")
-    @patch("engine.templates.template_suggest.get_classifier_dicts")
+    @patch("engine.pipelines.template_pipeline.get_catalog_and_brands")
+    @patch("engine.pipelines.template_pipeline.get_classifier")
+    @patch("engine.pipelines.template_pipeline.get_classifier_dicts")
     def test_allow_unregistered_toggle_true(
         self, mock_get_dicts, mock_get_classifier, mock_get_catalog
     ):
@@ -60,9 +60,9 @@ class TestTemplateEnrichmentToggles(unittest.TestCase):
         # "Chicken Ice Cream" should be present as new_unregistered tag
         self.assertIn("Chicken Ice Cream", gks_true)
 
-    @patch("engine.templates.template_suggest.get_catalog_and_brands")
-    @patch("engine.templates.template_suggest.get_classifier")
-    @patch("engine.templates.template_suggest.get_classifier_dicts")
+    @patch("engine.pipelines.template_pipeline.get_catalog_and_brands")
+    @patch("engine.pipelines.template_pipeline.get_classifier")
+    @patch("engine.pipelines.template_pipeline.get_classifier_dicts")
     def test_allow_unregistered_toggle_false(
         self, mock_get_dicts, mock_get_classifier, mock_get_catalog
     ):
