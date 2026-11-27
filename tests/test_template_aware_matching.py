@@ -1,16 +1,16 @@
-"""Unit tests for template-based tag enrichment behavior in engine.pipeline.processor."""
+"""Unit tests for template-based tag enrichment behavior in engine.pipelines.request_pipeline."""
 
 from unittest.mock import patch
 
-from engine import config
-from engine.pipeline.processor import _apply_template_tag_enrichment
+from engine.core import config
+from engine.pipelines.request_pipeline import _apply_template_tag_enrichment
 
 
 def test_template_enrichment_skips_when_flag_disabled(monkeypatch):
     monkeypatch.setattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", False)
     results = [{"suggested_bt": "Old BT", "suggested_gk": "Old GK", "bt_status": "REVIEW"}]
 
-    with patch("engine.pipeline.processor.suggest_tags_from_template") as mock_suggest:
+    with patch("engine.pipelines.request_pipeline.suggest_tags_from_template") as mock_suggest:
         _apply_template_tag_enrichment(
             [{"name": "Koththu Chicken"}], results, domain="food", mode="classifier"
         )
@@ -26,7 +26,7 @@ def test_template_enrichment_skips_high_confidence_and_auto(monkeypatch):
         {"bt_status": "AUTO", "suggested_bt": "Burger"},
     ]
 
-    with patch("engine.pipeline.processor.suggest_tags_from_template") as mock_suggest:
+    with patch("engine.pipelines.request_pipeline.suggest_tags_from_template") as mock_suggest:
         _apply_template_tag_enrichment(
             [{"name": "Chicken Pizza"}, {"name": "Beef Burger"}],
             results,
@@ -52,7 +52,7 @@ def test_template_enrichment_updates_classifier_and_merges_gks(monkeypatch):
     ]
 
     with patch(
-        "engine.pipeline.processor.suggest_tags_from_template",
+        "engine.pipelines.request_pipeline.suggest_tags_from_template",
         return_value={
             "matched": True,
             "suggested_bt": "Kotthu",
@@ -76,7 +76,7 @@ def test_template_enrichment_sets_high_confidence_in_pipeline_mode(monkeypatch):
     results = [{"status": "Low Confidence", "bt_status": "LOW", "bt_confidence": 0.98}]
 
     with patch(
-        "engine.pipeline.processor.suggest_tags_from_template",
+        "engine.pipelines.request_pipeline.suggest_tags_from_template",
         return_value={"matched": True, "suggested_bt": "Noodles", "suggested_gk": ["Noodles"]},
     ):
         _apply_template_tag_enrichment(

@@ -8,16 +8,16 @@
 import json
 from unittest.mock import MagicMock, patch
 
-import backend.app.services.catalog_service as cat_svc
-from backend.app.api.endpoints.jobs import get_async_redis_pool
-from backend.app.db.schema import jobs as jobs_table
-from backend.app.db.schema import processed_skus as processed_skus_table
+import backend.repositories.catalog_lock_repository as lock_repo
+import backend.repositories.job_progress_repository as jobs_mod
+import backend.services.catalog_service as cat_svc
+from backend.models.job_model import jobs as jobs_table
+from backend.models.sku_model import processed_skus as processed_skus_table
+from backend.repositories.job_progress_repository import get_async_redis_pool
 
 
 def test_async_redis_pool_singleton():
     """Verify get_async_redis_pool creates and returns a singleton pool with max_connections=50."""
-    import backend.app.api.endpoints.jobs as jobs_mod
-
     with patch("redis.asyncio.ConnectionPool.from_url") as mock_from_url:
         mock_pool = MagicMock()
         mock_from_url.return_value = mock_pool
@@ -45,11 +45,11 @@ def test_catalog_build_distributed_redis_lock():
     # Case 1: Successfully acquires lock
     mock_redis.set.return_value = True
 
-    with patch.object(cat_svc, "_get_redis_lock_client", return_value=mock_redis):
+    with patch.object(lock_repo, "get_catalog_lock_redis_client", return_value=mock_redis):
         started, msg = cat_svc.trigger_build_cache()
         assert started is True
         assert "initiated in background" in msg
-        mock_redis.set.assert_called_once_with(cat_svc.BUILD_LOCK_KEY, "locked", nx=True, ex=1800)
+        mock_redis.set.assert_called_once_with(lock_repo.BUILD_LOCK_KEY, "locked", nx=True, ex=1800)
 
         # Case 2: Concurrent call on same node while in progress
         started2, msg2 = cat_svc.trigger_build_cache()
@@ -72,33 +72,33 @@ def test_catalog_build_lock_cleanup_on_completion():
     mock_redis = MagicMock()
 
     with (
-        patch.object(cat_svc, "_get_redis_lock_client", return_value=mock_redis),
-        patch.object(cat_svc, "_bg_build_cache") as mock_bg,
+        patch.object(lock_repo, "get_catalog_lock_redis_client", return_value=mock_redis),
+        patch.object(cat_svc, "execute_background_cache_build") as mock_bg,
     ):
         task = cat_svc.get_build_task_callable()
         task()
 
         mock_bg.assert_called_once()
         assert cat_svc._build_in_progress is False
-        mock_redis.delete.assert_called_once_with(cat_svc.BUILD_LOCK_KEY)
+        mock_redis.delete.assert_called_once_with(lock_repo.BUILD_LOCK_KEY)
 
 
 def test_audit_logging_omits_large_response_bodies():
     """Verify audit logging middleware truncates/omits response bodies exceeding 64KB."""
-    from backend.app.middleware.audit_logging import _format_audit_response
+    from backend.api.middleware.audit_logging_middleware import format_audit_response
 
     # Case A: Content-Length header indicates > 64KB
-    res_cl = _format_audit_response(None, content_length=70000)
+    res_cl = format_audit_response(None, content_length=70000)
     assert res_cl == "<omitted: response body 70000 bytes > 64KB>"
 
     # Case B: In-memory/streamed body bytes exceed 64KB
     large_bytes = b"X" * 70000
-    res_bytes = _format_audit_response(large_bytes)
+    res_bytes = format_audit_response(large_bytes)
     assert res_bytes == "<omitted: response body 70000 bytes > 64KB>"
 
     # Case C: Response body is within limits and gets redacted
     small_json = json.dumps({"token": "secret123", "result": "success"}).encode("utf-8")
-    res_small = _format_audit_response(small_json)
+    res_small = format_audit_response(small_json)
     parsed = json.loads(res_small)
     assert parsed["token"] == "***REDACTED***"
     assert parsed["result"] == "success"

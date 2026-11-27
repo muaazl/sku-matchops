@@ -11,25 +11,32 @@ import pandas as pd
 import pytest
 from fastapi import HTTPException
 
-from backend.app.api.endpoints.history import _sanitize_csv_cell, export_history
-from backend.app.api.endpoints.jobs import _enrich_job_rows
-from backend.app.core.security import Principal
-from engine import config
-from engine.data_pipeline.vector_store import VectorStore
-from engine.matching.logic_gates import LogicGates
-from engine.matching.matcher import SKUMatcher
-from engine.nlp.embedding_engine import EmbeddingEngine
-from engine.nlp.ner_engine import NEREngine
-from engine.nlp.text_cleaner import TextPipeline
-from engine.pipeline import worker_runner
+from backend.api.endpoints.history_router import export_processed_skus
+from backend.services import history_service, job_service
+from engine.core import config
+from engine.grpc import callback_client
+from engine.inference.gliner_model import GlinerModel
+from engine.inference.reranker_model import RerankerModel
+from engine.pipelines import worker_pipeline as worker_runner
+from engine.pipelines.matching_logic_pipeline import LogicGates
+from engine.pipelines.matching_pipeline import SKUMatcher
+from engine.preprocessing.text_normalizer import (
+    build_ner_input_text,
+    normalize_sku_text,
+    prepare_ner_text,
+    standardize_sku_units,
+    strip_weight_tokens,
+)
+from engine.vector_store.qdrant_client_store import QdrantClientManager
+from engine.vector_store.vector_store import VectorStore
 
 
 def _norm_row(row: dict) -> dict:
-    clean = TextPipeline.normalize_final(TextPipeline.standardize_units(row["Name"]))
+    clean = normalize_sku_text(standardize_sku_units(row["Name"]))
     return {
         **row,
         "clean_text": row.get("clean_text", clean),
-        "clean_no_weights": row.get("clean_no_weights", TextPipeline.strip_weights(clean)),
+        "clean_no_weights": row.get("clean_no_weights", strip_weight_tokens(clean)),
     }
 
 
@@ -99,7 +106,7 @@ def test_matcher_skips_onnx_on_unambiguous_exact_and_multisize_fuzzy_bypass():
     # Zero ONNX embedding, zero ArcFace BT classification, zero Qdrant searches
     mock_embed.embed_weighted_sku.assert_not_called()
     mock_classifier.batch_predict_bt.assert_not_called()
-    mock_vs.search_batch_from_vectors.assert_not_called()
+    mock_vs.search_catalog_hybrid_batch.assert_not_called()
 
     assert res.iloc[0]["Matched Catalog Name"] == "Coca Cola Can 330ml"
     assert res.iloc[0]["Final Score"] == 1.0
@@ -150,9 +157,7 @@ def test_matcher_multi_bt_bypass_runs_bt_only_for_ambiguous_rows():
     )
     res = matcher.process_inputs(input_df)
 
-    expected_clean = TextPipeline.normalize_final(
-        TextPipeline.standardize_units("Classic Mint 100g")
-    )
+    expected_clean = normalize_sku_text(standardize_sku_units("Classic Mint 100g"))
     assert mock_embed.embed_weighted_sku.call_count == 1
     assert mock_embed.embed_weighted_sku.call_args[0][0] == [expected_clean]
     assert res.iloc[0]["BasicType"] == "Spreads"
@@ -217,7 +222,7 @@ def test_matcher_candidate_evaluation_matches_dataframe_reference_and_skips_noop
         "_qdrant_score_": 0.72,
     }
 
-    mock_vs.search_batch_from_vectors.return_value = [
+    mock_vs.search_catalog_hybrid_batch.return_value = [
         [cand_hit],  # SKU 0 filtered
         [cand_hit],  # SKU 0 unfiltered
         [cand_hit],  # SKU 0 stripped
@@ -225,7 +230,7 @@ def test_matcher_candidate_evaluation_matches_dataframe_reference_and_skips_noop
         [cand_alt, cand_hit],  # SKU 1 unfiltered
     ]
     mock_embed.score_cross_encoder.side_effect = lambda pairs: np.array(
-        [4.5 if "almond" in p[1] else -2.0 for p in pairs], dtype=np.float32
+        [0.88 if "almond" in p[1] else 0.20 for p in pairs], dtype=np.float32
     )
 
     input_df = pd.DataFrame(
@@ -236,13 +241,11 @@ def test_matcher_candidate_evaluation_matches_dataframe_reference_and_skips_noop
     )
     res = matcher.process_inputs(input_df)
 
-    expected_stripped = TextPipeline.normalize_final(
-        TextPipeline.standardize_units("Vanilla Almond Milk 1L")
-    )
+    expected_stripped = normalize_sku_text(standardize_sku_units("Vanilla Almond Milk 1L"))
     assert mock_embed.embed_weighted_sku.call_count == 2
     stripped_call_names = mock_embed.embed_weighted_sku.call_args_list[1][0][0]
     assert stripped_call_names == [expected_stripped]
-    assert len(mock_vs.search_batch_from_vectors.call_args[0][0]) == 5
+    assert len(mock_vs.search_catalog_hybrid_batch.call_args[0][0]) == 5
 
     assert res.iloc[0]["Matched Catalog Name"] == "Acme Almond Milk 1L"
     assert res.iloc[0]["Status"] == "High Confidence"
@@ -253,10 +256,9 @@ def test_matcher_candidate_evaluation_matches_dataframe_reference_and_skips_noop
     assert res.iloc[1]["Logic Notes"].startswith("BT-Fallback (BT: Snacks,")
 
 
-def test_cross_encoder_fp32_cache_vs_int8_exact_batch_preservation():
-    """Item 11: FP32 Cross-Encoder deduplicates + caches; INT8 preserves exact batch composition."""
-    eng = EmbeddingEngine.__new__(EmbeddingEngine)
-    eng.cross_encoder_fallback = None
+def test_cross_encoder_int8_exact_batch_and_activation():
+    """Item 11: Strict INT8 Cross-Encoder preserves exact batch composition and applies configured activation."""
+    eng = RerankerModel.__new__(RerankerModel)
     eng.rerank_tokenizer = MagicMock(
         side_effect=lambda t1, t2, **kw: {
             "input_ids": np.ones((len(t1), 4), dtype=np.int64),
@@ -265,8 +267,8 @@ def test_cross_encoder_fp32_cache_vs_int8_exact_batch_preservation():
     )
     eng.cross_session = MagicMock()
 
-    # 1. INT8 mode: preserves exact dynamic quantization batch composition
-    eng._cross_is_int8 = True
+    # 1. Identity activation: preserves exact dynamic quantization batch composition
+    eng._score_activation = "identity"
     eng.cross_session.run.side_effect = lambda _, inp: [
         np.arange(len(inp["input_ids"]), dtype=np.float32)
     ]
@@ -274,30 +276,24 @@ def test_cross_encoder_fp32_cache_vs_int8_exact_batch_preservation():
     out_int8 = eng.score_cross_encoder(pairs, batch_size=64)
     assert len(out_int8) == 3
     assert eng.rerank_tokenizer.call_args[0][0] == ["sku a", "sku a", "sku a"]
+    np.testing.assert_allclose(out_int8, [0.0, 1.0, 2.0], atol=1e-6)
 
-    # 2. FP32 mode: deduplicates duplicate pairs and serves subsequent calls from LRU cache
-    eng._cross_is_int8 = False
-    eng.rerank_tokenizer.reset_mock()
-    eng.cross_session.reset_mock()
+    # 2. Sigmoid activation: calibrates cross-encoder logits into (0.0, 1.0)
+    eng._score_activation = "sigmoid"
     eng.cross_session.run.side_effect = lambda _, inp: [
-        np.array(
-            [1.25 if idx == 0 else -0.75 for idx in range(len(inp["input_ids"]))],
-            dtype=np.float32,
-        )
+        np.array([[0.0], [2.0], [-2.0]], dtype=np.float32)
     ]
-
-    out_fp32_first = eng.score_cross_encoder(pairs, batch_size=64)
-    assert np.allclose(out_fp32_first, np.array([1.25, 1.25, -0.75], dtype=np.float32))
-    assert len(eng.rerank_tokenizer.call_args[0][0]) == 2
-
-    out_fp32_second = eng.score_cross_encoder(pairs, batch_size=64)
-    assert np.allclose(out_fp32_second, out_fp32_first)
-    assert eng.cross_session.run.call_count == 1
+    out_sig = eng.score_cross_encoder(pairs, batch_size=64)
+    np.testing.assert_allclose(
+        out_sig,
+        [0.5, 1.0 / (1.0 + np.exp(-2.0)), 1.0 / (1.0 + np.exp(2.0))],
+        atol=1e-5,
+    )
 
 
 def test_ner_engine_deduplicates_and_caches_food_prepass_to_tagger():
     """Item 5: processor.py food prepass and tagger.py share identical NER cache keys (zero duplicate GLiNER)."""
-    ner = NEREngine.__new__(NEREngine)
+    ner = GlinerModel.__new__(GlinerModel)
     ner.domain = config.DOMAIN_FOOD
     ner.labels = ["flavor"]
     ner.target_label = "flavor"
@@ -313,12 +309,8 @@ def test_ner_engine_deduplicates_and_caches_food_prepass_to_tagger():
     ner.model = mock_model
 
     raw_name, raw_desc, raw_cat = "Grilled Peri Peri Platter", "Served hot", "Mains"
-    prepass_txt = TextPipeline.prep_for_ner(
-        TextPipeline.build_ner_input(raw_name, raw_desc, raw_cat)
-    )
-    tagger_txt = TextPipeline.prep_for_ner(
-        TextPipeline.build_ner_input(raw_name, raw_desc, raw_cat)
-    )
+    prepass_txt = prepare_ner_text(build_ner_input_text(raw_name, raw_desc, raw_cat))
+    tagger_txt = prepare_ner_text(build_ner_input_text(raw_name, raw_desc, raw_cat))
     assert prepass_txt == tagger_txt
 
     # Pass 1 with duplicate rows in same batch -> GLiNER runs once on 1 unique text
@@ -338,7 +330,7 @@ def test_ner_engine_deduplicates_and_caches_food_prepass_to_tagger():
 
 
 def test_vector_store_retry_rebinds_client_and_falls_back_from_grpc():
-    """Items 2, 9, 10: _call_with_retry rebinds bound client methods, falls back on gRPC UNAVAILABLE, skips NOT_FOUND."""
+    """Items 2, 9, 10: execute_with_retry rebinds bound client methods, falls back on gRPC UNAVAILABLE, skips NOT_FOUND."""
     vs = VectorStore.__new__(VectorStore)
 
     client_1 = MagicMock(name="client_1")
@@ -353,23 +345,23 @@ def test_vector_store_retry_rebinds_client_and_falls_back_from_grpc():
     client_2.get_collections.return_value = SimpleNamespace(collections=["ok"])
     client_3.get_collections.return_value = SimpleNamespace(collections=["reconnected"])
 
-    orig_client = VectorStore._client
-    orig_override = VectorStore._prefer_grpc_override
+    orig_client = QdrantClientManager._client
+    orig_override = QdrantClientManager._prefer_grpc_override
     try:
-        VectorStore._client = client_1
-        VectorStore._prefer_grpc_override = None
+        QdrantClientManager._client = client_1
+        QdrantClientManager._prefer_grpc_override = None
         vs.client = client_1
 
         with (
-            patch("engine.data_pipeline.vector_store.time.sleep"),
+            patch("engine.vector_store.qdrant_client_store.time.sleep"),
             patch(
-                "engine.data_pipeline.vector_store.QdrantClient", return_value=client_2
+                "engine.vector_store.qdrant_client_store.QdrantClient", return_value=client_2
             ) as mock_qc,
         ):
-            out = vs._call_with_retry("get_collections", vs.client.get_collections)
+            out = vs.execute_with_retry("get_collections", vs.client.get_collections)
 
         assert out.collections == ["ok"]
-        assert VectorStore._prefer_grpc_override is False
+        assert QdrantClientManager._prefer_grpc_override is False
         assert mock_qc.call_args.kwargs["prefer_grpc"] is False
         client_1.close.assert_called_once()
         client_2.get_collections.assert_called_once()
@@ -377,10 +369,10 @@ def test_vector_store_retry_rebinds_client_and_falls_back_from_grpc():
         # Also verify attempt >= 2 transient network reconnect rebinds bound method
         client_2.get_collections.side_effect = ConnectionError("connection reset")
         with (
-            patch("engine.data_pipeline.vector_store.time.sleep"),
-            patch("engine.data_pipeline.vector_store.QdrantClient", return_value=client_3),
+            patch("engine.vector_store.qdrant_client_store.time.sleep"),
+            patch("engine.vector_store.qdrant_client_store.QdrantClient", return_value=client_3),
         ):
-            out2 = vs._call_with_retry("get_collections", vs.client.get_collections)
+            out2 = vs.execute_with_retry("get_collections", vs.client.get_collections)
         assert out2.collections == ["reconnected"]
         client_2.close.assert_called_once()
         client_3.get_collections.assert_called_once()
@@ -392,41 +384,72 @@ def test_vector_store_retry_rebinds_client_and_falls_back_from_grpc():
 
         client_3.get_collection.side_effect = FakeNotFoundError("not found")
         with pytest.raises(FakeNotFoundError):
-            vs._call_with_retry("get_collection", vs.client.get_collection, "missing_col")
+            vs.execute_with_retry("get_collection", vs.client.get_collection, "missing_col")
         assert client_3.get_collection.call_count == 1
     finally:
-        VectorStore._client = orig_client
-        VectorStore._prefer_grpc_override = orig_override
+        QdrantClientManager._client = orig_client
+        QdrantClientManager._prefer_grpc_override = orig_override
 
 
-def test_vector_store_search_hybrid_tags_uses_single_batch_query_and_minimal_payload():
-    """Item 10: search_hybrid_tags combines dense+sparse into 1 query_batch_points call with with_payload=['tag']."""
+def test_vector_store_search_hybrid_tags_uses_single_batch_query_and_minimal_payload(monkeypatch):
+    """Item 10: search_tags_hybrid combines dense+bm25(+optional BGE-M3 sparse) into 1 query_batch_points call."""
     vs = VectorStore.__new__(VectorStore)
     vs._prefer_grpc = True
-    vs._verified_collections = {"market_tags"}
+    vs._checked_collections = {"market_tags"}
     vs.client = MagicMock()
     dense_pt = SimpleNamespace(payload={"tag": "Beverages"}, score=0.91)
-    sparse_pt = SimpleNamespace(payload={"tag": "Soft Drinks"}, score=0.84)
+    bm25_pt = SimpleNamespace(payload={"tag": "Soft Drinks"}, score=0.84)
+    sparse_pt = SimpleNamespace(payload={"tag": "Soda"}, score=0.79)
+
+    # 1. Non-BGE-M3: Dense + BM25 (2 requests)
+    monkeypatch.setattr(config, "check_learned_sparse_enabled", lambda: False)
     vs.client.query_batch_points.return_value = [
         SimpleNamespace(points=[dense_pt]),
-        SimpleNamespace(points=[sparse_pt]),
+        SimpleNamespace(points=[bm25_pt]),
     ]
 
-    dense_hits, sparse_hits = vs.search_hybrid_tags(
+    dense_hits, bm25_hits, sparse_hits = vs.search_tags_hybrid(
         dense_query=np.ones(8, dtype=np.float32),
         sparse_query={10: 0.5},
         limit=5,
         filter_dict_type="BT",
         domain="market",
+        bm25_query={20: 0.6},
     )
 
     vs.client.query_batch_points.assert_called_once()
     call_kwargs = vs.client.query_batch_points.call_args.kwargs
     assert call_kwargs["collection_name"] == "market_tags"
-    assert len(call_kwargs["requests"]) == 2
+    assert [req.using for req in call_kwargs["requests"]] == ["dense", "bm25"]
     assert all(req.with_payload == ["tag"] for req in call_kwargs["requests"])
     assert dense_hits == [dense_pt]
-    assert sparse_hits == [sparse_pt]
+    assert bm25_hits == [bm25_pt]
+    assert sparse_hits == []
+
+    # 2. BGE-M3: Dense + BM25 + Sparse (3 requests)
+    vs.client.query_batch_points.reset_mock()
+    monkeypatch.setattr(config, "check_learned_sparse_enabled", lambda: True)
+    vs.client.query_batch_points.return_value = [
+        SimpleNamespace(points=[dense_pt]),
+        SimpleNamespace(points=[bm25_pt]),
+        SimpleNamespace(points=[sparse_pt]),
+    ]
+    d3, b3, s3 = vs.search_tags_hybrid(
+        dense_query=np.ones(8, dtype=np.float32),
+        sparse_query={10: 0.5},
+        limit=5,
+        filter_dict_type="BT",
+        domain="market",
+        bm25_query={20: 0.6},
+    )
+    assert [req.using for req in vs.client.query_batch_points.call_args.kwargs["requests"]] == [
+        "dense",
+        "bm25",
+        "sparse",
+    ]
+    assert d3 == [dense_pt]
+    assert b3 == [bm25_pt]
+    assert s3 == [sparse_pt]
 
 
 def test_worker_exec_gate_releases_before_outbound_webhook():
@@ -461,7 +484,7 @@ def test_worker_exec_gate_releases_before_outbound_webhook():
             return_value={"results": [{"status": "High Confidence"}]},
         ),
         patch.object(worker_runner._http_session, "post", side_effect=slow_webhook),
-        patch.object(worker_runner, "_get_backend_stub") as mock_stub_fn,
+        patch.object(callback_client, "_get_backend_stub") as mock_stub_fn,
     ):
         mock_stub = MagicMock()
         mock_stub_fn.return_value = mock_stub
@@ -502,11 +525,17 @@ def test_backend_enrich_job_rows_skips_redis_unless_running():
         {"id": "4", "status": "queued", "total_items": 100},
     ]
     with (
-        patch("backend.app.api.endpoints.jobs.get_bulk_job_progress_states") as mock_bulk,
-        patch("backend.app.api.endpoints.jobs.get_job_progress_state") as mock_single,
-        patch.dict("backend.app.api.endpoints.jobs._job_progress", {"2": 30.0, "3": 50.0}),
+        patch(
+            "backend.repositories.job_progress_repository.fetch_bulk_job_progress_states"
+        ) as mock_bulk,
+        patch(
+            "backend.repositories.job_progress_repository.fetch_job_progress_state"
+        ) as mock_single,
+        patch.dict(
+            "backend.repositories.job_progress_repository._job_progress", {"2": 30.0, "3": 50.0}
+        ),
     ):
-        enriched = _enrich_job_rows(non_running)
+        enriched = job_service.enrich_job_rows(non_running)
         mock_bulk.assert_not_called()
         mock_single.assert_not_called()
         assert enriched[0]["progress_pct"] == 100.0
@@ -521,12 +550,14 @@ def test_backend_enrich_job_rows_skips_redis_unless_running():
     ]
     with (
         patch(
-            "backend.app.api.endpoints.jobs.get_bulk_job_progress_states",
+            "backend.repositories.job_progress_repository.fetch_bulk_job_progress_states",
             return_value={"10": (42.5, 12), "11": (85.0, 4)},
         ) as mock_bulk,
-        patch("backend.app.api.endpoints.jobs.get_job_progress_state") as mock_single,
+        patch(
+            "backend.repositories.job_progress_repository.fetch_job_progress_state"
+        ) as mock_single,
     ):
-        enriched_run = _enrich_job_rows(mixed_with_running)
+        enriched_run = job_service.enrich_job_rows(mixed_with_running)
         mock_bulk.assert_called_once_with(["10", "11"])
         mock_single.assert_not_called()
         assert enriched_run[0]["progress_pct"] == 42.5
@@ -562,23 +593,23 @@ def test_streaming_csv_export_matches_buffered_csv_and_sanitizes_formulas():
     mock_conn.execution_options.return_value = mock_conn
     mock_conn.execute.return_value = mock_result
 
-    principal = Principal(username="tester", role="admin")
-
     with pytest.raises(HTTPException) as exc_info:
-        export_history(ids=None, format="xlsx", db=mock_conn, principal=principal)
+        export_processed_skus(ids=None, format="xlsx")
     assert exc_info.value.status_code == 400
 
-    with patch("backend.app.api.endpoints.history.StreamingResponse") as mock_sr:
-        export_history(ids="sku-1,sku-2", format="csv", db=mock_conn, principal=principal)
-        gen = mock_sr.call_args[0][0]
-        streamed_csv = "".join(list(gen))
+    with patch("backend.api.endpoints.history_router.StreamingResponse") as mock_sr:
+        export_processed_skus(ids="sku-1,sku-2", format="csv")
+        mock_sr.assert_called_once()
+    streamed_csv = "".join(
+        list(history_service.generate_csv_chunks(ids="sku-1,sku-2", db=mock_conn))
+    )
     mock_result.close.assert_called_once()
 
     ref_buf = io.StringIO()
     ref_writer = csv.DictWriter(ref_buf, fieldnames=sample_rows[0].keys())
     ref_writer.writeheader()
     for row in sample_rows:
-        ref_writer.writerow({k: _sanitize_csv_cell(v) for k, v in row.items()})
+        ref_writer.writerow({k: history_service.sanitize_csv_cell(v) for k, v in row.items()})
 
     assert streamed_csv == ref_buf.getvalue()
     assert "\t=CMD|" in streamed_csv
@@ -590,8 +621,8 @@ def test_graceful_shutdown_lease_release_and_fast_reclaim():
     """SIGTERM shutdown releases active idempotent leases immediately (0 attempts/0s); hard-crash first reclaim has 0s delay."""
     import json
 
-    from engine.pipeline import task_queue
-    from engine.pipeline.task_queue import INFLIGHT, REALTIME, TaskQueue
+    from engine.pipelines import queue_pipeline as task_queue
+    from engine.pipelines.queue_pipeline import INFLIGHT, REALTIME, TaskQueue
 
     fake_r = MagicMock()
     fake_pipe = MagicMock()
@@ -640,7 +671,7 @@ def test_graceful_shutdown_lease_release_and_fast_reclaim():
     fake_r.zrem.return_value = 1
     fake_r.hget.return_value = json.dumps(active_task)
 
-    with patch("engine.pipeline.task_queue._now", return_value=1000.0):
+    with patch("engine.pipelines.queue_pipeline._now", return_value=1000.0):
         q.reclaim_expired()
     first_zadd_mapping = fake_pipe.zadd.call_args[0][1]
     assert first_zadd_mapping["t-1244"] == 1000.0  # 0.0s delay on attempt 1!
@@ -650,7 +681,66 @@ def test_graceful_shutdown_lease_release_and_fast_reclaim():
 
     fake_pipe.reset_mock()
     fake_r.hget.return_value = json.dumps(saved_after_1)
-    with patch("engine.pipeline.task_queue._now", return_value=1000.0):
+    with patch("engine.pipelines.queue_pipeline._now", return_value=1000.0):
         q.reclaim_expired()
     second_zadd_mapping = fake_pipe.zadd.call_args[0][1]
     assert second_zadd_mapping["t-1244"] == 1010.0  # 5.0 * 2**(2-1) = 10.0s backoff on attempt 2!
+
+
+def test_matcher_deduplicates_identical_cross_encoder_pairs():
+    """Identical (formatted_query, formatted_cand) pairs are scored once and mapped to every candidate key."""
+    catalog_rows = [
+        {
+            "db_uid": "uid-1",
+            "Name": "Chicken Fried Rice 250g",
+            "basictype": "Fried Rice",
+            "Generic keywords": "Fried Rice, Chicken",
+            "region": "Chinese",
+            "weight_val": (250.0, "g", "solid"),
+            "entities": {"flavor": {"chicken"}},
+        },
+        {
+            "db_uid": "uid-2",
+            "Name": "Chicken Fried Rice 500g",
+            "basictype": "Fried Rice",
+            "Generic keywords": "Fried Rice, Chicken",
+            "region": "Chinese",
+            "weight_val": (500.0, "g", "solid"),
+            "entities": {"flavor": {"chicken"}},
+        },
+    ]
+    matcher, mock_embed, mock_vs, _ = _make_matcher(catalog_rows, domain="food")
+    mock_embed.embed_weighted_sku.return_value = {
+        "dense": np.ones((2, 8), dtype=np.float32),
+        "bm25": [{}, {}],
+        "sparse": [None, None],
+    }
+
+    cand1 = {**_norm_row(catalog_rows[0]), "_qdrant_score_": 0.90}
+    cand2 = {**_norm_row(catalog_rows[1]), "_qdrant_score_": 0.85}
+    mock_vs.search_catalog_hybrid_batch.return_value = [
+        [cand1, cand2],
+        [cand1, cand2],
+    ]
+
+    recorded_pairs = []
+
+    def fake_score(pairs, progress_callback=None):
+        recorded_pairs.extend(pairs)
+        return np.full(len(pairs), 0.91, dtype=np.float32)
+
+    mock_embed.score_cross_encoder.side_effect = fake_score
+
+    input_df = pd.DataFrame(
+        [
+            {"Name": "Special Chicken Fried Rice"},
+            {"Name": "Special Chicken Fried Rice"},
+        ]
+    )
+    res = matcher.process_inputs(input_df)
+
+    # 2 identical queries x 2 catalog rows sharing the same weight-stripped formatted text -> scored once!
+    assert len(recorded_pairs) == 1
+    assert len(res) == 2
+    assert res.iloc[0]["Status"] == "High Confidence"
+    assert res.iloc[1]["Status"] == "High Confidence"

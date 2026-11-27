@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -31,9 +32,9 @@ from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 load_dotenv()
 
@@ -520,7 +521,7 @@ def run_upload_job(
     t0 = time.time()
     print("[3/3] Running Chrome bulk-upload automation on port 9222...", flush=True)
     try:
-        from engine.pipeline.uploader import process_upload
+        from engine.pipelines.upload_pipeline import process_upload
 
         process_upload(
             skus=skus,

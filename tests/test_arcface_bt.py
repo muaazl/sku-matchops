@@ -1,8 +1,8 @@
 import json
-import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -11,14 +11,14 @@ import pandas as pd
 import torch
 from sklearn.preprocessing import StandardScaler
 
-from engine import config
-from engine.classification.classifier import ZeroShotClassifier
-from engine.classification.models.arcface_bt import BTArcFaceNet, FocalLoss
+from engine.core import config
+from engine.inference.arcface_model import BTArcFaceNet, FocalLoss
+from engine.pipelines.classification_pipeline import TaxonomyClassifier
 
 
 class TestArcFaceBT(unittest.TestCase):
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+        self.test_dir = Path(tempfile.mkdtemp())
         self.orig_onnx_dir = config.ONNX_DIR
         self.orig_cache_dir = config.CACHE_DIR
         self.orig_arcface_dir = getattr(config, "ARCFACE_DIR", None)
@@ -36,7 +36,7 @@ class TestArcFaceBT(unittest.TestCase):
             config.ARCFACE_DIR = self.orig_arcface_dir
         config.FOOD_BT_MODEL = self.orig_food_model
         config.MARKET_BT_MODEL = self.orig_market_model
-        if os.path.exists(self.test_dir):
+        if self.test_dir.exists():
             shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_bt_arcface_net_forward_shapes(self):
@@ -87,15 +87,15 @@ class TestArcFaceBT(unittest.TestCase):
         model = BTArcFaceNet(in_features=1025, hidden_features=512, num_classes=num_classes)
         model.eval()
 
-        fp32_path = os.path.join(self.test_dir, "test_bt_arcface.onnx")
-        int8_path = os.path.join(self.test_dir, "test_bt_arcface_int8.onnx")
+        fp32_path = self.test_dir / "test_bt_arcface.onnx"
+        int8_path = self.test_dir / "test_bt_arcface_int8.onnx"
 
         # 1. Export to ONNX
         dummy_input = torch.randn(1, 1025, dtype=torch.float32)
         torch.onnx.export(
             model,
             dummy_input,
-            fp32_path,
+            str(fp32_path),
             input_names=["input"],
             output_names=["logits"],
             dynamic_axes={"input": {0: "batch_size"}, "logits": {0: "batch_size"}},
@@ -103,18 +103,18 @@ class TestArcFaceBT(unittest.TestCase):
             do_constant_folding=True,
             dynamo=False,
         )
-        self.assertTrue(os.path.exists(fp32_path))
+        self.assertTrue(fp32_path.exists())
 
         # 2. Dynamic INT8 Quantization
         from onnxruntime.quantization import QuantType, quantize_dynamic
 
         quantize_dynamic(
-            model_input=fp32_path,
-            model_output=int8_path,
+            model_input=str(fp32_path),
+            model_output=str(int8_path),
             weight_type=QuantType.QInt8,
             op_types_to_quantize=["MatMul", "Gemm"],
         )
-        self.assertTrue(os.path.exists(int8_path))
+        self.assertTrue(int8_path.exists())
 
         # 3. Load via ORT with mmap configuration
         sess_opts = ort.SessionOptions()
@@ -131,7 +131,7 @@ class TestArcFaceBT(unittest.TestCase):
         """Service must fail fast with descriptive exception if ArcFace model/labels are missing."""
         config.FOOD_BT_MODEL = "arcface"
 
-        clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+        clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
         clf.domain = config.DOMAIN_FOOD
         clf.bt_model = "arcface"
 
@@ -146,16 +146,14 @@ class TestArcFaceBT(unittest.TestCase):
         config.FOOD_BT_MODEL = "arcface"
 
         # Create dummy onnx file
-        onnx_file = os.path.join(self.test_dir, "food_bt_arcface_int8.onnx")
-        with open(onnx_file, "wb") as f:
-            f.write(b"corrupt_onnx_bytes")
+        onnx_file = self.test_dir / "food_bt_arcface_int8.onnx"
+        onnx_file.write_bytes(b"corrupt_onnx_bytes")
 
         # Create corrupt labels file
-        labels_file = os.path.join(self.test_dir, "food_bt_arcface_labels.json")
-        with open(labels_file, "w") as f:
-            f.write("{invalid_json:")
+        labels_file = self.test_dir / "food_bt_arcface_labels.json"
+        labels_file.write_text("{invalid_json:", encoding="utf-8")
 
-        clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+        clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
         clf.domain = config.DOMAIN_FOOD
         clf.bt_model = "arcface"
 
@@ -166,7 +164,7 @@ class TestArcFaceBT(unittest.TestCase):
 
     def test_arcface_prediction_and_zero_shot_fallback(self):
         """Test ArcFace prediction routing, thresholding, and zero-shot fallback."""
-        clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+        clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
         clf.domain = config.DOMAIN_FOOD
         clf.bt_model = "arcface"
         clf.cache_dir = self.test_dir
@@ -211,7 +209,7 @@ class TestArcFaceBT(unittest.TestCase):
 
     def test_logreg_model_toggle_behavior(self):
         """When domain is configured for 'logreg', LogReg model must execute without loading ArcFace."""
-        clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+        clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
         clf.domain = config.DOMAIN_MARKET
         clf.bt_model = "logreg"
         clf.cache_dir = self.test_dir
@@ -239,7 +237,7 @@ class TestArcFaceBT(unittest.TestCase):
 
     def test_batch_predict_bt_arcface(self):
         """Test batch_predict_bt routing with ArcFace."""
-        clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+        clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
         clf.domain = config.DOMAIN_FOOD
         clf.bt_model = "arcface"
         clf.cache_dir = self.test_dir
@@ -290,9 +288,9 @@ class TestArcFaceBT(unittest.TestCase):
 
     def test_tagger_metadata_includes_active_model(self):
         """Tagger batch classification output dicts must include 'model' and 'bt_model'."""
-        from engine.classification.tagger import tag_all_skus
+        from engine.pipelines.classification_pipeline import tag_all_skus
 
-        clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+        clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
         clf.domain = config.DOMAIN_FOOD
         clf.bt_model = "arcface"
         clf.cache_dir = self.test_dir
@@ -309,7 +307,11 @@ class TestArcFaceBT(unittest.TestCase):
         mock_vs = MagicMock()
         mock_vs.hybrid_search.return_value = []
 
-        query_embeddings = {"dense": np.random.randn(1, 1024).astype(np.float32), "sparse": [{}]}
+        query_embeddings = {
+            "dense": np.random.randn(1, 1024).astype(np.float32),
+            "bm25": [{}],
+            "sparse": [],
+        }
         res = tag_all_skus(
             sku_names=["Margherita Pizza"],
             sku_categories=["Food"],
@@ -328,12 +330,12 @@ class TestArcFaceBT(unittest.TestCase):
         self.assertEqual(item["bt_model"], "arcface")
         self.assertIn("Classifier (arcface):", item["reasoning"])
 
-    @patch("scripts.ml.train_bt_head.extract_embeddings")
+    @patch("scripts.sync.extract_embeddings")
     def test_train_bt_head_synthetic_pipeline(self, mock_extract):
         """Test train_bt_arcface end-to-end with mock catalog and embeddings."""
-        from scripts.ml.train_bt_head import train_bt_arcface
+        from scripts.sync import train_bt_arcface
 
-        # Mock embeddings to avoid loading heavy 2.2GB BGE-M3 model in tests
+        # Mock embeddings to avoid loading heavy embedding model in tests
         mock_extract.return_value = np.random.randn(20, 1024).astype(np.float32)
 
         # Create synthetic catalog CSV
@@ -346,7 +348,7 @@ class TestArcFaceBT(unittest.TestCase):
                 "Price": [10.0 + i for i in range(20)],
             }
         )
-        sample_path = os.path.join(self.test_dir, "sample.xlsx")
+        sample_path = self.test_dir / "sample.xlsx"
         with pd.ExcelWriter(sample_path) as writer:
             sample_df.to_excel(writer, sheet_name=config.FOOD_CATALOG_SHEET, index=False)
 
@@ -358,14 +360,14 @@ class TestArcFaceBT(unittest.TestCase):
             device_name="cpu",
             from_sample=True,
             sample_file=sample_path,
-            no_quantize=False,
             output_dir=self.test_dir,
         )
 
-        self.assertTrue(os.path.exists(artifacts["fp32_onnx"]))
-        self.assertTrue(os.path.exists(artifacts["int8_onnx"]))
-        self.assertTrue(os.path.exists(artifacts["labels_json"]))
-        self.assertTrue(os.path.exists(artifacts["meta_joblib"]))
+        self.assertNotIn("fp32_onnx", artifacts)
+        self.assertFalse((self.test_dir / f"{config.DOMAIN_FOOD}_bt_arcface.onnx").exists())
+        self.assertTrue(Path(artifacts["int8_onnx"]).exists())
+        self.assertTrue(Path(artifacts["labels_json"]).exists())
+        self.assertTrue(Path(artifacts["meta_joblib"]).exists())
 
         # Verify labels JSON contents
         with open(artifacts["labels_json"], encoding="utf-8") as f:

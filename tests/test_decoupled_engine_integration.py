@@ -10,12 +10,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from backend.app.api.routes import api_router
-from backend.app.db.session import get_engine
-from backend.app.grpc_server import clear_job_progress, start_backend_grpc_server
-from backend.app.schemas.models import BaseRequest, SKUItem
-from backend.app.services.worker import enqueue_job
-from engine.pipeline.worker_runner import _get_backend_stub
+from backend.api.router import api_router
+from backend.core.database import get_engine
+from backend.grpc.callback_servicer import start_backend_grpc_server
+from backend.repositories.job_progress_repository import clear_job_progress
+from backend.schemas.sku_schema import BaseRequest, SKUItem
+from backend.services.job_service import enqueue_job
+from engine.grpc.callback_client import _get_backend_stub
 from engine.protos import engine_service_pb2 as pb2
 
 app = FastAPI()
@@ -32,7 +33,7 @@ def _delete_job(job_id: str) -> None:
 
 class TestDecoupledEngineIntegration(unittest.TestCase):
     @pytest.mark.usefixtures("loopback")
-    @patch("backend.app.api.routes.get_engine_health")
+    @patch("backend.services.engine_gateway_service.get_engine_health")
     def test_health_with_engine_status(self, mock_health):
         mock_health.return_value = {
             "status": "ok",
@@ -49,7 +50,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
         self.assertEqual(data["loaded_domains"], ["market", "food"])
 
     @pytest.mark.usefixtures("pg")
-    @patch("backend.app.services.worker.dispatch_batch_job")
+    @patch("backend.services.job_service.dispatch_batch_payload")
     def test_enqueue_job_dispatches_to_engine(self, mock_dispatch):
         mock_dispatch.return_value = {"status": "queued", "job_id": "test_job_100"}
         req = BaseRequest(
@@ -233,8 +234,8 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
         """CompleteJob accepts typed Protobuf results, evicts progress dicts, and aborts on DB error."""
         import grpc
 
-        from backend.app.grpc_server import _job_eta, _job_progress, _job_stage
-        from engine.core.grpc_utils import result_to_pipeline_proto
+        from backend.repositories.job_progress_repository import _job_eta, _job_progress, _job_stage
+        from engine.grpc.grpc_utils import result_to_pipeline_proto
 
         srv = start_backend_grpc_server(port=0, host="127.0.0.1")
         stub = _get_backend_stub(f"127.0.0.1:{srv._bound_port}")
@@ -265,7 +266,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
 
             # Simulate transient DB outage: CompleteJob MUST abort with INTERNAL so queue retries
             with patch(
-                "backend.app.grpc_server.record_job_completion",
+                "backend.services.job_callback_service.record_job_completion",
                 side_effect=RuntimeError("transient pg disconnect"),
             ):
                 with self.assertRaises(grpc.RpcError) as ctx:
@@ -321,20 +322,20 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
         import grpc
         import numpy as np
 
-        from backend.app.services import engine_client
-        from engine import config as eng_cfg
-        from engine.core.grpc_utils import grpc_metadata
-        from engine.grpc_server import start_grpc_server
+        from backend.core import config as backend_cfg
+        from engine.core import config as eng_cfg
+        from engine.grpc.grpc_utils import grpc_metadata
+        from engine.grpc.inference_servicer import start_grpc_server
         from engine.protos import engine_service_pb2_grpc as pb2_grpc
 
         dispatched: list[dict] = []
         srv = start_grpc_server(port=0, host="127.0.0.1")
         target = f"127.0.0.1:{srv._bound_port}"
         old_secret = eng_cfg.INTERNAL_GRPC_SECRET
-        old_url = engine_client.ENGINE_GRPC_URL
+        old_url = backend_cfg.ENGINE_GRPC_URL
         try:
             eng_cfg.INTERNAL_GRPC_SECRET = "super-secret-token"
-            engine_client.ENGINE_GRPC_URL = target
+            backend_cfg.ENGINE_GRPC_URL = target
             raw_channel = grpc.insecure_channel(target)
             raw_stub = pb2_grpc.EngineInferenceServiceStub(raw_channel)
 
@@ -344,7 +345,9 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             self.assertEqual(unauth.exception.code(), grpc.StatusCode.UNAUTHENTICATED)
 
             # 2. Authenticated call succeeds; SSRF backend_grpc_url is ignored; typed upload works
-            with patch("engine.grpc_server.enqueue_batch_job", side_effect=dispatched.append):
+            with patch(
+                "engine.grpc.inference_servicer.enqueue_batch_job", side_effect=dispatched.append
+            ):
                 raw_stub.DispatchUploadJob(
                     pb2.UploadJobRequest(
                         job_id="u1",
@@ -359,7 +362,10 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             self.assertEqual(dispatched[0]["skus"][0]["Name"], "Coke 500ml")
 
             # 3. ValueError -> INVALID_ARGUMENT -> HTTP 400 on /interactive/run-single
-            with patch("engine.grpc_server.process_request", side_effect=ValueError("bad domain")):
+            with patch(
+                "engine.grpc.inference_servicer.process_request",
+                side_effect=ValueError("bad domain"),
+            ):
                 resp_400 = client.post(
                     "/interactive/run-single",
                     json={"sku_name": "X", "domain": "invalid", "task": "pipeline"},
@@ -387,9 +393,12 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             )
             fake_embed = SimpleNamespace(encode=lambda _q: {"dense": [np.zeros(4)]})
             with (
-                patch("engine.grpc_server.VectorStore.get_client", return_value=fake_qdrant),
                 patch(
-                    "engine.core.resource_loader._get_shared_models",
+                    "engine.pipelines.vector_search_pipeline.VectorStore.get_qdrant_client",
+                    return_value=fake_qdrant,
+                ),
+                patch(
+                    "engine.pipelines.vector_search_pipeline._get_shared_models",
                     return_value=(fake_embed, None),
                 ),
             ):
@@ -410,34 +419,35 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             raw_channel.close()
         finally:
             eng_cfg.INTERNAL_GRPC_SECRET = old_secret
-            engine_client.ENGINE_GRPC_URL = old_url
+            backend_cfg.ENGINE_GRPC_URL = old_url
             srv.stop(grace=0)
 
     def test_sync_script_has_no_top_level_backend_imports(self):
-        """scripts/catalog/sync.py must run --cache/--qdrant inside engine container without backend/."""
-        sync_file = Path(__file__).resolve().parent.parent / "scripts" / "catalog" / "sync.py"
+        """scripts/sync.py must run across engine/backend containers without cross-service top-level imports."""
+        sync_file = Path(__file__).resolve().parent.parent / "scripts" / "sync.py"
         tree = ast.parse(sync_file.read_text(encoding="utf-8"), filename=str(sync_file))
-        top_backend_imports = [
+        disallowed_roots = {"backend", "engine", "torch", "transformers", "onnxruntime"}
+        top_disallowed_imports = [
             node.lineno
             for node in tree.body
             if (
                 isinstance(node, ast.Import)
-                and any(a.name.split(".")[0] == "backend" for a in node.names)
+                and any(a.name.split(".")[0] in disallowed_roots for a in node.names)
             )
             or (
                 isinstance(node, ast.ImportFrom)
                 and node.module
-                and node.module.split(".")[0] == "backend"
+                and node.module.split(".")[0] in disallowed_roots
             )
         ]
-        self.assertEqual(top_backend_imports, [])
+        self.assertEqual(top_disallowed_imports, [])
 
     def test_model_load_lifecycle_concurrency_and_reload_cache_eviction(self):
         """trigger_model_load guards concurrent loads, evicts caches on reload, and skips duplicate classifier calls."""
         import threading
         import time
 
-        from engine.core import resource_loader as rl
+        from engine.pipelines import runtime_pipeline as rl
 
         saved_statuses = {d: dict(st) for d, st in rl._model_statuses.items()}
         saved_pipelines = dict(rl._pipelines)
@@ -465,13 +475,14 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
 
             with (
                 patch.object(rl, "_get_shared_models", return_value=(None, None)),
+                patch.object(rl, "_get_reranker_model", return_value=None),
                 patch.object(rl, "_rebuild_data_caches"),
                 patch.object(rl, "refresh_rules_cache"),
                 patch.object(rl, "start_invalidation_listener"),
                 patch.object(rl, "clear_flavor_cache"),
                 patch.object(rl, "get_pipeline", side_effect=fake_get_pipeline),
                 patch.object(rl, "get_classifier") as mock_clf,
-                patch("engine.pipeline.worker_runner.start_queue_worker", return_value=None),
+                patch("engine.pipelines.worker_pipeline.start_queue_worker", return_value=None),
             ):
                 status, _ = rl.trigger_model_load(reload=True)
                 self.assertEqual(status, "started")
@@ -498,8 +509,9 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
         from unittest.mock import MagicMock
 
         from engine import server as eng_server
-        from engine.pipeline import worker_runner
-        from engine.rules_engine.loader import RulesSnapshot
+        from engine.grpc import callback_client
+        from engine.pipelines import worker_pipeline as worker_runner
+        from engine.pipelines.rules_loader_pipeline import RulesSnapshot
 
         fake_srv = MagicMock()
         with (
@@ -519,7 +531,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             CompleteJob=lambda req, **_kw: call_order.append(f"complete:{req.status}"),
         )
         with (
-            patch.object(worker_runner, "_get_backend_stub", return_value=fake_stub),
+            patch.object(callback_client, "_get_backend_stub", return_value=fake_stub),
             patch.object(worker_runner, "sync_rules_version"),
             patch.object(worker_runner, "snapshot_rules", return_value=RulesSnapshot("v1", {})),
             patch.object(
@@ -551,8 +563,8 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
 
         from fastapi.testclient import TestClient
 
-        from backend.app import grpc_server as be_grpc
         from backend.main import app
+        from backend.repositories import job_progress_repository as prog_repo
 
         # Verify Redis-backed progress store + Pub/Sub publish + eviction
         published: list[tuple[str, dict]] = []
@@ -582,15 +594,15 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             def delete(self, k):
                 fake_hash.pop(k, None)
 
-        with patch.object(be_grpc, "_progress_redis", return_value=_FakeSyncRedis()):
-            be_grpc.set_job_progress("j_redis_1", pct=42.5, eta=9, stage="reranking")
-            self.assertEqual(be_grpc.get_job_progress_state("j_redis_1"), (42.5, 9))
-            be_grpc.publish_job_event({"id": "j_redis_1", "status": "running"})
+        with patch.object(prog_repo, "get_progress_redis_client", return_value=_FakeSyncRedis()):
+            prog_repo.set_job_progress("j_redis_1", pct=42.5, eta=9, stage="reranking")
+            self.assertEqual(prog_repo.fetch_job_progress_state("j_redis_1"), (42.5, 9))
+            prog_repo.publish_job_event({"id": "j_redis_1", "status": "running"})
             self.assertEqual(
                 published, [("matchops:jobs:events", {"id": "j_redis_1", "status": "running"})]
             )
-            be_grpc.clear_job_progress("j_redis_1")
-            self.assertEqual(be_grpc.get_job_progress_state("j_redis_1"), (0.0, None))
+            prog_repo.clear_job_progress("j_redis_1")
+            self.assertEqual(prog_repo.fetch_job_progress_state("j_redis_1"), (0.0, None))
 
         fake_conn_ctx = MagicMock()
         fake_db_engine = MagicMock()
@@ -600,10 +612,13 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
 
         client = TestClient(app)
         with (
-            patch("backend.app.api.routes.get_engine", return_value=fake_db_engine),
+            patch(
+                "backend.repositories.database_init_repository.get_engine",
+                return_value=fake_db_engine,
+            ),
             patch("redis.Redis.from_url", return_value=mock_r),
             patch(
-                "backend.app.api.routes.get_engine_health",
+                "backend.services.engine_gateway_service.get_engine_health",
                 return_value={"status": "ok", "all_models_ready": False},
             ),
         ):
@@ -612,10 +627,13 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             self.assertEqual(r_not_ready.json()["status"], "not_ready")
 
         with (
-            patch("backend.app.api.routes.get_engine", return_value=fake_db_engine),
+            patch(
+                "backend.repositories.database_init_repository.get_engine",
+                return_value=fake_db_engine,
+            ),
             patch("redis.Redis.from_url", return_value=mock_r),
             patch(
-                "backend.app.api.routes.get_engine_health",
+                "backend.services.engine_gateway_service.get_engine_health",
                 return_value={"status": "ok", "all_models_ready": True},
             ),
         ):
@@ -623,7 +641,7 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             self.assertEqual(r_ready.status_code, 200)
             self.assertEqual(r_ready.json()["status"], "ready")
 
-        with patch("backend.app.api.endpoints.jobs._single_job", return_value=None):
+        with patch("backend.services.job_service.fetch_single_job_snapshot", return_value=None):
             self.assertEqual(client.get("/jobs/nonexistent_sse_job/stream").status_code, 404)
 
         job_snapshot = {
@@ -652,9 +670,11 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
                 return None
 
         with (
-            patch("backend.app.api.endpoints.jobs._single_job", return_value=job_snapshot),
             patch(
-                "backend.app.api.endpoints.jobs._open_job_pubsub",
+                "backend.services.job_service.fetch_single_job_snapshot", return_value=job_snapshot
+            ),
+            patch(
+                "backend.services.job_service.open_job_event_stream",
                 return_value=(_FakeAsyncRedis(), _FakePubSub()),
             ),
         ):
@@ -667,6 +687,60 @@ class TestDecoupledEngineIntegration(unittest.TestCase):
             self.assertEqual(frame["id"], "test_sse_job_202")
             self.assertEqual(frame["status"], "completed")
             self.assertEqual(frame["progress_pct"], 100.0)
+
+    def test_sync_cli_db_mode_avoids_engine_imports(self):
+        import builtins
+        import sys
+        from unittest.mock import MagicMock
+
+        import scripts.sync as sync_mod
+
+        real_import = builtins.__import__
+        imported_roots = []
+
+        def _tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "engine" or name.startswith("engine."):
+                imported_roots.append(name)
+            return real_import(name, globals, locals, fromlist, level)
+
+        with (
+            patch.object(
+                sys, "argv", ["sync.py", "--db", "sync", "--from-staged", "--keep-staged"]
+            ),
+            patch.object(sync_mod, "sync_db", MagicMock()) as mock_sync_db,
+            patch.object(sync_mod, "_get_sheet_id", return_value="dummy_sheet_id"),
+            patch.object(builtins, "__import__", side_effect=_tracking_import),
+        ):
+            sync_mod.main()
+
+        self.assertEqual(imported_roots, [])
+        self.assertEqual(mock_sync_db.call_count, 2)
+
+    def test_grpc_suggest_tags_maps_template_fields(self):
+        from unittest.mock import MagicMock
+
+        from engine.grpc.inference_servicer import EngineInferenceServicer
+
+        servicer = EngineInferenceServicer()
+        req = pb2.SuggestRequest(sku_name="Kist Mango Nectar 200ml", domain="market")
+        with patch(
+            "engine.grpc.inference_servicer.suggest_tags_from_template",
+            return_value={
+                "matched": True,
+                "base_sku": "Kist Nectar 200ml",
+                "suggested_bt": "Juice",
+                "suggested_gk": ["Juice", "Fruit Drink"],
+                "suggested_region": "Beverages",
+            },
+        ):
+            resp = servicer.SuggestTags(req, MagicMock())
+
+        self.assertEqual(resp.status, "success")
+        self.assertTrue(resp.is_match)
+        self.assertEqual(resp.template_used, "Kist Nectar 200ml")
+        self.assertEqual(resp.suggested_bt, "Juice")
+        self.assertEqual(resp.suggested_gk, "Juice, Fruit Drink")
+        self.assertEqual(resp.suggested_region, "Beverages")
 
 
 if __name__ == "__main__":

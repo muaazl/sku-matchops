@@ -9,10 +9,11 @@ from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from backend.app.middleware.audit_logging import AuditLoggingMiddleware
-from backend.app.middleware.etag import ETAG_MAX_BODY_SIZE, ETagMiddleware
-from backend.app.services import catalog_sync
-from backend.app.services.portal_service import fetch_merchant_csv, parse_csv_text_to_skus
+from backend.api.middleware.audit_logging_middleware import AuditLoggingMiddleware
+from backend.api.middleware.etag_middleware import ETAG_MAX_BODY_SIZE, ETagMiddleware
+from backend.repositories import catalog_repository
+from backend.services import catalog_sync_service as catalog_sync
+from backend.services.portal_service import fetch_merchant_csv, parse_csv_text_to_skus
 
 
 def _build_middleware_app():
@@ -75,9 +76,7 @@ def test_audit_logging_middleware_filters_and_redacts():
     c = TestClient(app)
 
     recorded = []
-    with patch(
-        "backend.app.middleware.audit_logging._insert_api_request", side_effect=recorded.append
-    ):
+    with patch("backend.services.audit_service.record_api_request", side_effect=recorded.append):
         c.get("/small")
         assert recorded == []  # GETs are never audited
 
@@ -134,9 +133,9 @@ def test_fetch_merchant_csv_detects_portal_auth_errors(error_entry):
     resp.json.return_value = {"errors": [error_entry]}
 
     with (
-        patch("backend.app.services.portal_service.validate_outbound_url"),
-        patch("backend.app.services.portal_service.log_outbound_request"),
-        patch("backend.app.services.portal_service.requests.get", return_value=resp),
+        patch("backend.services.portal_service.validate_outbound_url"),
+        patch("backend.services.audit_service.record_outbound_request"),
+        patch("backend.services.portal_service.requests.get", return_value=resp),
     ):
         out = fetch_merchant_csv("M1", "tok")
 
@@ -147,20 +146,20 @@ def test_fetch_merchant_csv_detects_portal_auth_errors(error_entry):
 
 def test_fetch_merchant_csv_handles_http_status_network_and_empty_csv():
     with (
-        patch("backend.app.services.portal_service.validate_outbound_url"),
-        patch("backend.app.services.portal_service.log_outbound_request"),
+        patch("backend.services.portal_service.validate_outbound_url"),
+        patch("backend.services.audit_service.record_outbound_request"),
     ):
         # 401 status flags auth_failed
         r401 = MagicMock(status_code=401, ok=False, text="Unauthorized", reason="Unauthorized")
         r401.json.side_effect = ValueError("not json")
-        with patch("backend.app.services.portal_service.requests.get", return_value=r401):
+        with patch("backend.services.portal_service.requests.get", return_value=r401):
             out_401 = fetch_merchant_csv("M1", "tok")
         assert out_401["auth_failed"] is True
 
         # 502 error does not flag auth_failed
         r502 = MagicMock(status_code=502, ok=False, text="Bad Gateway", reason="Bad Gateway")
         r502.json.side_effect = ValueError("not json")
-        with patch("backend.app.services.portal_service.requests.get", return_value=r502):
+        with patch("backend.services.portal_service.requests.get", return_value=r502):
             out_502 = fetch_merchant_csv("M1", "tok")
         assert out_502["auth_failed"] is False
         assert "502" in out_502["error"]
@@ -168,13 +167,13 @@ def test_fetch_merchant_csv_handles_http_status_network_and_empty_csv():
         # Empty CSV rows error
         r_empty = MagicMock(status_code=200, ok=True, text="Name,Price\n ,100\n")
         r_empty.json.side_effect = ValueError("not json")
-        with patch("backend.app.services.portal_service.requests.get", return_value=r_empty):
+        with patch("backend.services.portal_service.requests.get", return_value=r_empty):
             out_empty = fetch_merchant_csv("M1", "tok")
         assert "no valid SKU rows" in out_empty["error"]
 
         # Network exception
         with patch(
-            "backend.app.services.portal_service.requests.get",
+            "backend.services.portal_service.requests.get",
             side_effect=requests.Timeout("timed out"),
         ):
             out_net = fetch_merchant_csv("M1", "tok")
@@ -193,7 +192,7 @@ def test_sync_catalog_to_database_incremental_diff(pg, tmp_path, monkeypatch):
     def _fake_staged_path(sheet_name: str) -> str:
         return str(cat_path if "Catalog" in sheet_name else brand_path)
 
-    monkeypatch.setattr(catalog_sync, "_get_staged_path", _fake_staged_path)
+    monkeypatch.setattr(catalog_repository, "resolve_staged_sheet_path", _fake_staged_path)
 
     try:
         # Pass 1: initial sync inserts 2 catalog rows and 2 brands

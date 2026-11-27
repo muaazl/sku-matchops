@@ -6,20 +6,14 @@ All Gateway <-> Engine communication runs strictly over gRPC.
 
 import logging
 import signal
-import sys
 
 from engine.core.observability import configure_logging
-from engine.core.resource_loader import trigger_model_load
-from engine.grpc_server import start_grpc_server
-from engine.pipeline.worker_runner import shutdown_workers
+from engine.grpc.inference_servicer import start_grpc_server
+from engine.pipelines.runtime_pipeline import trigger_model_load
+from engine.pipelines.worker_pipeline import shutdown_workers
 
 logger = logging.getLogger("matchops.engine.server")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-configure_logging()  # trace ids on every line; LOG_FORMAT=json for structured output
+configure_logging(ensure_handlers=True)
 
 
 def serve(port: int | None = None, host: str = "0.0.0.0") -> None:

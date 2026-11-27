@@ -1,23 +1,17 @@
 import React, { lazy } from 'react';
 import { Navigate } from 'react-router-dom';
-import Layout from './app/Layout';
+import Layout from './components/layout/Layout';
 
-/**
- * Route-based code splitting configuration.
- * Pages are lazily loaded via React.lazy() to optimize the initial bundle size and load time.
- */
-
-const Dashboard = lazy(() => import('./app/pages/Dashboard'));
-const Jobs = lazy(() => import('./app/pages/Jobs'));
-const Requests = lazy(() => import('./app/pages/Requests'));
-const Collections = lazy(() => import('./app/pages/Collections'));
-const ProcessSKUs = lazy(() => import('./app/pages/ProcessSKUs'));
-const Interactive = lazy(() => import('./app/pages/Interactive'));
-const SkuResults = lazy(() => import('./app/pages/SkuResults'));
-const RulesEngine = lazy(() => import('./app/pages/RulesEngine'));
-const CatalogSearch = lazy(() => import('./app/pages/CatalogSearch'));
-const Logs = lazy(() => import('./app/pages/Logs'));
-const Guide = lazy(() => import('./app/pages/Guide'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Jobs = lazy(() => import('./pages/Jobs'));
+const Requests = lazy(() => import('./pages/Requests'));
+const Collections = lazy(() => import('./pages/Collections'));
+const ProcessSKUs = lazy(() => import('./pages/ProcessSKUs'));
+const Interactive = lazy(() => import('./pages/Interactive'));
+const SkuResults = lazy(() => import('./pages/SkuResults'));
+const RulesEngine = lazy(() => import('./pages/RulesEngine'));
+const CatalogSearch = lazy(() => import('./pages/CatalogSearch'));
+const Guide = lazy(() => import('./pages/Guide'));
 
 const routes = () => [
   {
@@ -35,7 +29,6 @@ const routes = () => [
       { path: 'sku-results', element: <SkuResults /> },
       { path: 'rules', element: <RulesEngine /> },
       { path: 'catalog', element: <CatalogSearch /> },
-      { path: 'logs', element: <Logs /> },
       { path: 'guide', element: <Guide /> },
       { path: '*', element: <Navigate to="/dashboard" replace /> },
     ],

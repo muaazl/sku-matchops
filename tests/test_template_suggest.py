@@ -3,11 +3,12 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from engine import config
-from engine.nlp.ner_engine import NEREngine
+from engine.core import config
+from engine.inference.gliner_model import GlinerModel
+from engine.pipelines.template_pipeline import suggest_tags_from_template
 
 # Import the functions to test
-from engine.templates.template_suggest import suggest_tags_from_template, title_case_with_exceptions
+from engine.preprocessing.text_normalizer import format_title_case
 
 
 class TestTemplateSuggest(unittest.TestCase):
@@ -29,12 +30,12 @@ class TestTemplateSuggest(unittest.TestCase):
             ),  # First word is capitalized even if minor
         ]
         for inp, expected in cases:
-            self.assertEqual(title_case_with_exceptions(inp), expected)
+            self.assertEqual(format_title_case(inp), expected)
 
-    @patch("engine.core.resource_loader.get_pipeline")
-    @patch("engine.templates.template_suggest.get_catalog_and_brands")
-    @patch("engine.templates.template_suggest.get_classifier")
-    @patch("engine.templates.template_suggest.get_classifier_dicts")
+    @patch("engine.pipelines.runtime_pipeline.get_pipeline")
+    @patch("engine.pipelines.template_pipeline.get_catalog_and_brands")
+    @patch("engine.pipelines.template_pipeline.get_classifier")
+    @patch("engine.pipelines.template_pipeline.get_classifier_dicts")
     def test_suggest_tags_from_template_food(
         self, mock_get_dicts, mock_get_classifier, mock_get_catalog, mock_get_pipeline
     ):
@@ -83,8 +84,8 @@ class TestTemplateSuggest(unittest.TestCase):
 
         mock_get_catalog.return_value = (mock_cat_df, mock_brands_df)
 
-        # 2. Mock NEREngine and Classifier
-        real_ner = NEREngine(mock_brands_df, domain="food")
+        # 2. Mock GlinerModel and Classifier
+        real_ner = GlinerModel(mock_brands_df, domain="food")
         real_ner.model = None
 
         mock_classifier = MagicMock()
@@ -166,10 +167,10 @@ class TestTemplateSuggest(unittest.TestCase):
         )
         self.assertFalse(res_sandwich["matched"])
 
-    @patch("engine.core.resource_loader.get_pipeline")
-    @patch("engine.templates.template_suggest.get_catalog_and_brands")
-    @patch("engine.templates.template_suggest.get_classifier")
-    @patch("engine.templates.template_suggest.get_classifier_dicts")
+    @patch("engine.pipelines.runtime_pipeline.get_pipeline")
+    @patch("engine.pipelines.template_pipeline.get_catalog_and_brands")
+    @patch("engine.pipelines.template_pipeline.get_classifier")
+    @patch("engine.pipelines.template_pipeline.get_classifier_dicts")
     def test_suggest_tags_from_template_market(
         self, mock_get_dicts, mock_get_classifier, mock_get_catalog, mock_get_pipeline
     ):
@@ -212,11 +213,11 @@ class TestTemplateSuggest(unittest.TestCase):
 
         mock_get_catalog.side_effect = side_effect
 
-        # 2. Mock NEREngine and Classifier
-        market_ner = NEREngine(mock_brands_df, domain="market")
+        # 2. Mock GlinerModel and Classifier
+        market_ner = GlinerModel(mock_brands_df, domain="market")
         market_ner.model = None
 
-        food_ner = NEREngine(mock_food_flavors_df, domain="food")
+        food_ner = GlinerModel(mock_food_flavors_df, domain="food")
         food_ner.model = None
 
         def mock_get_clf(domain):

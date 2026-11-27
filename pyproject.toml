@@ -12,6 +12,7 @@ exclude = [
     "data",
     "models",
     "engine/protos",
+    "backend/protos",
 ]
 
 [tool.ruff.lint]
@@ -33,6 +34,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "scripts/**" = ["E402"]
+"evaluation/**" = ["E402"]
 "docker-entrypoint-*.py" = ["E402"]
 
 [tool.ruff.lint.isort]

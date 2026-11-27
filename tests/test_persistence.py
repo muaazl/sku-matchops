@@ -6,8 +6,8 @@ import uuid
 import pytest
 from sqlalchemy import event, inspect, text
 
-from backend.app.db.session import upsert_processed_skus
-from backend.app.services.persistence import record_job_completion
+from backend.repositories.sku_repository import upsert_processed_skus
+from backend.services.job_callback_service import record_job_completion
 
 pytestmark = pytest.mark.usefixtures("pg")
 
@@ -203,3 +203,40 @@ def test_engine_job_completion_is_idempotent_on_retry(pg, job_id):
     assert sample["sku_name"] == "Item 7"
     assert sample["input_price"] is None  # blank price from the sheet stored as NULL
     assert json.loads(sample["gk_json"]) == ["Dairy", "Butter"]
+
+
+def test_record_job_completion_does_not_overwrite_cancelled_job(pg, job_id):
+    skus = [{"name": "Item 0", "price": 100.0, "description": "", "category": ""}]
+    with pg.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO jobs (id, batch_id, type, status, current_stage, total_items, cancel_requested, started_at, domain, input_skus_json) "
+                "VALUES (:id, :id, 'pipeline', 'cancelled', 'cancelled', 1, 1, now(), 'market', :skus)"
+            ),
+            {"id": job_id, "skus": json.dumps(skus)},
+        )
+
+    res = record_job_completion(
+        job_id=job_id,
+        domain="market",
+        task="pipeline",
+        results=[{"suggested_bt": "Butter", "suggested_gk": "Dairy", "score": 0.95}],
+        rule_version="rv1",
+        duration_minutes=0.2,
+        high_conf=1,
+        med_conf=0,
+        low_conf=0,
+        match_rate=100.0,
+    )
+    assert res == -1
+    assert _count(pg, job_id) == 0
+    with pg.connect() as conn:
+        job = (
+            conn.execute(
+                text("SELECT status, current_stage FROM jobs WHERE id = :id"), {"id": job_id}
+            )
+            .mappings()
+            .fetchone()
+        )
+    assert job["status"] == "cancelled"
+    assert job["current_stage"] == "cancelled"

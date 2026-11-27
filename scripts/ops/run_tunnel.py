@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import urllib.request
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -33,19 +34,18 @@ def find_or_download_cloudflared() -> str:
         return sys_binary
 
     # 2. Check local workspace directory
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir = os.path.dirname(os.path.dirname(current_dir))
+    root_dir = Path(__file__).resolve().parents[2]
     is_windows = platform.system().lower() == "windows"
     binary_name = "cloudflared.exe" if is_windows else "cloudflared"
 
-    local_path = os.path.join(root_dir, binary_name)
-    if os.path.exists(local_path) and os.access(local_path, os.X_OK if not is_windows else os.F_OK):
-        return local_path
+    local_path = root_dir / binary_name
+    if local_path.is_file() and os.access(local_path, os.X_OK if not is_windows else os.F_OK):
+        return str(local_path)
 
     # Check /usr/local/bin or /tmp
-    for fallback in ["/usr/local/bin/cloudflared", "/tmp/cloudflared"]:
-        if os.path.exists(fallback):
-            return fallback
+    for fallback in [Path("/usr/local/bin/cloudflared"), Path("/tmp/cloudflared")]:
+        if fallback.is_file():
+            return str(fallback)
 
     # 3. Download cloudflared if missing
     print(

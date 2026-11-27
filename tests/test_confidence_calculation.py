@@ -1,7 +1,7 @@
 import pytest
 
-from backend.app.services.persistence import build_processed_sku_rows
-from engine.classification.tagger import compute_weighted_confidence
+from backend.services.job_callback_service import build_processed_sku_rows
+from engine.pipelines.classification_pipeline import compute_weighted_confidence
 
 
 def test_compute_weighted_confidence_all_tags():

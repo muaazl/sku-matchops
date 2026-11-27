@@ -16,7 +16,7 @@ def wait_for_service(host: str, port: int, timeout: float = 60.0):
         except (TimeoutError, ConnectionRefusedError):
             if time.time() - start_time > timeout:
                 print(
-                    f"WARNING: Timeout waiting for service {host}:{port}. Attempting to proceed anyway...",
+                    f"FATAL: Timeout waiting for service {host}:{port}.",
                     flush=True,
                 )
                 return False
@@ -31,7 +31,17 @@ def main():
     # Wait for PostgreSQL
     pg_host = os.getenv("POSTGRES_HOST", "postgres")
     pg_port = int(os.getenv("POSTGRES_PORT", "5432"))
-    wait_for_service(pg_host, pg_port, timeout=30.0)
+    if not wait_for_service(pg_host, pg_port, timeout=30.0):
+        sys.exit(1)
+
+    # Wait for Redis (required, no fallback)
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    parts = redis_url.replace("redis://", "").split("/")
+    host_port = parts[0].split("@")[-1].split(":")
+    r_host = host_port[0]
+    r_port = int(host_port[1]) if len(host_port) > 1 else 6379
+    if not wait_for_service(r_host, r_port, timeout=30.0):
+        sys.exit(1)
 
     # Launch uvicorn for the Backend API Gateway (single process, no reload bloat)
     port = os.getenv("PORT", "8000")

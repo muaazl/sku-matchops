@@ -1,20 +1,24 @@
 import { Button } from '@mui/material';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import './index.css';
-import App from './App';
-import reportWebVitals from './reportWebVitals';
 import { HashRouter } from 'react-router-dom';
-import { SnackbarProvider, closeSnackbar } from 'notistack';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+import { SnackbarProvider, closeSnackbar } from 'notistack';
+import App from './App';
+import { useAppStore } from './hooks/useAppStore';
+import './index.css';
+import { configureApiKeyProvider } from './services/httpClient';
+import reportWebVitals from './utils/reportWebVitals';
+
+configureApiKeyProvider(() => useAppStore.getState().apiKey);
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
       retry: 1,
-      staleTime: 30 * 1000, // 30s — avoid redundant refetches on page navigation
+      staleTime: 30 * 1000, // Avoid redundant refetches on page navigation.
     },
   },
 });

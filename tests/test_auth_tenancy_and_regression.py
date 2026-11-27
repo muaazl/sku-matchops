@@ -1,19 +1,18 @@
-"""API Key authentication, observability, and golden regression tests."""
+"""API Key authentication and observability integration tests."""
 
 import io
 import json
 import logging
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from backend.app.core import config as backend_config
+from backend.core import config as backend_config
 from engine.core import observability
-from engine.rules_engine import loader
+from engine.pipelines import rules_loader_pipeline as loader
 
 # ---------------------------------------------------------------- shared fixtures
 
@@ -67,9 +66,7 @@ METRIC_NAMES = [
 
 def test_gateway_and_engine_metrics_endpoints(app_client, monkeypatch):
     stats = {"realtime": 2, "bulk": 5, "delayed": 1, "inflight": 3, "dlq": 4}
-    monkeypatch.setattr(
-        "engine.pipeline.task_queue.get_task_queue", lambda: SimpleNamespace(stats=lambda: stats)
-    )
+    monkeypatch.setattr(observability, "_queue_stats_provider", lambda: stats)
     observability.SKUS_PROCESSED.labels(domain="market", status="high").inc(3)
     observability.MATCH_CONFIDENCE.observe(0.92)
     observability.ONNX_INFERENCE_SECONDS.labels(model="embed").observe(0.01)
@@ -77,7 +74,7 @@ def test_gateway_and_engine_metrics_endpoints(app_client, monkeypatch):
     resp = app_client.get("/metrics")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/plain")
-    raw_payload, content_type = observability.metrics_payload()
+    raw_payload, content_type = observability.render_metrics_payload()
     assert content_type.startswith("text/plain")
 
     for body in (resp.text, raw_payload.decode("utf-8")):
@@ -93,13 +90,13 @@ def test_onnx_timing_is_recorded_per_model():
     import numpy as np
     from prometheus_client import REGISTRY
 
-    from engine.nlp.embedding_engine import EmbeddingEngine
+    from engine.inference.reranker_model import RerankerModel
 
     def count(model):
         name = "matchops_onnx_inference_duration_seconds_count"
         return REGISTRY.get_sample_value(name, {"model": model}) or 0.0
 
-    eng = EmbeddingEngine.__new__(EmbeddingEngine)
+    eng = RerankerModel.__new__(RerankerModel)
     eng.rerank_tokenizer = lambda a, b, **kw: {"input_ids": np.ones((len(a), 1), dtype=np.int64)}
     eng.cross_session = SimpleNamespace(run=lambda _o, inp: [inp["input_ids"].astype(np.float32)])
     before = count("cross_encoder")
@@ -110,14 +107,14 @@ def test_onnx_timing_is_recorded_per_model():
 def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
     app_client, monkeypatch, caplog
 ):
-    from backend.app.services import engine_client
-    from engine.pipeline import task_queue
+    from backend.repositories import task_queue_repository
+    from engine.pipelines import queue_pipeline as task_queue
 
     captured = []
     fake_queue = SimpleNamespace(
-        enqueue=lambda payload, queue=None: captured.append(payload) or "task-1"
+        enqueue_task=lambda payload, queue=None: captured.append(payload) or "task-1"
     )
-    monkeypatch.setattr(engine_client, "get_task_queue", lambda: fake_queue)
+    monkeypatch.setattr(task_queue_repository, "get_task_queue", lambda: fake_queue)
 
     trace = f"trace-{uuid.uuid4().hex[:12]}"
     resp = app_client.post(
@@ -163,7 +160,7 @@ def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
         if r.name == handler_logger.name
     )
 
-    from backend.app.db.session import get_engine
+    from backend.core.database import get_engine
 
     with get_engine().begin() as conn:
         job_id = resp.json()["job_id"]
@@ -172,9 +169,9 @@ def test_trace_id_flows_from_gateway_request_into_engine_worker_logs(
 
 
 def test_invalid_incoming_trace_ids_are_replaced(app_client, monkeypatch):
-    from backend.app.api import routes
+    from backend.services import engine_gateway_service
 
-    monkeypatch.setattr(routes, "get_engine_health", lambda: {})
+    monkeypatch.setattr(engine_gateway_service, "get_engine_health", lambda: {})
     resp = app_client.get("/health", headers={"X-Request-ID": "bad id\nwith newline"})
     assert resp.headers["X-Request-ID"] != "bad id\nwith newline"
     assert len(resp.headers["X-Request-ID"]) == 32
@@ -187,7 +184,7 @@ def test_json_log_format(monkeypatch):
     log.addHandler(logging.StreamHandler(stream))
     monkeypatch.setattr(observability.config, "LOG_FORMAT", "json")
     observability.configure_logging(log)
-    with observability.trace_context("abc123"):
+    with observability.bind_trace_context("abc123"):
         log.warning("hello %s", "world")
     entry = json.loads(stream.getvalue().strip())
     assert entry["message"] == "hello world"
@@ -195,113 +192,19 @@ def test_json_log_format(monkeypatch):
     assert entry["ts"] and entry["logger"] == log.name
 
 
-# ---------------------------------------------------------------- golden regression
-
-GOLDEN = json.loads((Path(__file__).parent / "golden_dataset.json").read_text(encoding="utf-8"))
-
-
-@pytest.fixture(scope="module")
-def golden_rules():
-    """Seeds the production business rules captured in the golden dataset."""
-    prev = (loader._RULES_CACHE, loader._RULES_VERSION)
-    loader.set_rules_from_dicts(GOLDEN["rules"])
-    yield
-    loader._RULES_CACHE, loader._RULES_VERSION = prev
-    loader._cached_rules.cache_clear()
-
-
-def test_golden_dataset_shape():
-    cases = GOLDEN["cases"]
-    assert len(cases) >= 50
-    assert len({c["id"] for c in cases}) == len(cases)
-    categories = {c["category"] for c in cases}
-    for required in (
-        "seafood_rule",
-        "seafood_rule_exclusion",
-        "unit_variant",
-        "beverage",
-        "combo_set_menu",
-        "typo",
-        "false_positive_trap",
-    ):
-        assert required in categories, required
-    assert {c["domain"] for c in cases} == {"food", "market"}
-
-
-@pytest.mark.live_models
-def test_golden_regression(golden_rules):
-    import os
-
-    import httpx
-
-    from engine import config
-    from engine.core.resource_loader import get_classifier, get_pipeline
-    from engine.pipeline.processor import process_request
-
-    for d in ("food", "market"):
-        meta_path = os.path.join(config.CACHE_DIR, f"{d}_catalog_metadata.pkl")
-        if (
-            not os.path.exists(config.BI_ENCODER_ONNX)
-            or not os.path.exists(config.get_bt_arcface_onnx_path(d))
-            or not os.path.exists(meta_path)
-        ):
-            pytest.skip(f"Local ONNX models or synced '{d}' catalog cache not found on disk")
-    try:
-        if httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0).status_code >= 500:
-            pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
-    except Exception:
-        pytest.skip(f"Qdrant not reachable at {config.QDRANT_URL}")
-
-    outcomes = []
-    for domain in ("food", "market"):
-        cases = [c for c in GOLDEN["cases"] if c["domain"] == domain]
-        get_classifier(domain)
-        get_pipeline(domain)
-        skus = [{"name": c["sku"], "price": 0.0, "description": "", "category": ""} for c in cases]
-        results = process_request(task="classifier", domain=domain, skus=skus)["results"]
-        assert len(results) == len(cases)
-        for case, res in zip(cases, results):
-            gks = {g.strip() for g in (res.get("suggested_gk") or "").split(",") if g.strip()}
-            bt_ok = res.get("suggested_bt") in case["expected_bt"]
-            missing = set(case.get("must_have_gk", [])) - gks
-            forbidden = set(case.get("must_not_have_gk", [])) & gks
-            outcomes.append(
-                {
-                    "case": case,
-                    "bt": res.get("suggested_bt"),
-                    "ok": bt_ok and not missing and not forbidden,
-                    "missing": missing,
-                    "forbidden": forbidden,
-                }
-            )
-
-    accuracy = sum(o["ok"] for o in outcomes) / len(outcomes)
-    critical = [o for o in outcomes if o["forbidden"] and o["case"].get("critical")]
-    misses = "\n".join(
-        f"  {o['case']['id']} {o['case']['sku']!r}: got bt={o['bt']!r} "
-        f"expected {o['case']['expected_bt']} missing={sorted(o['missing'])} forbidden={sorted(o['forbidden'])}"
-        for o in outcomes
-        if not o["ok"]
-    )
-    print(
-        f"\nGolden accuracy {accuracy:.1%} ({sum(o['ok'] for o in outcomes)}/{len(outcomes)})\n{misses}"
-    )
-
-    assert not critical, f"critical rule false positives:\n{misses}"
-    assert accuracy >= GOLDEN["min_accuracy"], f"accuracy {accuracy:.1%} below threshold:\n{misses}"
-
-
 # ---------------------------------------------------------------- gRPC fallback context
 
 
 def test_grpc_fallback_preserves_trace(monkeypatch, loopback):
     """Redis unavailable -> Gateway dispatches via gRPC to the Engine; trace survives."""
-    from backend.app.schemas.models import BaseRequest, SKUItem
-    from backend.app.services import engine_client
-    from engine import grpc_server
-    from engine.pipeline import worker_runner
+    from backend.core import config as backend_cfg
+    from backend.repositories import task_queue_repository
+    from backend.schemas.sku_schema import BaseRequest, SKUItem
+    from backend.services import job_service
+    from engine.grpc import inference_servicer as grpc_server
+    from engine.pipelines import worker_pipeline as worker_runner
 
-    monkeypatch.setattr(engine_client, "get_task_queue", lambda: None)  # queue disabled
+    monkeypatch.setattr(task_queue_repository, "get_task_queue", lambda: None)  # queue disabled
     queued = []
     monkeypatch.setattr(
         grpc_server, "enqueue_batch_job", lambda p: queued.append(p) or {"status": "accepted"}
@@ -309,11 +212,11 @@ def test_grpc_fallback_preserves_trace(monkeypatch, loopback):
 
     srv = grpc_server.start_grpc_server(port=0, host="127.0.0.1")
     try:
-        monkeypatch.setattr(engine_client, "ENGINE_GRPC_URL", f"127.0.0.1:{srv._bound_port}")
+        monkeypatch.setattr(backend_cfg, "ENGINE_GRPC_URL", f"127.0.0.1:{srv._bound_port}")
         trace = f"fallback-{uuid.uuid4().hex[:8]}"
         req = BaseRequest(skus=[SKUItem(name="Coca Cola 1.5L")], domain="market", callback_url="")
-        with observability.trace_context(trace):
-            engine_client.dispatch_batch_job("fb-1", req, "pipeline")
+        with observability.bind_trace_context(trace):
+            job_service.dispatch_batch_payload("fb-1", req, "pipeline")
     finally:
         srv.stop(grace=0)
 
@@ -335,7 +238,7 @@ def test_grpc_fallback_preserves_trace(monkeypatch, loopback):
 def test_grpc_fallback_defaults_when_context_missing(monkeypatch, loopback):
     import grpc
 
-    from engine import grpc_server
+    from engine.grpc import inference_servicer as grpc_server
     from engine.protos import engine_service_pb2 as pb2
     from engine.protos import engine_service_pb2_grpc as pb2_grpc
 
@@ -354,7 +257,7 @@ def test_grpc_fallback_defaults_when_context_missing(monkeypatch, loopback):
         srv.stop(grace=0)
 
     assert queued[0]["trace_id"] == "-"
-    with observability.trace_context("-") as bound:
+    with observability.bind_trace_context("-") as bound:
         assert bound != "-" and len(bound) == 32  # placeholder gets a real trace id
 
 
@@ -362,7 +265,7 @@ def test_grpc_fallback_defaults_when_context_missing(monkeypatch, loopback):
 
 
 def test_system_status_endpoint(app_client, monkeypatch):
-    from backend.app.api.endpoints import queue as queue_api
+    from backend.repositories import task_queue_repository
 
     stats = {"realtime": 1, "bulk": 2, "delayed": 0, "inflight": 1, "dlq": 3}
     dlq = [
@@ -371,11 +274,11 @@ def test_system_status_endpoint(app_client, monkeypatch):
         {"task_id": "t3", "payload": {"data": "item3"}},
     ]
     fake = SimpleNamespace(
-        stats=lambda: stats,
-        dlq_items=lambda limit=100: dlq[:limit],
-        dlq_count=lambda: len(dlq),
+        get_queue_stats=lambda: stats,
+        fetch_dlq_items=lambda limit=100: dlq[:limit],
+        count_dlq_items=lambda: len(dlq),
     )
-    monkeypatch.setattr(queue_api, "get_task_queue", lambda: fake)
+    monkeypatch.setattr(task_queue_repository, "get_task_queue", lambda: fake)
 
     resp = app_client.get("/system/status").json()
     assert resp["dlq_size"] == 3
@@ -386,12 +289,12 @@ def test_system_status_endpoint(app_client, monkeypatch):
 
 
 def test_system_status_when_queue_offline(app_client, monkeypatch):
-    from backend.app.api.endpoints import queue as queue_api
+    from backend.repositories import task_queue_repository
 
     def down():
         raise ConnectionError("redis down")
 
-    monkeypatch.setattr(queue_api, "get_task_queue", down)
+    monkeypatch.setattr(task_queue_repository, "get_task_queue", down)
     body = app_client.get("/system/status").json()
     assert body["queue_online"] is False and body["dlq_size"] is None
     assert isinstance(body["processed_skus"], int)

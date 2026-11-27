@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 
 def wait_for_service(host: str, port: int, timeout: float = 60.0):
@@ -18,7 +19,7 @@ def wait_for_service(host: str, port: int, timeout: float = 60.0):
         except (TimeoutError, ConnectionRefusedError):
             if time.time() - start_time > timeout:
                 print(
-                    f"WARNING: Timeout waiting for service {host}:{port}. Attempting to proceed anyway...",
+                    f"FATAL: Timeout waiting for service {host}:{port}.",
                     flush=True,
                 )
                 return False
@@ -27,29 +28,30 @@ def wait_for_service(host: str, port: int, timeout: float = 60.0):
 
 def sync_host_directory(host_dir: str, target_dir: str, label: str):
     """Syncs missing or updated files from host bind-mount into fast Docker volume."""
-    if not os.path.exists(host_dir):
+    host_p = Path(host_dir)
+    target_p = Path(target_dir)
+    if not host_p.exists():
         return
     synced = 0
     start = time.time()
-    for root, _dirs, files in os.walk(host_dir):
-        rel = os.path.relpath(root, host_dir)
-        dest_root = target_dir if rel == "." else os.path.join(target_dir, rel)
-        os.makedirs(dest_root, exist_ok=True)
-        for f in files:
-            src_file = os.path.join(root, f)
-            dest_file = os.path.join(dest_root, f)
-            try:
-                s_stat = os.stat(src_file)
-                if not os.path.exists(dest_file):
+    for src_file in host_p.rglob("*"):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(host_p)
+        dest_file = target_p / rel
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            s_stat = src_file.stat()
+            if not dest_file.exists():
+                shutil.copy2(src_file, dest_file)
+                synced += 1
+            else:
+                d_stat = dest_file.stat()
+                if s_stat.st_size != d_stat.st_size or s_stat.st_mtime > d_stat.st_mtime + 2:
                     shutil.copy2(src_file, dest_file)
                     synced += 1
-                else:
-                    d_stat = os.stat(dest_file)
-                    if s_stat.st_size != d_stat.st_size or s_stat.st_mtime > d_stat.st_mtime + 2:
-                        shutil.copy2(src_file, dest_file)
-                        synced += 1
-            except Exception as e:
-                print(f"Warning: could not sync {src_file} -> {dest_file}: {e}", flush=True)
+        except Exception as e:
+            print(f"Warning: could not sync {src_file} -> {dest_file}: {e}", flush=True)
 
     if synced > 0:
         elapsed = time.time() - start
@@ -66,92 +68,60 @@ def main():
 
     qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
 
-    def parse_url(url):
-        parts = url.replace("http://", "").replace("https://", "").split("/")
-        host_port = parts[0].split(":")
+    def parse_url(url, default_port=80):
+        parts = (
+            url.replace("http://", "").replace("https://", "").replace("redis://", "").split("/")
+        )
+        host_port = parts[0].split("@")[-1].split(":")
         host = host_port[0]
-        port = int(host_port[1]) if len(host_port) > 1 else 80
+        port = int(host_port[1]) if len(host_port) > 1 else default_port
         return host, port
 
     try:
-        q_host, q_port = parse_url(qdrant_url)
-        wait_for_service(q_host, q_port, timeout=45.0)
+        q_host, q_port = parse_url(qdrant_url, default_port=6333)
+        if not wait_for_service(q_host, q_port, timeout=45.0):
+            sys.exit(1)
     except Exception as e:
-        print(f"Could not parse or connect to QDRANT_URL={qdrant_url}: {e}", flush=True)
+        print(f"FATAL: Could not connect to QDRANT_URL={qdrant_url}: {e}", flush=True)
+        sys.exit(1)
 
-    # Sync from host bind-mounts to fast Docker volumes if present
-    sync_host_directory("/host_models", "/app/engine/models", "model")
-    sync_host_directory("/host_cache", "/app/engine/data/cache", "cache")
-
-    # Check and prepare ONNX & INT8 models (Idempotent)
-    sys.path.insert(0, "/app")
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     try:
-        from engine import config
+        r_host, r_port = parse_url(redis_url, default_port=6379)
+        if not wait_for_service(r_host, r_port, timeout=30.0):
+            sys.exit(1)
+    except Exception as e:
+        print(f"FATAL: Could not connect to REDIS_URL={redis_url}: {e}", flush=True)
+        sys.exit(1)
 
-        bge_int8 = os.path.join(config.ONNX_DIR, "bge_m3", "model_int8.onnx")
-        bge_fp32 = os.path.join(config.ONNX_DIR, "bge_m3", "model.onnx")
-        rerank_int8 = os.path.join(config.ONNX_DIR, "reranker", "model_int8.onnx")
-        rerank_fp32 = os.path.join(config.ONNX_DIR, "reranker", "model.onnx")
-        gliner_onnx = os.path.join(config.ONNX_DIR, "gliner", "model.onnx")
-
-        use_int8 = config.USE_INT8_MODELS
-
-        needs_export = False
-        needs_quantization = False
-
-        # Check BGE-M3
-        if use_int8:
-            if not os.path.exists(bge_int8):
-                if os.path.exists(bge_fp32):
-                    needs_quantization = True
-                else:
-                    needs_export = True
-        else:
-            if not os.path.exists(bge_fp32):
-                needs_export = True
-
-        # Check Reranker
-        if use_int8:
-            if not os.path.exists(rerank_int8):
-                if os.path.exists(rerank_fp32):
-                    needs_quantization = True
-                else:
-                    needs_export = True
-        else:
-            if not os.path.exists(rerank_fp32):
-                needs_export = True
-
-        # Check GLiNER
-        if not os.path.exists(gliner_onnx):
-            needs_export = True
-
-        if needs_export:
-            print(
-                "[SETUP] Required models are missing. Initiating one-time download, ONNX export & INT8 quantization...",
-                flush=True,
-            )
-            env = os.environ.copy()
-            env["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-            subprocess.run([sys.executable, "scripts/ml/export_onnx.py"], check=True, env=env)
-            print("[SETUP] Models exported and quantized successfully!", flush=True)
-
+    # Prune stale volume caches if host active_embedding_model.txt changed
+    host_marker = Path("/host_cache/active_embedding_model.txt")
+    vol_marker = Path("/app/data/cache/active_embedding_model.txt")
+    if host_marker.exists() and vol_marker.exists():
         if (
-            needs_quantization
-            and use_int8
-            and (not os.path.exists(bge_int8) or not os.path.exists(rerank_int8))
+            host_marker.read_text(encoding="utf-8").strip()
+            != vol_marker.read_text(encoding="utf-8").strip()
         ):
             print(
-                "[SETUP] Running INT8 dynamic quantization for memory optimization...", flush=True
+                "[SYNC] Host active_embedding_model.txt changed; clearing stale volume cache...",
+                flush=True,
             )
-            subprocess.run([sys.executable, "scripts/ml/quantize.py"], check=True)
-            print("[SETUP] INT8 quantization complete!", flush=True)
+            for f in Path("/app/data/cache").iterdir():
+                if f.is_file():
+                    f.unlink(missing_ok=True)
 
-        if not needs_export and not needs_quantization:
-            print("[OK] All required ONNX models and configs are present (cached).", flush=True)
+    # Sync from host bind-mounts to fast Docker volumes if present
+    sync_host_directory("/host_models", "/app/data/models", "model")
+    sync_host_directory("/host_cache", "/app/data/cache", "cache")
 
-    except Exception as e:
-        print(f"Error checking/preparing ONNX models: {e}", flush=True)
-        print("Attempting to proceed with server startup...", flush=True)
+    # Run synchronous pre-flight startup checks (fails fast on any mismatch or missing artifact)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "engine.pipelines.startup_check_pipeline"], check=True
+        )
+    except subprocess.CalledProcessError:
+        print("FATAL: Engine pre-flight startup checks failed. Aborting startup.", flush=True)
+        sys.exit(1)
 
     # Launch the gRPC Engine microservice on ENGINE_GRPC_PORT (50051)
     grpc_port = os.getenv("ENGINE_GRPC_PORT", "50051")

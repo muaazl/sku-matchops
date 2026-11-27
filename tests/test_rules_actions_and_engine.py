@@ -1,9 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from engine.rules_engine.actions import apply_actions
-from engine.rules_engine.engine import run_rules_engine
-from engine.rules_engine.loader import Rule
+from engine.pipelines.rules_evaluation_pipeline import apply_actions, run_rules_engine
+from engine.pipelines.rules_loader_pipeline import Rule
 
 
 class TestRulesActions(unittest.TestCase):
@@ -89,53 +88,23 @@ class TestRulesActions(unittest.TestCase):
         self.assertEqual(record["category"], "Frozen")
         self.assertIn("Category changed to 'Frozen'", changes_cat)
 
-    def test_set_visibility(self):
-        rule = self._create_rule([{"action_type": "set_visibility", "value": "hidden"}])
-        record = {"visibility": "visible"}
-        changes = apply_actions(rule, record)
-        self.assertEqual(record["visibility"], "hidden")
-        self.assertIn("Visibility set to 'hidden'", changes)
-
-    def test_normalize_sku(self):
-        rule = self._create_rule([{"action_type": "normalize_sku", "value": "Icecream|Ice Cream"}])
-
-        record = {"sku_name": "Vanilla Icecream 1L"}
-        changes = apply_actions(rule, record)
-        self.assertEqual(record["sku_name"], "Vanilla Ice Cream 1L")
-        self.assertIn("Normalized SKU substring 'Icecream' to 'Ice Cream'", changes)
-
-        # Substring not found
-        record_noop = {"sku_name": "Vanilla Ice Cream 1L"}
-        changes_noop = apply_actions(rule, record_noop)
-        self.assertEqual(changes_noop, "")
-
-        # None sku_name
-        record_none = {"sku_name": None}
-        changes_none = apply_actions(rule, record_none)
-        self.assertEqual(changes_none, "")
-
-        # Malformed action value without pipe
-        rule_bad = self._create_rule([{"action_type": "normalize_sku", "value": "Icecream"}])
-        changes_bad = apply_actions(rule_bad, record)
-        self.assertEqual(changes_bad, "")
-
     def test_compound_actions(self):
         rule = self._create_rule(
             [
                 {"action_type": "set_bt", "value": "Ice Cream Tub"},
                 {"action_type": "add_gk", "value": "Dessert"},
-                {"action_type": "set_visibility", "value": "visible"},
+                {"action_type": "set_region", "value": "Colombo"},
             ]
         )
-        record = {"bt": "Cone", "gk": ["Dairy"], "visibility": "draft"}
+        record = {"bt": "Cone", "gk": ["Dairy"], "region": "Kandy"}
         changes = apply_actions(rule, record)
 
         self.assertEqual(record["bt"], "Ice Cream Tub")
         self.assertEqual(record["gk"], ["Dairy", "Dessert"])
-        self.assertEqual(record["visibility"], "visible")
+        self.assertEqual(record["region"], "Colombo")
         self.assertEqual(
             changes,
-            "BT changed to 'Ice Cream Tub'; Added GK 'Dessert'; Visibility set to 'visible'",
+            "BT changed to 'Ice Cream Tub'; Added GK 'Dessert'; Region changed to 'Colombo'",
         )
 
 
@@ -146,8 +115,8 @@ class TestRulesEngineOrchestrator(unittest.TestCase):
         self.assertEqual(result, record)
         self.assertNotIn("rules_applied", result)
 
-    @patch("engine.rules_engine.engine.get_rules")
-    @patch("engine.rules_engine.engine.evaluate_conditions")
+    @patch("engine.pipelines.rules_evaluation_pipeline.get_rules")
+    @patch("engine.pipelines.rules_evaluation_pipeline.evaluate_conditions")
     def test_rules_run_in_priority_order(self, mock_eval, mock_get_rules):
         # Rules for a domain now run as a single flat list, ordered by priority
         # (the loader's get_rules() already sorts them, so the engine just iterates in order).
@@ -158,7 +127,7 @@ class TestRulesEngineOrchestrator(unittest.TestCase):
             r.rule_id = rid
             r.description = f"Desc for {rid}"
             r.reasoning = f"Reason for {rid}"
-            r.actions = [{"action_type": "set_visibility", "value": rid}]
+            r.actions = [{"action_type": "set_bt", "value": rid}]
             return r
 
         mock_get_rules.return_value = [make_rule(rid) for rid in rule_ids_in_order]
@@ -171,8 +140,8 @@ class TestRulesEngineOrchestrator(unittest.TestCase):
         self.assertEqual(len(result["rules_applied"]), 3)
         self.assertEqual([r["rule_id"] for r in result["rules_applied"]], rule_ids_in_order)
 
-    @patch("engine.rules_engine.engine.get_rules")
-    @patch("engine.rules_engine.engine.evaluate_conditions")
+    @patch("engine.pipelines.rules_evaluation_pipeline.get_rules")
+    @patch("engine.pipelines.rules_evaluation_pipeline.evaluate_conditions")
     def test_rules_applied_provenance_and_preservation(self, mock_eval, mock_get_rules):
         r1 = MagicMock(spec=Rule)
         r1.rule_id = "R_BT_01"

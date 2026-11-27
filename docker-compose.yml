@@ -12,7 +12,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-matchops}
       - POSTGRES_DB=${POSTGRES_DB:-matchops}
     volumes:
-      - ./backend/data/postgres:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-matchops} -d ${POSTGRES_DB:-matchops}"]
       interval: 5s
@@ -40,41 +40,10 @@ services:
       - postgres
     restart: unless-stopped
 
-  # PgBouncer High-Performance Transaction Connection Pooler
-  pgbouncer:
-    image: edoburu/pgbouncer:1.22.1-p0
-    container_name: sku_matchops_pgbouncer
-    expose:
-      - "6432"
-    environment:
-      - DB_USER=${POSTGRES_USER:-matchops}
-      - DB_PASSWORD=${POSTGRES_PASSWORD:-matchops}
-      - DB_NAME=${POSTGRES_DB:-matchops}
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - LISTEN_PORT=6432
-      - POOL_MODE=transaction
-      - MAX_CLIENT_CONN=500
-      - DEFAULT_POOL_SIZE=25
-      - MIN_POOL_SIZE=5
-      - RESERVE_POOL_SIZE=5
-      - AUTH_TYPE=scram-sha-256
-      - IGNORE_STARTUP_PARAMETERS=extra_float_digits,options
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U ${POSTGRES_USER:-matchops} -d ${POSTGRES_DB:-matchops}"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-      start_interval: 2s
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
   redis:
     image: redis:7-alpine
     container_name: sku_matchops_redis
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     expose:
       - "6379"
     restart: unless-stopped
@@ -86,7 +55,7 @@ services:
       - "6333"
       - "6334"
     volumes:
-      - ./engine/data/qdrant:/qdrant/storage:z
+      - ./data/qdrant:/qdrant/storage:z
     restart: unless-stopped
 
   # Dedicated ML Engine Microservice
@@ -95,7 +64,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.engine
     container_name: sku_matchops_engine
-    mem_limit: 4600m
+    mem_limit: 6000m
     expose:
       - "50051"
     environment:
@@ -105,7 +74,8 @@ services:
       - BACKEND_GRPC_URL=backend:50052
       - ENGINE_GRPC_PORT=50051
       - INTERNAL_GRPC_SECRET=${INTERNAL_GRPC_SECRET:-}
-      - USE_INT8_MODELS=true
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - RERANKER_MODEL=${RERANKER_MODEL}
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
     env_file:
@@ -113,10 +83,12 @@ services:
         required: false
     volumes:
       - ./engine:/app/engine
-      - cache_data:/app/engine/data/cache
-      - models_data:/app/engine/models
-      - ./engine/models:/host_models:ro
-      - ./engine/data/cache:/host_cache:ro
+      - cache_data:/app/data/cache
+      - models_data:/app/data/models
+      - ./data/models:/host_models:ro
+      - ./data/cache:/host_cache:ro
+      - staged_data:/app/data/staged_sheets
+      - ./data/sample:/app/data/sample:ro
       - ./scripts:/app/scripts
       - ./docker/docker-entrypoint-engine.py:/app/docker-entrypoint-engine.py
     depends_on:
@@ -130,12 +102,12 @@ services:
           "CMD",
           "python",
           "-c",
-          "import grpc, sys; from engine import config; from engine.core.grpc_utils import grpc_metadata; from engine.protos import engine_service_pb2 as pb2, engine_service_pb2_grpc as g; r = g.EngineInferenceServiceStub(grpc.insecure_channel(f'127.0.0.1:{config.ENGINE_GRPC_PORT}')).GetHealth(pb2.Empty(), metadata=grpc_metadata(), timeout=3); sys.exit(0 if r.all_models_ready else 1)",
+          "import grpc, sys; from engine.core import config; from engine.grpc.grpc_utils import grpc_metadata; from engine.protos import engine_service_pb2 as pb2, engine_service_pb2_grpc as g; r = g.EngineInferenceServiceStub(grpc.insecure_channel(f'127.0.0.1:{config.ENGINE_GRPC_PORT}')).GetHealth(pb2.Empty(), metadata=grpc_metadata(), timeout=3); sys.exit(0 if r.all_models_ready else 1)",
         ]
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 120s
+      start_period: 60s
     restart: unless-stopped
 
   backend:
@@ -155,21 +127,21 @@ services:
       - INTERNAL_GRPC_SECRET=${INTERNAL_GRPC_SECRET:-}
       - TZ=Asia/Colombo
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@pgbouncer:6432/${POSTGRES_DB:-matchops}
-      - POSTGRES_HOST=pgbouncer
-      - POSTGRES_PORT=6432
-      - USE_PGBOUNCER=true
-      - PGBOUNCER_PORT=6432
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-matchops}:${POSTGRES_PASSWORD:-matchops}@postgres:5432/${POSTGRES_DB:-matchops}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
       - UVICORN_RELOAD=false
     env_file:
       - path: .env
         required: false
     volumes:
       - ./backend:/app/backend
+      - staged_data:/app/data/staged_sheets
+      - ./data/sample:/app/data/sample:ro
       - ./scripts:/app/scripts
       - ./docker/docker-entrypoint-backend.py:/app/docker-entrypoint-backend.py
     depends_on:
-      pgbouncer:
+      postgres:
         condition: service_healthy
       engine:
         condition: service_started
@@ -194,3 +166,4 @@ services:
 volumes:
   models_data:
   cache_data:
+  staged_data:

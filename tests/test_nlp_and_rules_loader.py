@@ -1,37 +1,41 @@
-"""Fast offline unit tests for TextPipeline, NEREngine dict/fallback paths, and rules_engine.loader."""
+"""Fast offline unit tests for TextPipeline, GlinerModel dict/fallback paths, and rules_engine.loader."""
 
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from engine.nlp.ner_engine import NEREngine
-from engine.nlp.text_cleaner import TextPipeline
-from engine.rules_engine import loader
+from engine.inference.gliner_model import GlinerModel
+from engine.pipelines import rules_loader_pipeline as loader
+from engine.preprocessing.text_normalizer import (
+    build_ner_input_text,
+    normalize_sku_text,
+    prepare_ner_text,
+    standardize_sku_units,
+    strip_weight_tokens,
+)
 
 
 def test_text_pipeline_multipack_units_weights_and_unicode():
     # Multipack multiplication (forward & reverse) and unit normalization
-    assert " ".join(TextPipeline.standardize_units("Sprite 4 x 250ml Can").split()) == (
-        "sprite 1000ml can"
-    )
-    assert TextPipeline.standardize_units("Biscuit 100g x 3") == "biscuit 300g"
-    assert TextPipeline.standardize_units("Milk 1.5L Bottle") == "milk 1500ml bottle"
-    assert TextPipeline.standardize_units("Tea Pack of 6 (12 pieces)") == "tea 6pc (12pc)"
+    assert " ".join(standardize_sku_units("Sprite 4 x 250ml Can").split()) == ("sprite 1000ml can")
+    assert standardize_sku_units("Biscuit 100g x 3") == "biscuit 300g"
+    assert standardize_sku_units("Milk 1.5L Bottle") == "milk 1500ml bottle"
+    assert standardize_sku_units("Tea Pack of 6 (12 pieces)") == "tea 6pc (12pc)"
     # Range stripping
-    assert TextPipeline.standardize_units("Potato 100g - 200g") == "potato"
+    assert standardize_sku_units("Potato 100g - 200g") == "potato"
 
-    # normalize_final preserves Sinhala/Tamil script while removing numeric SKU noise
-    normalized = TextPipeline.normalize_final("SKU 12345 චිකන් රයිස් 99887!")
+    # normalize_sku_text preserves Sinhala/Tamil script while removing numeric SKU noise
+    normalized = normalize_sku_text("SKU 12345 චිකන් රයිස් 99887!")
     assert "චිකන් රයිස්" in normalized
     assert "99887" not in normalized
 
-    # strip_weights & prep_for_ner
-    assert TextPipeline.strip_weights("Anchor Butter 200g") == "anchor butter"
-    assert TextPipeline.prep_for_ner("Anchor Butter 200g") == "Product: Anchor Butter"
+    # strip_weight_tokens & prepare_ner_text
+    assert strip_weight_tokens("Anchor Butter 200g") == "anchor butter"
+    assert prepare_ner_text("Anchor Butter 200g") == "Product: Anchor Butter"
 
-    # build_ner_input skips null-like strings
-    assert TextPipeline.build_ner_input("Rice", "nan", "<NA>") == "Rice"
-    assert TextPipeline.build_ner_input("Rice", "Spicy", "Main") == "Rice Spicy Main"
+    # build_ner_input_text skips null-like strings
+    assert build_ner_input_text("Rice", "nan", "<NA>") == "Rice"
+    assert build_ner_input_text("Rice", "Spicy", "Main") == "Rice Spicy Main"
 
 
 def test_ner_engine_dict_priority_weak_brands_and_layer2_skip():
@@ -43,7 +47,7 @@ def test_ner_engine_dict_priority_weak_brands_and_layer2_skip():
         ]
     )
     mock_gliner = MagicMock(spec=["predict_entities"])
-    ner = NEREngine(brands_df, domain="market", shared_model=mock_gliner)
+    ner = GlinerModel(brands_df, domain="market", shared_model=mock_gliner)
 
     # Strong brand wins when both strong and weak appear; skips GLiNER Layer 2
     res_strong = ner.extract_entities("kotmale dairy fresh milk")
@@ -81,7 +85,7 @@ def test_ner_engine_food_domain_collects_all_flavors_and_fuzzy_fallback():
             },
         ]
     )
-    ner = NEREngine(flavors_df, domain="food", shared_model=MagicMock())
+    ner = GlinerModel(flavors_df, domain="food", shared_model=MagicMock())
     res = ner.extract_entities("Chk and Shrimp Noodles")
     assert res["flavor"] == {"chicken", "prawn"}
     assert ner.meat_flavors == {"chicken"}

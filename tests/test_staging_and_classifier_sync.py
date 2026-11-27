@@ -1,33 +1,32 @@
 import json
-import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import joblib
 import numpy as np
 import pandas as pd
-import pytest
 
-from engine import config
-from engine.classification.classifier import ZeroShotClassifier
-from engine.data_pipeline.ingestion import DataIngestion
+from engine.core import config
+from engine.pipelines.classification_pipeline import TaxonomyClassifier
+from engine.pipelines.ingestion_pipeline import DataIngestion
 
 
 class TestStagingAndClassifierSync(unittest.TestCase):
     def setUp(self):
         # Create a temporary directory for tests
-        self.test_dir = tempfile.mkdtemp()
+        self.test_dir = Path(tempfile.mkdtemp())
         self.orig_staging_dir = config.STAGING_DIR
         self.orig_cache_dir = config.CACHE_DIR
-        config.STAGING_DIR = os.path.join(self.test_dir, "staged_sheets")
+        config.STAGING_DIR = self.test_dir / "staged_sheets"
         config.CACHE_DIR = self.test_dir
 
     def tearDown(self):
         config.STAGING_DIR = self.orig_staging_dir
         config.CACHE_DIR = self.orig_cache_dir
-        if os.path.exists(self.test_dir):
+        if self.test_dir.exists():
             shutil.rmtree(self.test_dir)
 
     def test_required_sheets_for_domain(self):
@@ -43,7 +42,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         self.assertEqual(food_sheets["brands_or_flavors"], "Food_Flavors")
         self.assertEqual(food_sheets["catalog"], config.FOOD_CATALOG_SHEET)
 
-    @patch("engine.data_pipeline.ingestion.requests.get")
+    @patch("engine.pipelines.ingestion_pipeline.requests.get")
     def test_stage_all_sheets_and_cleanup(self, mock_get):
         # Mock requests response
         mock_response = MagicMock()
@@ -57,11 +56,11 @@ class TestStagingAndClassifierSync(unittest.TestCase):
 
         # Verify files exist in STAGING_DIR
         for sheet_name, path in staged.items():
-            self.assertTrue(os.path.exists(path))
+            self.assertTrue(Path(path).exists())
             self.assertTrue(DataIngestion.is_sheet_staged(sheet_name))
 
-        manifest_path = os.path.join(config.STAGING_DIR, "staging_manifest.json")
-        self.assertTrue(os.path.exists(manifest_path))
+        manifest_path = Path(config.STAGING_DIR) / "staging_manifest.json"
+        self.assertTrue(manifest_path.exists())
 
         # Test _fetch_sheet_as_csv uses staged file
         with patch.object(DataIngestion, "_download_sheet_with_retries") as mock_download:
@@ -74,10 +73,10 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         # Test cleanup
         DataIngestion.cleanup_staged_sheets()
         for path in staged.values():
-            self.assertFalse(os.path.exists(path))
-        self.assertFalse(os.path.exists(manifest_path))
+            self.assertFalse(Path(path).exists())
+        self.assertFalse(manifest_path.exists())
 
-    @patch("engine.data_pipeline.ingestion.requests.get")
+    @patch("engine.pipelines.ingestion_pipeline.requests.get")
     def test_download_sheet_with_retries_resilience(self, mock_get):
         # Fail twice with connection error, succeed on 3rd attempt
         fail_response = Exception("Wi-Fi disconnected")
@@ -119,7 +118,7 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         }
 
         # Initialize classifier with mock model
-        clf = ZeroShotClassifier.__new__(ZeroShotClassifier)
+        clf = TaxonomyClassifier.__new__(TaxonomyClassifier)
         clf.domain = config.DOMAIN_MARKET
         clf.cache_dir = self.test_dir
         clf.model = mock_model
@@ -134,19 +133,18 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         clf._try_train(force_retrain=True)
 
         # Verify training succeeded and stored_hashes file was written without NameError
-        hash_file = os.path.join(config.CACHE_DIR, "model_hashes.json")
-        self.assertTrue(os.path.exists(hash_file))
-        with open(hash_file) as f:
+        hash_file = Path(config.CACHE_DIR) / "model_hashes.json"
+        self.assertTrue(hash_file.exists())
+        with hash_file.open(encoding="utf-8") as f:
             hashes = json.load(f)
         self.assertIn("market_training_state", hashes)
         self.assertTrue(len(hashes["market_training_state"]) > 0)
         self.assertTrue(clf._trained)
 
-    @pytest.mark.usefixtures("pg")  # sync_cache writes NLP metadata back to catalog_items
-    @patch("scripts.catalog.sync.DataIngestion.load_catalog")
-    @patch("scripts.catalog.sync.DataIngestion.load_classifier_dictionaries")
+    @patch("engine.pipelines.ingestion_pipeline.DataIngestion.load_catalog")
+    @patch("engine.pipelines.ingestion_pipeline.DataIngestion.load_classifier_dictionaries")
     def test_rebuild_disk_caches_safe_token_count(self, mock_load_dicts, mock_load_cat):
-        from scripts.catalog.sync import sync_cache
+        from scripts.sync import sync_cache
 
         # Test catalog with None/float/missing clean_text
         sample_df = pd.DataFrame(
@@ -164,8 +162,8 @@ class TestStagingAndClassifierSync(unittest.TestCase):
         # Should not raise AttributeError: Can only use .str accessor with string values, not floating
         sync_cache("market", "test_sheet_id", "rebuild")
 
-        metadata_path = os.path.join(config.CACHE_DIR, "market_catalog_metadata.pkl")
-        self.assertTrue(os.path.exists(metadata_path))
+        metadata_path = Path(config.CACHE_DIR) / "market_catalog_metadata.pkl"
+        self.assertTrue(metadata_path.exists())
         meta_df = joblib.load(metadata_path)
         self.assertIn("token_count", meta_df.columns)
         self.assertEqual(meta_df.loc[0, "token_count"], 3)  # coca cola 250ml -> 3 tokens

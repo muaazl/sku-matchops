@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from engine import config
-from engine.pipeline.audit_engine import run_sku_audit
-from engine.pipeline.processor import process_request
+from engine.core import config
+from engine.pipelines.audit_pipeline import run_sku_audit
+from engine.pipelines.request_pipeline import process_request
 
 
 def _make_food_ner(flavor_sets: list[set[str]] | None = None):
@@ -34,7 +34,9 @@ def _make_embed_engine(n: int = 1):
 
 
 def test_process_request_rejects_unknown_task():
-    with patch("engine.pipeline.processor.check_models_loaded", return_value={"food": True}):
+    with patch(
+        "engine.pipelines.request_pipeline.check_models_loaded", return_value={"food": True}
+    ):
         with pytest.raises(ValueError, match="Unknown task"):
             process_request(task="invalid_task", domain="market", skus=[{"name": "Milk"}])
 
@@ -45,8 +47,10 @@ def test_process_request_honors_cancellation_callback():
         10.0, "step"
     )
     with (
-        patch("engine.pipeline.processor.check_models_loaded", return_value={"market": True}),
-        patch("engine.pipeline.processor.get_pipeline", return_value=fake_matcher),
+        patch(
+            "engine.pipelines.request_pipeline.check_models_loaded", return_value={"market": True}
+        ),
+        patch("engine.pipelines.request_pipeline.get_pipeline", return_value=fake_matcher),
         pytest.raises(InterruptedError, match="cancelled"),
     ):
         process_request(
@@ -103,13 +107,13 @@ def test_process_request_food_protein_prioritization_and_short_df_alignment(monk
             )
 
     with (
-        patch("engine.pipeline.processor.check_models_loaded", return_value={"food": True}),
+        patch("engine.pipelines.request_pipeline.check_models_loaded", return_value={"food": True}),
         patch(
-            "engine.pipeline.processor._get_shared_models",
+            "engine.pipelines.request_pipeline._get_shared_models",
             return_value=(_make_embed_engine(), ner),
         ),
-        patch("engine.pipeline.processor.get_ner_engine", return_value=ner),
-        patch("engine.pipeline.processor.get_pipeline", return_value=_FakeMatcher()),
+        patch("engine.pipelines.request_pipeline.get_ner_engine", return_value=ner),
+        patch("engine.pipelines.request_pipeline.get_pipeline", return_value=_FakeMatcher()),
     ):
         res = process_request(task="matcher", domain="food", skus=skus)
 
@@ -237,17 +241,17 @@ def test_pipeline_escalation_decision_and_rules_application(monkeypatch):
     fake_clf = MagicMock(ner_engine=ner)
 
     with (
-        patch("engine.pipeline.processor.check_models_loaded", return_value={"food": True}),
+        patch("engine.pipelines.request_pipeline.check_models_loaded", return_value={"food": True}),
         patch(
-            "engine.pipeline.processor._get_shared_models",
+            "engine.pipelines.request_pipeline._get_shared_models",
             return_value=(_make_embed_engine(n=3), ner),
         ),
-        patch("engine.pipeline.processor.get_ner_engine", return_value=ner),
-        patch("engine.pipeline.processor.get_pipeline", return_value=_FakeMatcher()),
-        patch("engine.pipeline.processor.get_classifier", return_value=fake_clf),
-        patch("engine.pipeline.processor._get_vector_store", return_value=MagicMock()),
-        patch("engine.pipeline.processor.tag_all_skus", side_effect=_fake_tag_all_skus),
-        patch("engine.pipeline.processor.run_rules_engine", side_effect=_fake_rules),
+        patch("engine.pipelines.request_pipeline.get_ner_engine", return_value=ner),
+        patch("engine.pipelines.request_pipeline.get_pipeline", return_value=_FakeMatcher()),
+        patch("engine.pipelines.request_pipeline.get_classifier", return_value=fake_clf),
+        patch("engine.pipelines.request_pipeline._get_vector_store", return_value=MagicMock()),
+        patch("engine.pipelines.request_pipeline.tag_all_skus", side_effect=_fake_tag_all_skus),
+        patch("engine.pipelines.request_pipeline.run_rules_engine", side_effect=_fake_rules),
     ):
         res = process_request(task="pipeline", domain="food", skus=skus)
 
@@ -296,7 +300,7 @@ def test_run_sku_audit_food_protein_prioritization_uses_real_code():
         search_candidates=lambda *args, **kwargs: pd.DataFrame(),
     )
 
-    with patch("engine.pipeline.audit_engine.run_rules_engine", side_effect=lambda rec: rec):
+    with patch("engine.pipelines.audit_pipeline.run_rules_engine", side_effect=lambda rec: rec):
         ner.extract_entities.return_value = {"flavor": {"chicken", "prawn"}}
         res_mixed = run_sku_audit(
             sku_name="Surf Platter",
@@ -319,3 +323,262 @@ def test_run_sku_audit_food_protein_prioritization_uses_real_code():
     assert res_mixed["stage1_nlp"]["food_domain_effective_sku"] == "Surf Platter mixed"
     assert res_egg_meat["stage1_nlp"]["food_suffix_added"] == ""
     assert res_egg_meat["stage1_nlp"]["food_domain_effective_sku"] == "Chicken Egg Rice"
+
+
+def test_pipeline_reranking_stage_progress_and_eta():
+    events: list[tuple[str, float, int | None]] = []
+
+    class _SteppingMatcher:
+        def process_inputs(self, df, progress_callback=None):
+            if progress_callback:
+                progress_callback(10.0, "Embedded")
+                progress_callback(30.0, "Searching")
+                progress_callback(50.0, "Reranking 0 of 2...")
+                progress_callback(62.5, "Reranking 1 of 2...")
+                progress_callback(75.0, "Reranking 2 of 2...")
+                progress_callback(100.0, "Done")
+            return pd.DataFrame(
+                [
+                    {
+                        "Matched Catalog Name": "Exact Dish",
+                        "Final Score": 0.94,
+                        "Status": "High Confidence",
+                        "Logic Notes": "Exact match",
+                        "BasicType": "Rice",
+                        "GenericKeywords": "Rice",
+                        "Region": "Local",
+                    }
+                ]
+            )
+
+    ner = _make_food_ner([set()])
+    with (
+        patch("engine.pipelines.request_pipeline.check_models_loaded", return_value={"food": True}),
+        patch(
+            "engine.pipelines.request_pipeline._get_shared_models",
+            return_value=(_make_embed_engine(n=1), ner),
+        ),
+        patch("engine.pipelines.request_pipeline.get_ner_engine", return_value=ner),
+        patch("engine.pipelines.request_pipeline.get_pipeline", return_value=_SteppingMatcher()),
+        patch("engine.pipelines.request_pipeline.run_rules_engine", side_effect=lambda rec: rec),
+    ):
+        process_request(
+            task="pipeline",
+            domain="food",
+            skus=[{"name": "Dish", "price": 500.0}],
+            progress_callback=lambda s, p, e: events.append((s, p, e)),
+        )
+
+    stages_by_pct = {pct: stage for stage, pct, _ in events}
+    assert stages_by_pct[21.0] == "vector_search"
+    assert stages_by_pct[35.0] == "reranking"
+    assert stages_by_pct[43.75] == "reranking"
+    assert stages_by_pct[52.5] == "classifying"
+    assert stages_by_pct[100.0] == "done"
+
+
+def test_resolve_bt_consensus_and_escalation_guards(monkeypatch):
+    from engine.preprocessing.weight_preprocessor import resolve_bt_consensus_indices
+
+    catalog = [
+        {"Name": "Butter Chicken", "basictype": "Burger"},
+        {"Name": "Butter Chicken", "basictype": "Masala Curry"},
+        {"Name": "Butter Chicken", "basictype": "Masala Curry"},
+        {"Name": "Butter Chicken", "basictype": "Masala Curry"},
+    ]
+    bts_lower = ["burger", "masala curry", "masala curry", "masala curry"]
+    # Majority-vote BasicType wins over index-0 outlier even if conf_bt is None or matches the 1-row outlier
+    assert resolve_bt_consensus_indices(
+        catalog, [0, 1, 2, 3], conf_bt=None, cat_bts_lower=bts_lower
+    ) == [
+        1,
+        2,
+        3,
+    ]
+    assert resolve_bt_consensus_indices(
+        catalog, [0, 1, 2, 3], conf_bt="Burger", cat_bts_lower=bts_lower
+    ) == [1, 2, 3]
+
+    # Escalation guard: empty classifier BT or confirmed Matcher BasicType Match must keep Matcher tags
+    monkeypatch.setattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", False)
+
+    class _TwoItemMatcher:
+        def process_inputs(self, df, progress_callback=None):
+            return pd.DataFrame(
+                [
+                    {
+                        "Matched Catalog Name": "Chicken Kebab",
+                        "Final Score": 0.294,
+                        "Status": "Low / Rejected",
+                        "Logic Notes": "No BT filter",
+                        "BasicType": "Kebab",
+                        "GenericKeywords": "Kebab, Chicken",
+                        "Region": "Indian",
+                    },
+                    {
+                        "Matched Catalog Name": "Special Noodles",
+                        "Final Score": 0.57,
+                        "Status": "Medium Confidence",
+                        "Logic Notes": "BT-Filtered (Fried Noodles) | BasicType Match (Fried Noodles)",
+                        "BasicType": "Fried Noodles",
+                        "GenericKeywords": "Noodles",
+                        "Region": "Chinese",
+                    },
+                ]
+            )
+
+    fake_clf_out = [
+        {
+            "suggested_bt": "",
+            "bt_confidence": 0.453,
+            "bt_status": "LOW",
+            "suggested_gk": "",
+            "gk_confidence": 0.0,
+            "gk_status": "LOW",
+            "suggested_region": "North Indian",
+            "region_confidence": 0.294,
+            "region_status": "LOW",
+            "reasoning": "Classifier: BT=''",
+        },
+        {
+            "suggested_bt": "Burger",
+            "bt_confidence": 0.961,
+            "bt_status": "AUTO",
+            "suggested_gk": "Burger",
+            "gk_confidence": 0.0,
+            "gk_status": "LOW",
+            "suggested_region": "Western",
+            "region_confidence": 1.0,
+            "region_status": "AUTO",
+            "reasoning": "Classifier: BT='Burger'",
+        },
+    ]
+
+    ner = _make_food_ner([set(), set()])
+    with (
+        patch("engine.pipelines.request_pipeline.check_models_loaded", return_value={"food": True}),
+        patch(
+            "engine.pipelines.request_pipeline._get_shared_models",
+            return_value=(_make_embed_engine(n=2), ner),
+        ),
+        patch("engine.pipelines.request_pipeline.get_ner_engine", return_value=ner),
+        patch("engine.pipelines.request_pipeline.get_pipeline", return_value=_TwoItemMatcher()),
+        patch(
+            "engine.pipelines.request_pipeline.get_classifier",
+            return_value=SimpleNamespace(domain="food"),
+        ),
+        patch("engine.pipelines.request_pipeline._get_vector_store", return_value=MagicMock()),
+        patch("engine.pipelines.request_pipeline.tag_all_skus", return_value=fake_clf_out),
+        patch("engine.pipelines.request_pipeline.run_rules_engine", side_effect=lambda rec: rec),
+    ):
+        res = process_request(
+            task="pipeline",
+            domain="food",
+            skus=[
+                {"name": "Bangalore Styled Oil Kebab", "price": 1500.0},
+                {"name": "My Burger Special Noodles", "price": 1200.0},
+            ],
+        )["results"]
+
+    assert res[0]["pipeline_source"] == "Matcher"
+    assert res[0]["suggested_bt"] == "Kebab"
+    assert res[1]["pipeline_source"] == "Matcher"
+    assert res[1]["suggested_bt"] == "Fried Noodles"
+
+
+def test_pipeline_selective_gk_preservation_when_classifier_agrees_on_bt(monkeypatch):
+    """When Classifier wins escalation and predicts the same BasicType as Matcher's candidate,
+    preserve Matcher's curated catalog GKs while adopting Classifier's BT/Region confidence."""
+    monkeypatch.setattr(config, "ENABLE_TEMPLATE_TAG_ENRICHMENT", False)
+    skus = [
+        {"name": "Seafood Fried Rice Special", "price": 1200.0},
+        {"name": "Spicy Kottu Platter", "price": 1100.0},
+    ]
+
+    match_rows = pd.DataFrame(
+        [
+            {
+                "Matched Catalog Name": "Seafood Fried Rice",
+                "Final Score": 0.55,
+                "Status": "Medium Confidence",
+                "Logic Notes": "Candidate match",
+                "BasicType": "Fried Rice",
+                "GenericKeywords": "Fried Rice, Seafood",
+                "Region": "Chinese",
+            },
+            {
+                "Matched Catalog Name": "Spicy Noodles",
+                "Final Score": 0.40,
+                "Status": "Low / Rejected",
+                "Logic Notes": "Weak match",
+                "BasicType": "Noodles",
+                "GenericKeywords": "Noodles",
+                "Region": "Chinese",
+            },
+        ]
+    )
+
+    class _FakeMatcher:
+        def process_inputs(self, df, progress_callback=None):
+            return match_rows
+
+    def _fake_tag_all_skus(sku_names, **_kwargs):
+        return [
+            {
+                "suggested_bt": "Fried Rice",
+                "bt_confidence": 0.92,
+                "bt_status": "AUTO",
+                "suggested_gk": "Fried Rice, Rice, Chinese Rice, Wok, Egg Fried Rice, Mixed Fried Rice",
+                "gk_confidence": 0.80,
+                "gk_status": "AUTO",
+                "suggested_region": "Chinese",
+                "region_confidence": 0.95,
+                "region_status": "AUTO",
+                "model": "arcface",
+                "bt_model": "arcface",
+                "reasoning": "Classifier (arcface): BT='Fried Rice'",
+            },
+            {
+                "suggested_bt": "Kottu",
+                "bt_confidence": 0.91,
+                "bt_status": "AUTO",
+                "suggested_gk": "Kottu, Street Food",
+                "gk_confidence": 0.85,
+                "gk_status": "AUTO",
+                "suggested_region": "Sri Lankan",
+                "region_confidence": 0.90,
+                "region_status": "AUTO",
+                "model": "arcface",
+                "bt_model": "arcface",
+                "reasoning": "Classifier (arcface): BT='Kottu'",
+            },
+        ]
+
+    ner = _make_food_ner([set(), set()])
+    with (
+        patch("engine.pipelines.request_pipeline.check_models_loaded", return_value={"food": True}),
+        patch(
+            "engine.pipelines.request_pipeline._get_shared_models",
+            return_value=(_make_embed_engine(n=2), ner),
+        ),
+        patch("engine.pipelines.request_pipeline.get_ner_engine", return_value=ner),
+        patch("engine.pipelines.request_pipeline.get_pipeline", return_value=_FakeMatcher()),
+        patch(
+            "engine.pipelines.request_pipeline.get_classifier",
+            return_value=SimpleNamespace(domain="food"),
+        ),
+        patch("engine.pipelines.request_pipeline._get_vector_store", return_value=MagicMock()),
+        patch("engine.pipelines.request_pipeline.tag_all_skus", side_effect=_fake_tag_all_skus),
+        patch("engine.pipelines.request_pipeline.run_rules_engine", side_effect=lambda rec: rec),
+    ):
+        out = process_request(task="pipeline", domain="food", skus=skus)["results"]
+
+    # SKU 0: Classifier won escalation AND predicted same BT ("Fried Rice") -> keeps Matcher's curated GKs
+    assert out[0]["pipeline_source"] == "Classifier"
+    assert out[0]["suggested_bt"] == "Fried Rice"
+    assert out[0]["suggested_gk"] == "Fried Rice, Seafood"
+
+    # SKU 1: Classifier won escalation AND changed BT ("Noodles" -> "Kottu") -> uses Classifier's GKs
+    assert out[1]["pipeline_source"] == "Classifier"
+    assert out[1]["suggested_bt"] == "Kottu"
+    assert out[1]["suggested_gk"] == "Kottu, Street Food"

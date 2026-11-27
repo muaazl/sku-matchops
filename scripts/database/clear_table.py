@@ -1,16 +1,16 @@
 import argparse
-import os
 import sys
+from pathlib import Path
 
 from sqlalchemy import inspect, text
 
 # Add project root to python path
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app.db.session import get_engine
+from backend.core.database import get_engine
 
 
 def clear_table(table_name):

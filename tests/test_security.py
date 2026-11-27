@@ -2,13 +2,13 @@ import unittest
 
 from pydantic import ValidationError
 
-from backend.app.schemas.models import RuleModel
+from backend.schemas.rule_schema import RuleModel
 
 
 class TestSecurityHardening(unittest.TestCase):
     def setUp(self):
         super().setUp()
-        from backend.app.core import config
+        from backend.core import config
 
         self._orig_auth_enabled = config.AUTH_ENABLED
         self._orig_environment = config.ENVIRONMENT
@@ -90,26 +90,27 @@ class TestSecurityHardening(unittest.TestCase):
             RuleModel(**invalid_payload)
 
     def test_pydantic_rule_validation_invalid_action_type(self):
-        # Invalid action type should be rejected
-        invalid_payload = {
-            "rule_id": "rule_123",
-            "domain": "market",
-            "priority": 100,
-            "description": "Description",
-            "reasoning": "Reasoning",
-            "conditions": [],
-            "actions": [
-                {
-                    "action_type": "invalid_action",  # Rejected
-                    "value": "test",
-                }
-            ],
-        }
-        with self.assertRaises(ValidationError):
-            RuleModel(**invalid_payload)
+        # Invalid or removed action types should be rejected
+        for bad_action in ("invalid_action", "set_visibility", "normalize_sku"):
+            invalid_payload = {
+                "rule_id": "rule_123",
+                "domain": "market",
+                "priority": 100,
+                "description": "Description",
+                "reasoning": "Reasoning",
+                "conditions": [],
+                "actions": [
+                    {
+                        "action_type": bad_action,  # Rejected
+                        "value": "test",
+                    }
+                ],
+            }
+            with self.assertRaises(ValidationError):
+                RuleModel(**invalid_payload)
 
     def tearDown(self):
-        from backend.app.core import config
+        from backend.core import config
 
         config.AUTH_ENABLED = self._orig_auth_enabled
         config.ENVIRONMENT = self._orig_environment
@@ -126,7 +127,7 @@ class TestSecurityHardening(unittest.TestCase):
         env = os.environ.copy()
         env["MATCHOPS_API_KEY"] = ""
         proc = subprocess.run(
-            [sys.executable, "-c", "import backend.app.core.config"],
+            [sys.executable, "-c", "import backend.core.config"],
             env=env,
             capture_output=True,
             text=True,
@@ -141,8 +142,8 @@ class TestSecurityHardening(unittest.TestCase):
         from fastapi import HTTPException
         from starlette.requests import Request
 
-        from backend.app.core import config
-        from backend.app.core.security import get_principal
+        from backend.core import config
+        from backend.core.security import get_principal
 
         mock_req = MagicMock(spec=Request)
         with patch.object(config, "API_KEY", ""):
@@ -157,7 +158,7 @@ class TestSecurityHardening(unittest.TestCase):
 
         import grpc
 
-        from backend.app.core.grpc_utils import GrpcContextInterceptor
+        from backend.grpc.grpc_utils import GrpcContextInterceptor
 
         interceptor = GrpcContextInterceptor()
 
@@ -171,7 +172,7 @@ class TestSecurityHardening(unittest.TestCase):
                 response_serializer=None,
             )
 
-        with patch("backend.app.core.config.INTERNAL_GRPC_SECRET", "super_secret_token"):
+        with patch("backend.core.config.INTERNAL_GRPC_SECRET", "super_secret_token"):
             # 1. Missing secret header -> Aborts with UNAUTHENTICATED
             details_missing = SimpleNamespace(
                 invocation_metadata=[("x-request-id", "trace-1")],
@@ -211,8 +212,8 @@ class TestSecurityHardening(unittest.TestCase):
         """SEC-06: Non-platform-admin callers must be rejected with HTTP 403 Forbidden on /vector-db/."""
         from fastapi import HTTPException
 
-        from backend.app.api.endpoints.qdrant_proxy import router as qdrant_router
-        from backend.app.core.security import Principal, require_platform_admin
+        from backend.api.endpoints.vector_db_router import router as qdrant_router
+        from backend.core.security import Principal, require_platform_admin
 
         # 1. Verify route dependency registration on APIRouter
         self.assertTrue(
@@ -234,7 +235,7 @@ class TestSecurityHardening(unittest.TestCase):
 
     def test_outbound_ssrf_protection_blocks_internal_and_metadata_ips(self):
         """SEC-02 & SEC-03: validate_outbound_url blocks loopback, private, and metadata IPs."""
-        from backend.app.core.security import validate_outbound_url
+        from backend.core.security import validate_outbound_url
         from engine.core.security import validate_outbound_url as engine_validate_url
 
         disallowed_urls = [
@@ -257,7 +258,7 @@ class TestSecurityHardening(unittest.TestCase):
         """SEC-02: fetch_merchant_csv rejects SSRF attempts without sending HTTP requests."""
         from unittest.mock import patch
 
-        from backend.app.services.portal_service import fetch_merchant_csv
+        from backend.services.portal_service import fetch_merchant_csv
 
         # 1. AWS metadata attempt via portal_url
         with patch("requests.get") as mock_get:

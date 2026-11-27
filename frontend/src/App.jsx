@@ -1,25 +1,18 @@
 import React, { Suspense } from 'react';
 import { useRoutes } from 'react-router-dom';
-import routes from './routes';
-import useTitle from './components/UseTitle';
-import { CssBaseline, LinearProgress, Box } from '@mui/material';
+import { Box, CssBaseline, LinearProgress } from '@mui/material';
 import useMediaQuery from '@mui/material/useMediaQuery';
-import StyledMain from './components/Common/StyledMain';
-import { ColorModeProvider } from './context/color-context';
-import ServerOfflineModal from './components/Common/ServerOfflineModal';
+import { ColorModeProvider } from './components/common/ColorModeProvider';
+import ServerOfflineModal from './components/common/ServerOfflineModal';
+import StyledMain from './components/common/StyledMain';
+import { useTitle } from './hooks/useTitle';
+import routes from './routes';
+import { resolveInitialThemeMode } from './utils/authStorage';
 
-function NewApp() {
+function App() {
   const prefersDarkMode = useMediaQuery('(prefers-color-scheme: dark)');
   const prefersHighContrast = useMediaQuery('(prefers-contrast: more)');
-  const storedMode = localStorage.getItem('qdrant-web-ui-theme');
-
-  const resolvedMode = ['dark', 'light', 'high-contrast'].includes(storedMode)
-    ? storedMode
-    : prefersHighContrast
-    ? 'high-contrast'
-    : prefersDarkMode
-    ? 'dark'
-    : 'light';
+  const resolvedMode = resolveInitialThemeMode({ prefersDarkMode, prefersHighContrast });
 
   const routing = useRoutes(routes());
   useTitle('SKU MatchOps');
@@ -43,4 +36,4 @@ function NewApp() {
   );
 }
 
-export default NewApp;
+export default App;

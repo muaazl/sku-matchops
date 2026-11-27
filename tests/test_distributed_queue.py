@@ -10,12 +10,23 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from backend.app.grpc_server import start_backend_grpc_server
-from engine import config
-from engine.pipeline import task_queue
-from engine.pipeline.task_queue import BULK, DLQ, INFLIGHT, REALTIME, TASKS, TaskQueue, run_worker
+from backend.grpc.callback_servicer import start_backend_grpc_server
+from engine.core import config
+from engine.grpc.callback_client import register_engine_callbacks
+from engine.pipelines import queue_pipeline as task_queue
+from engine.pipelines import worker_pipeline as worker_runner  # registers failure notifier
+from engine.pipelines.queue_pipeline import (
+    BULK,
+    DLQ,
+    INFLIGHT,
+    REALTIME,
+    TASKS,
+    TaskQueue,
+    run_worker,
+)
 
 REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
+register_engine_callbacks()
 _redis_available: bool | None = None
 
 
@@ -259,9 +270,12 @@ def test_dlq_replay_endpoint_requeues_and_resets_job(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from backend.app.api.endpoints import queue as queue_api
+    from backend.api.endpoints import queue_router as queue_api
+    from backend.repositories import task_queue_repository
+    from backend.repositories.task_queue_repository import TaskQueue as BackendTaskQueue
 
-    monkeypatch.setattr(queue_api, "get_task_queue", lambda: queue)
+    backend_queue = BackendTaskQueue(redis_client)
+    monkeypatch.setattr(task_queue_repository, "get_task_queue", lambda: backend_queue)
     app = FastAPI()
     app.include_router(queue_api.router)
     client = TestClient(app)
@@ -343,7 +357,7 @@ def test_completing_after_lease_was_lost_does_not_duplicate_bookkeeping(redis_cl
 
 @pytest.fixture
 def unreachable_redis(monkeypatch):
-    from backend.app.services import task_queue as backend_task_queue
+    from backend.repositories import task_queue_repository as backend_task_queue
 
     monkeypatch.setattr(config, "REDIS_URL", "redis://localhost:1/0")
     monkeypatch.setattr(config, "TASK_QUEUE_ENABLED", True)
@@ -366,18 +380,19 @@ def _fake_grpc(monkeypatch, module):
         return SimpleNamespace(status="accepted", job_id=req.job_id)
 
     fake_stub = SimpleNamespace(DispatchBatchJob=dispatch_batch)
-    monkeypatch.setattr(module, "get_stub", lambda: fake_stub)
+    monkeypatch.setattr(module, "get_engine_stub", lambda: fake_stub)
     return dispatched
 
 
 def test_gateway_falls_back_to_grpc_dispatch_when_redis_unreachable(unreachable_redis, monkeypatch):
-    from backend.app.schemas.models import BaseRequest, SKUItem
-    from backend.app.services import engine_client
+    from backend.grpc import engine_grpc_client
+    from backend.schemas.sku_schema import BaseRequest, SKUItem
+    from backend.services import job_service
 
-    dispatched = _fake_grpc(monkeypatch, engine_client)
+    dispatched = _fake_grpc(monkeypatch, engine_grpc_client)
     req = BaseRequest(skus=[SKUItem(name="Anchor Butter")], domain="market", callback_url="")
 
-    result = engine_client.dispatch_batch_job("fallback-1", req, "pipeline")
+    result = job_service.dispatch_batch_payload("fallback-1", req, "pipeline")
 
     assert result == {"status": "accepted", "job_id": "fallback-1"}
     assert len(dispatched) == 1
@@ -386,26 +401,31 @@ def test_gateway_falls_back_to_grpc_dispatch_when_redis_unreachable(unreachable_
 
 
 def test_gateway_uses_grpc_when_queue_disabled(monkeypatch):
-    from backend.app.schemas.models import BaseRequest, SKUItem
-    from backend.app.services import engine_client
+    from backend.grpc import engine_grpc_client
+    from backend.schemas.sku_schema import BaseRequest, SKUItem
+    from backend.services import job_service
 
     monkeypatch.setattr(config, "TASK_QUEUE_ENABLED", False)
-    dispatched = _fake_grpc(monkeypatch, engine_client)
+    dispatched = _fake_grpc(monkeypatch, engine_grpc_client)
     req = BaseRequest(skus=[SKUItem(name="x")], domain="market", callback_url="")
-    engine_client.dispatch_batch_job("legacy-1", req, "pipeline")
+    job_service.dispatch_batch_payload("legacy-1", req, "pipeline")
     assert len(dispatched) == 1
     assert task_queue.get_task_queue() is None
 
 
-def test_gateway_enqueues_to_redis_when_available(queue, redis_client, monkeypatch):
-    from backend.app.schemas.models import BaseRequest, SKUItem
-    from backend.app.services import engine_client
+def test_gateway_enqueues_to_redis_when_available(redis_client, monkeypatch):
+    from backend.grpc import engine_grpc_client
+    from backend.repositories import task_queue_repository
+    from backend.repositories.task_queue_repository import TaskQueue as BackendTaskQueue
+    from backend.schemas.sku_schema import BaseRequest, SKUItem
+    from backend.services import job_service
 
-    monkeypatch.setattr(engine_client, "get_task_queue", lambda: queue)
-    dispatched = _fake_grpc(monkeypatch, engine_client)
+    backend_queue = BackendTaskQueue(redis_client)
+    monkeypatch.setattr(task_queue_repository, "get_task_queue", lambda: backend_queue)
+    dispatched = _fake_grpc(monkeypatch, engine_grpc_client)
     req = BaseRequest(skus=[SKUItem(name="x")], domain="market", callback_url="")
 
-    result = engine_client.dispatch_batch_job("queued-1", req, "pipeline")
+    result = job_service.dispatch_batch_payload("queued-1", req, "pipeline")
 
     assert result["status"] == "queued" and dispatched == []
     assert json.loads(redis_client.hget(TASKS, result["task_id"]))["job_id"] == "queued-1"
@@ -424,8 +444,6 @@ def test_worker_loop_survives_redis_outage(unreachable_redis):
 
 
 def test_cancellation_reaches_queued_job_on_any_worker(queue, monkeypatch):
-    from engine.pipeline import worker_runner
-
     monkeypatch.setattr(worker_runner, "get_task_queue", lambda: queue)
     executed = []
     monkeypatch.setattr(worker_runner, "_execute_job", lambda p: executed.append(p["job_id"]))
@@ -438,8 +456,6 @@ def test_cancellation_reaches_queued_job_on_any_worker(queue, monkeypatch):
 
 
 def test_queued_job_errors_propagate_for_retry(monkeypatch):
-    from engine.pipeline import worker_runner
-
     def boom(payload):
         raise ConnectionError("db blip")
 
@@ -491,8 +507,6 @@ def test_engine_get_task_queue_is_thread_safe_and_recreates_on_url_change(monkey
 
 
 def test_start_queue_worker_is_idempotent_and_replaces_only_dead_workers(monkeypatch):
-    from engine.pipeline import worker_runner
-
     class _FakeThread:
         def __init__(self, target=None, args=(), kwargs=None, name=None, daemon=None):
             self.name = name
@@ -530,3 +544,35 @@ def test_start_queue_worker_is_idempotent_and_replaces_only_dead_workers(monkeyp
     finally:
         worker_runner._queue_workers = []
         worker_runner._worker_stop.clear()
+
+
+def test_request_cancel_purges_queued_inflight_and_delayed_tasks(queue, redis_client):
+    from backend.repositories.task_queue_repository import TaskQueue as BackendTaskQueue
+
+    # 1. Queued bulk task + delayed task for same job_id, plus unrelated job
+    t_bulk = queue.enqueue(_payload("job-cancel-1", n_skus=config.TASK_REALTIME_MAX_SKUS + 5))
+    t_inflight_owner = queue.enqueue(_payload("job-cancel-1"))
+    claimed = queue.claim()
+    assert claimed["task_id"] == t_inflight_owner
+    assert queue.fail(claimed, "retry") == "retry"
+    t_keep = queue.enqueue(_payload("job-keep-1"))
+
+    assert "job-cancel-1" in queue.tracked_job_ids()
+    assert redis_client.zscore(task_queue.DELAYED[REALTIME], t_inflight_owner) is not None
+
+    # Cancel via backend TaskQueue (purges both queued and delayed tasks and sets cancel key)
+    BackendTaskQueue(redis_client).request_cancel("job-cancel-1")
+    assert queue.is_cancelled("job-cancel-1") is True
+    assert queue.tracked_job_ids() == {"job-keep-1"}
+    assert redis_client.lrange(BULK, 0, -1) == []
+    assert redis_client.zscore(task_queue.DELAYED[REALTIME], t_inflight_owner) is None
+    assert redis_client.hget(TASKS, t_bulk) is None
+    assert redis_client.hget(TASKS, t_inflight_owner) is None
+
+    # 2. In-flight task cancelled via engine TaskQueue is also purged from INFLIGHT
+    claimed_keep = queue.claim()
+    assert claimed_keep["task_id"] == t_keep
+    queue.request_cancel("job-keep-1")
+    assert queue.is_cancelled("job-keep-1") is True
+    assert redis_client.zscore(INFLIGHT, t_keep) is None
+    assert redis_client.hlen(TASKS) == 0

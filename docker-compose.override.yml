@@ -14,10 +14,6 @@ services:
     ports:
       - "5432:5432"
 
-  pgbouncer:
-    ports:
-      - "6432:6432"
-
   redis:
     ports:
       - "6379:6379"

@@ -32,8 +32,8 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 ┌──────────────────────────────────────┐                       ┌──────────────────────┐
 │  ML Inference Engine (Stateless/ONNX)│                       │ PostgreSQL 16 DB     │
 │          gRPC Port 50051             │                       │ • pg_trgm GIN Search │
-│  • BGE-M3 Dense + Sparse Vectors     │                       │ • Jobs & Audit Trail │
-│  • BGE-Reranker-v2-M3 Cross-Encoder  │                       │     Port 5432        │
+│  • Embedding + Reranker (INT8 ONNX)  │                       │ • Jobs & Audit Trail │
+│  • Native BM25 / Optional BGE Sparse │                       │     Port 5432        │
 │  • GLiNER Zero-Shot Named Entity Rec │                       └──────────────────────┘
 │  • INT8 Dynamic Quantization Runtime │
 └──────────────────┬───────────────────┘
@@ -53,7 +53,7 @@ SKU MatchOps is structured around a decoupled microservice architecture separati
 | **`frontend`** | `5173` | React 18 + Vite single-page application with interactive SKU matching and rule curation. |
 | **`backend`** | `8000` | FastAPI API gateway, deterministic rules engine, batch processing worker, and audit logger. |
 | **`engine`** | `50051` | Dedicated ML inference microservice (gRPC) serving INT8 ONNX models and zero-shot entity extractors. |
-| **`qdrant`** | `6333` | Vector database managing BGE-M3 dense and sparse embeddings with HNSW indexing. |
+| **`qdrant`** | `6333` | Vector database managing dense, native BM25, and optional sparse embeddings with HNSW indexing. |
 | **`postgres`** | `5432` | PostgreSQL 16 for jobs, rules, and per-SKU audit results. Managed exclusively by the backend gateway via a pooled SQLAlchemy engine; schema is initialized automatically on startup. |
 
 ---
@@ -91,12 +91,12 @@ docker compose up -d
 ### 3. Ingest Demo Sample Data (Instant Offline Mode)
 To seed the PostgreSQL catalog (owned by `backend`), build local caches, train classifiers, and vectorize embeddings in `engine`:
 ```bash
-docker compose exec backend python -m scripts.catalog.sync --sample --keep-staged --db rebuild
-docker compose exec engine python -m scripts.catalog.sync --from-staged --cache rebuild --qdrant rebuild
+docker compose exec backend python -m scripts.sync --sample --keep-staged --db rebuild
+docker compose exec engine python -m scripts.sync --from-staged --cache rebuild --qdrant rebuild --arcface rebuild
 ```
 
 > [!IMPORTANT]
-> **First-Run Model Downloads**: On the very first run, the system automatically downloads **BGE-M3**, **BGE-Reranker-v2-M3**, and **GLiNER Medium** (~2.5 GB total) and applies INT8 dynamic quantization. This initial startup will take a few minutes depending on bandwidth and CPU. Subsequent runs use cached models and initialize almost instantly.
+> **First-Run Model Downloads**: On the very first run, the system automatically downloads the configured **`EMBEDDING_MODEL`**, **`RERANKER_MODEL`**, and **GLiNER Medium** and exports/quantizes them cleanly to ONNX. Subsequent runs use cached models in `data/models/` and initialize almost instantly.
 
 ### 4. Access Services
 - **Web Dashboard**: [http://localhost:5173](http://localhost:5173)
@@ -113,10 +113,10 @@ SKU MatchOps supports two flexible modes of catalog ingestion:
 The repository includes a ready-to-run demo dataset at [`data/sample/SampleData.xlsx`](data/sample/SampleData.xlsx) containing 500 Food dishes, 500 Market retail products, and taxonomy dictionaries.
 To reset and load this sample data into the system:
 ```bash
-docker compose exec backend python -m scripts.catalog.sync --sample --keep-staged --db rebuild
-docker compose exec engine python -m scripts.catalog.sync --from-staged --cache rebuild --qdrant rebuild
+docker compose exec backend python -m scripts.sync --sample --keep-staged --db rebuild
+docker compose exec engine python -m scripts.sync --from-staged --cache rebuild --qdrant rebuild --arcface rebuild
 ```
-*(Or locally outside Docker: `python -m scripts.catalog.sync --sample`)*
+*(Or locally outside Docker: `python -m scripts.sync --sample`)*
 
 ### Option B: Live Google Sheets Integration
 You can connect your own Google Sheet catalog by following these steps:
@@ -133,10 +133,10 @@ You can connect your own Google Sheet catalog by following these steps:
 4. **Trigger Sync**:
    - Run the catalog sync commands to stage from Google Sheets into PostgreSQL (`backend`) and vectorize embeddings + train classifiers (`engine`):
      ```bash
-     docker compose exec backend python -m scripts.catalog.sync --keep-staged --db sync
-     docker compose exec engine python -m scripts.catalog.sync --from-staged --cache sync --qdrant sync
+     docker compose exec backend python -m scripts.sync --keep-staged --db sync
+     docker compose exec engine python -m scripts.sync --from-staged --cache sync --qdrant sync --arcface sync
      ```
-     *(Or locally outside Docker: `python -m scripts.catalog.sync`)*
+     *(Or locally outside Docker: `python -m scripts.sync`)*
 
 ### Google Sheet Tab Schema
 
@@ -184,7 +184,7 @@ uv pip install -r backend/requirements.txt   # FastAPI Gateway, DB, Rules Engine
 uv pip install -r engine/requirements.txt    # ML Engine, Qdrant, ONNX Runtime
 
 # Ingest sample catalog data & prepare ONNX models
-python scripts/catalog/sync.py --sample
+python -m scripts.sync --sample
 ```
 
 ### 3. Run Microservices
@@ -218,8 +218,8 @@ pnpm start
 | `BACKEND_GRPC_URL` | Yes | gRPC callback target of the backend gateway (`127.0.0.1:50052` or `backend:50052`). |
 | `INTERNAL_GRPC_SECRET` | No | Optional shared secret enforced on all internal Gateway <-> Engine gRPC calls. |
 | `QDRANT_URL` | Yes | Qdrant vector database URL. |
-| `QDRANT_API_KEY` | No | Qdrant API key (for secured/cloud deployments). |
-| `USE_INT8_MODELS` | No | Enables INT8 dynamic quantization for CPU speedup. Defaults to `true`. |
+| `EMBEDDING_MODEL` | No | HuggingFace embedding model ID (auto-exported to INT8 ONNX). Defaults to `jinaai/jina-embeddings-v5-text-small`. |
+| `RERANKER_MODEL` | No | HuggingFace reranker model ID (auto-exported to INT8 ONNX). Defaults to `jinaai/jina-reranker-v3.5`. |
 | `FOOD_BT_MODEL` | No | BasicType classifier for Food (`arcface` or `logreg`). Defaults to `arcface`. |
 | `MARKET_BT_MODEL` | No | BasicType classifier for Market (`arcface` or `logreg`). Defaults to `arcface`. |
 | `APPS_SCRIPT_URL` | No | Google Apps Script webhook URL for push-based catalog sync. |

@@ -1,37 +1,46 @@
-import os
 from unittest.mock import patch
 
-import httpx
 import numpy as np
 import pandas as pd
 import pytest
 
-from engine import config
-from engine.classification.tagger import tag_all_skus
-from engine.core.resource_loader import get_pipeline
-from engine.nlp.embedding_engine import EmbeddingEngine
-from engine.pipeline.audit_engine import run_sku_audit
-from engine.pipeline.processor import process_request
+from engine.core import config
+from engine.inference.reranker_model import RerankerModel
+from engine.pipelines.audit_pipeline import run_sku_audit
+from engine.pipelines.classification_pipeline import tag_all_skus
+from engine.pipelines.request_pipeline import process_request
+from engine.pipelines.runtime_pipeline import get_pipeline
+from engine.pipelines.startup_check_pipeline import check_domain_synced
 
 
 def _require_synced_pipeline(domain: str = "food") -> None:
-    meta_path = os.path.join(config.CACHE_DIR, f"{domain}_catalog_metadata.pkl")
-    if (
-        not os.path.exists(config.BI_ENCODER_ONNX)
-        or not os.path.exists(config.get_bt_arcface_onnx_path(domain))
-        or not os.path.exists(meta_path)
-    ):
-        pytest.skip(f"Local ONNX models or synced '{domain}' catalog cache not found on disk")
-    try:
-        r = httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0)
-        if r.status_code >= 500:
-            pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
-    except Exception:
-        pytest.skip(f"Qdrant not reachable at {config.QDRANT_URL}")
+    errors = check_domain_synced(domain)
+    if errors:
+        pytest.fail(
+            f"Domain '{domain}' is not synced (refusing to sync inside tests):\n- "
+            + "\n- ".join(errors)
+        )
+
+
+def _forbid_sync(*_args, **_kwargs):
+    raise AssertionError("Refusing to sync Qdrant, sheets, or training caches inside a test.")
 
 
 @pytest.mark.usefixtures("pg")
 class TestDefectFixes:
+    @pytest.fixture(autouse=True)
+    def _block_test_sync(self, monkeypatch):
+        from engine.inference.embedding_model import EmbeddingModel
+        from engine.pipelines.classification_pipeline import TaxonomyClassifier
+        from engine.pipelines.ingestion_pipeline import DataIngestion
+        from engine.vector_store.vector_store import VectorStore
+
+        monkeypatch.setattr(VectorStore, "upsert_catalog_points", _forbid_sync)
+        monkeypatch.setattr(VectorStore, "upsert_tag_vectors", _forbid_sync)
+        monkeypatch.setattr(EmbeddingModel, "embed_dictionary_incremental", _forbid_sync)
+        monkeypatch.setattr(TaxonomyClassifier, "_embed_weighted_sku_incremental", _forbid_sync)
+        monkeypatch.setattr(DataIngestion, "load_catalog_from_sheets", _forbid_sync)
+
     @pytest.mark.live_models
     def test_bypass_score_normalization_at_source(self):
         """Verify exact and fuzzy bypass paths write 1.0 instead of 100.0."""
@@ -135,7 +144,7 @@ class TestDefectFixes:
         """Verify classifier produces reasoning and pipeline escalation chains matcher note + classifier reasoning."""
         _require_synced_pipeline("food")
         # 1. tag_all_skus produces 'reasoning'
-        from engine.core.resource_loader import (
+        from engine.pipelines.runtime_pipeline import (
             _get_shared_models,
             _get_vector_store,
             get_classifier,
@@ -148,7 +157,13 @@ class TestDefectFixes:
         embs = embed_engine.embed_weighted_sku(
             ["Fish Curry"], [""], [""], weights=config.CLASSIFIER_WEIGHTS
         )
-        query_embeddings = [{"dense": embs["dense"][0], "sparse": embs["sparse"][0]}]
+        query_embeddings = [
+            {
+                "dense": embs["dense"][0],
+                "bm25": (embs.get("bm25") or [{}])[0],
+                "sparse": (embs.get("sparse") or [None])[0],
+            }
+        ]
 
         clf_results = tag_all_skus(
             sku_names=["Fish Curry"],
@@ -203,11 +218,10 @@ class TestDefectFixes:
 
 
 def test_cross_encoder_empty_pairs_and_sentinel_handling():
-    """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if models fail."""
-    embed = EmbeddingEngine.__new__(EmbeddingEngine)
+    """Verify score_cross_encoder handles empty batch and returns -10.0 sentinel if session is uninitialized."""
+    embed = RerankerModel.__new__(RerankerModel)
     embed.cross_session = None
     embed.rerank_tokenizer = None
-    embed.cross_encoder_fallback = None
 
     # 1. Empty pairs returns empty array
     empty_res = embed.score_cross_encoder([])
@@ -215,10 +229,7 @@ def test_cross_encoder_empty_pairs_and_sentinel_handling():
     assert isinstance(empty_res, np.ndarray)
 
     # 2. When sessions are None, returns -10.0 sentinel
-    with (
-        patch.object(embed, "cross_session", None),
-        patch.object(embed, "cross_encoder_fallback", None),
-    ):
+    with patch.object(embed, "cross_session", None):
         sentinel_res = embed.score_cross_encoder([["query", "doc1"], ["query", "doc2"]])
         assert len(sentinel_res) == 2
         assert np.all(sentinel_res == -10.0), f"Expected -10.0 sentinels, got {sentinel_res}"
