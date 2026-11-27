@@ -5,7 +5,7 @@ export async function getJobs(params) {
   const resp = await httpClient.get('/jobs', { params });
   return {
     data: resp.data,
-    total: parseInt(resp.headers['x-total-count'] || resp.data.length, 10),
+    total: Number.parseInt(resp.headers['x-total-count'] || resp.data.length, 10),
   };
 }
 

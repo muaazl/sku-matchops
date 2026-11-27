@@ -29,7 +29,7 @@ UNIT_MAP: dict[str, tuple[float, str, str]] = {
 }
 
 FAST_WEIGHT_REGEX = re.compile(
-    r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*(mg|milligram|milligrams|kg|kilogram|kilograms|g|gram|grams|ml|millilitre|millilitres|milliliter|milliliters|l|liter|liters|litre|litres|cl|tonne|tonnes)\b",
+    r"(?<![a-z0-9])(\d{1,12}(?:\.\d{1,6})?)\s{0,6}(mg|milligrams?|kg|kilograms?|g|grams?|ml|millilitres?|milliliters?|l|liters?|litres?|cl|tonnes?)\b",
     re.IGNORECASE,
 )
 
@@ -83,7 +83,7 @@ def format_catalog_field(col: str, val: Any) -> str:
 
 
 def calculate_row_hash(row: Any, domain: str = DOMAIN_MARKET) -> str:
-    """Generates a stable MD5 hash for a single catalog row."""
+    """Generates a stable SHA-256 hash for a single catalog row."""
     row_dict = row if isinstance(row, dict) else row.to_dict()
 
     cols = ["Name", "basictype", "Generic keywords", "Price", "Description"]
@@ -94,7 +94,7 @@ def calculate_row_hash(row: Any, domain: str = DOMAIN_MARKET) -> str:
 
     cleaned = {c: format_catalog_field(c, row_dict.get(c, "")) for c in cols}
     row_str = json.dumps(cleaned, sort_keys=True) + CACHE_SALT
-    return hashlib.md5(row_str.encode("utf-8")).hexdigest()
+    return hashlib.sha256(row_str.encode("utf-8")).hexdigest()
 
 
 def build_occurrence_uids(df: pd.DataFrame, name_col: str = "Name") -> tuple[list[str], list[str]]:
@@ -137,7 +137,7 @@ def extract_normalized_weight(text: str) -> tuple[float | None, str | None, str 
         pass
 
     try:
-        match = re.search(r"(\d+(\.\d+)?)\s*([a-zA-Z]+)\b", text.lower())
+        match = re.search(r"(?<!\d)(\d{1,12}(\.\d{1,6})?)\s{0,6}([a-zA-Z]{1,24})\b", text.lower())
         if match:
             result = normalize_unit_value(float(match.group(1)), match.group(3))
             if result:
@@ -153,8 +153,12 @@ def standardize_sku_units(text: str) -> str:
     if not isinstance(text, str):
         return ""
     text = text.lower()
-    text = re.sub(r"(\d+)([a-z]+)", r"\1 \2", text)
-    text = re.sub(r"(\d+(\.\d+)?)\s*[a-z]+\s*-\s*(\d+(\.\d+)?)\s*[a-z]+", "", text)
+    text = re.sub(r"(?<!\d)(\d{1,12})([a-z]{1,24})", r"\1 \2", text)
+    text = re.sub(
+        r"(?<!\d)(\d{1,12}(?:\.\d{1,6})?)\s{0,6}[a-z]{1,24}\s{0,6}-\s{0,6}(\d{1,12}(?:\.\d{1,6})?)\s{0,6}[a-z]{1,24}",
+        "",
+        text,
+    )
 
     def _fmt_num(x: float) -> str:
         if abs(x - round(x)) < 1e-9:
@@ -173,9 +177,13 @@ def standardize_sku_units(text: str) -> str:
             return f"{_fmt_num(val)}{base_unit} "
         return f"{_fmt_num(total)}{unit} "
 
-    text = re.sub(r"(\d+)\s*[xX]\s*(\d+(\.\d+)?)\s*([a-z]+)", _calc_multipack, text)
     text = re.sub(
-        r"(\d+(\.\d+)?)\s*([a-z]+)\s*[xX]\s*(\d+)",
+        r"(?<!\d)(\d{1,12})\s{0,6}[xX]\s{0,6}(\d{1,12}(\.\d{1,6})?)\s{0,6}([a-z]{1,24})",
+        _calc_multipack,
+        text,
+    )
+    text = re.sub(
+        r"(?<!\d)(\d{1,12}(\.\d{1,6})?)\s{0,6}([a-z]{1,24})\s{0,6}[xX]\s{0,6}(\d{1,12})",
         lambda m: _calc_multipack(m, reverse=True),
         text,
     )
@@ -191,7 +199,7 @@ def standardize_sku_units(text: str) -> str:
 
     text = re.sub(r"\b(\d+(\.\d+)?)\s?([a-z]+)\b", _convert_match, text)
     text = re.sub(r"\bpack of (\d+)\b", r"\1pc", text)
-    text = re.sub(r"(\d+)\s*(pcs|pieces|units)\b", r"\1pc", text)
+    text = re.sub(r"(?<!\d)(\d{1,12})\s{0,6}(?:pieces|pcs|units)\b", r"\1pc", text)
     return text.strip()
 
 
@@ -200,7 +208,7 @@ def normalize_sku_text(text: str) -> str:
     if not isinstance(text, str):
         return ""
     text = text.lower()
-    text = re.sub(r"(-|\|)?\s*sku\s*\d+", "", text)
+    text = re.sub(r"(?:[-|]\s{0,6}|(?<!\s)\s{0,6})sku\s{0,6}\d{1,12}", "", text)
     text = re.sub(r"\b\d{4,6}\b", "", text)
     text = re.sub(r"[^\w\s\.\u0D80-\u0DFF\u0B80-\u0BFF]|_", " ", text)
     return re.sub(r"\s+", " ", text).strip()

@@ -156,3 +156,53 @@ def test_classifier_load_arcface_model_fails_on_embedding_model_mismatch(tmp_pat
             RuntimeError, match="trained with 'jinaai/jina-embeddings-v5-text-small'"
         ):
             clf._load_arcface_model()
+
+
+def test_check_domain_synced_reports_unsynced_qdrant_and_tags(tmp_path: Path):
+    import pandas as pd
+
+    (tmp_path / "active_embedding_model.txt").write_text("BAAI/bge-m3", encoding="utf-8")
+    (tmp_path / "qdrant_embedding_models.json").write_text(
+        json.dumps({"food": "BAAI/bge-m3"}), encoding="utf-8"
+    )
+    (tmp_path / "food_classifier_dicts.json").write_text(
+        json.dumps({"gk": ["Seafood"], "bt": ["Burger"], "region": ["Asian"]}),
+        encoding="utf-8",
+    )
+    pd.DataFrame([{"Name": "Fish Burger"}, {"Name": "Chicken Rice"}]).to_feather(
+        tmp_path / "food_catalog_mmap.feather"
+    )
+    pd.DataFrame([{"Flavor Name": "Fish"}]).to_feather(tmp_path / "food_brands_mmap.feather")
+    joblib.dump(
+        {"embedding_model": "BAAI/bge-m3", "classes": ["Burger"]},
+        tmp_path / "food_warm_centroids.pkl",
+    )
+    joblib.dump(
+        pd.DataFrame(
+            [
+                {"clean_text": "fish burger", "entities": {}, "clean_no_weights": "fish burger"},
+                {"clean_text": "chicken rice", "entities": {}, "clean_no_weights": "chicken rice"},
+            ]
+        ),
+        tmp_path / "food_catalog_metadata.pkl",
+    )
+
+    fake_vs = MagicMock()
+    fake_vs.resolve_catalog_collection_name.return_value = "food_catalog"
+    fake_vs.check_collection_exists.return_value = True
+    fake_vs.count_collection_points.return_value = 1  # fewer than 2 catalog rows
+    fake_vs.get_collection_schema_mismatch.return_value = None
+    fake_vs.check_tags_synced.side_effect = [True, False, True]
+
+    with (
+        patch.object(startup_checks.config, "CACHE_DIR", tmp_path),
+        patch.object(startup_checks.config, "EMBEDDING_MODEL", "BAAI/bge-m3"),
+        patch.object(startup_checks, "check_onnx_models", return_value=[]),
+        patch.object(startup_checks, "_check_arcface_domain", return_value=[]),
+        patch.object(startup_checks, "_check_logreg_domain", return_value=[]),
+        patch("engine.vector_store.vector_store.VectorStore", return_value=fake_vs),
+    ):
+        errs = startup_checks.check_domain_synced("food")
+
+    assert any("food_catalog" in e and "expected at least 2" in e for e in errs)
+    assert any("Qdrant 'bt' tags are not synced" in e for e in errs)

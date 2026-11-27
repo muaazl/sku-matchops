@@ -107,7 +107,7 @@ export function useBatchProcess() {
       return;
     }
     if (bearerToken) {
-      fetchCsvFromPortal(bearerToken);
+      void fetchCsvFromPortal(bearerToken);
     } else {
       setTokenModalOpen(true);
     }
@@ -116,7 +116,7 @@ export function useBatchProcess() {
   const submitTokenAndFetch = () => {
     setMerchantCredentials(localMerchantId.trim(), localPortalUrl.trim(), localToken.trim());
     setTokenModalOpen(false);
-    fetchCsvFromPortal(localToken.trim());
+    void fetchCsvFromPortal(localToken.trim());
   };
 
   const pickSingleFile = (selectedFile) => {
@@ -289,7 +289,7 @@ export function useBatchProcess() {
 
   const startAllPendingJobs = () => {
     (pendingJobs || []).forEach((job) => {
-      if (job.status === 'pending' || job.status === 'error') startPendingJob(job);
+      if (job.status === 'pending' || job.status === 'error') void startPendingJob(job);
     });
   };
 

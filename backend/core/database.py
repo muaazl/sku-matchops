@@ -13,6 +13,10 @@ def get_engine() -> Engine:
     """Returns the process-wide pooled PostgreSQL engine for the Backend API Gateway."""
     global _engine
     if _engine is None:
+        if not config.DATABASE_URL:
+            raise RuntimeError(
+                "A non-empty DATABASE_URL must be configured in environment variables."
+            )
         connect_args = {"options": "-c timezone=utc", "connect_timeout": 5}
         _engine = create_engine(
             config.DATABASE_URL,

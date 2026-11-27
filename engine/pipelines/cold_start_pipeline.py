@@ -289,7 +289,7 @@ class TaxonomyLifecycleRegistry:
                 labels = df_clean[bt_col].values
 
                 for c in self.warm_classes:
-                    cls_indices = np.where(labels == c)[0]
+                    cls_indices = np.nonzero(labels == c)[0]
                     cls_vecs = [
                         sku_cache[keys[idx]] for idx in cls_indices if keys[idx] in sku_cache
                     ]

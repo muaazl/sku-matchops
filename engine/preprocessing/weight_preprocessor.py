@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from typing import Any
 
 import pandas as pd
@@ -45,11 +46,11 @@ def clean_price_value(val: Any) -> float | None:
 
 def is_missing_scalar(val: Any) -> bool:
     """Type-safe missing check handling dicts, lists, None, pd.NA, and NaN."""
-    return val is None or val is pd.NA or (isinstance(val, float) and val != val)
+    return val is None or val is pd.NA or (isinstance(val, float) and math.isnan(val))
 
 
 def calculate_row_hash(row: Any, domain: str = config.DOMAIN_MARKET) -> str:
-    """Generates a stable MD5 hash for a single catalog row."""
+    """Generates a stable SHA-256 hash for a single catalog row."""
     row_dict = row if isinstance(row, dict) else row.to_dict()
     cols = ["Name", "basictype", "Generic keywords", "Price", "Description", "SellerCategory"]
     if domain == config.DOMAIN_FOOD:
@@ -72,7 +73,7 @@ def calculate_row_hash(row: Any, domain: str = config.DOMAIN_MARKET) -> str:
         cleaned[col] = val
 
     row_str = json.dumps(cleaned, sort_keys=True) + config.CACHE_SALT
-    return hashlib.md5(row_str.encode("utf-8")).hexdigest()
+    return hashlib.sha256(row_str.encode("utf-8")).hexdigest()
 
 
 def calculate_dataframe_hash(df: pd.DataFrame, domain: str = config.DOMAIN_MARKET) -> str | None:
@@ -98,7 +99,7 @@ def calculate_dataframe_hash(df: pd.DataFrame, domain: str = config.DOMAIN_MARKE
             temp_df[col] = temp_df[col].astype(str).str.strip().str.lower()
 
     temp_df = temp_df.sort_values(by="Name").reset_index(drop=True)
-    return hashlib.md5(temp_df.to_json(orient="records").encode("utf-8")).hexdigest()
+    return hashlib.sha256(temp_df.to_json(orient="records").encode("utf-8")).hexdigest()
 
 
 def populate_basic_nlp_features(df: pd.DataFrame) -> pd.DataFrame:

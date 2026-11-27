@@ -1109,7 +1109,7 @@ def _audit_classifier_pipeline(
         vec_with_price = np.hstack([vec_2d, scaled_p])
         gk_proba = classifier._gk_clf.predict_proba(vec_with_price)[0]
         threshold = config.GK_TRAINED_CONFIDENCE_THRESHOLD
-        predicted_indices = np.where(gk_proba >= threshold)[0]
+        predicted_indices = np.nonzero(gk_proba >= threshold)[0]
         if len(predicted_indices) > 0:
             trained_gk = classifier._gk_enc.classes_[predicted_indices].tolist()
             trained_conf = float(np.mean(gk_proba[predicted_indices]))

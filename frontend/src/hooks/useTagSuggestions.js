@@ -54,7 +54,7 @@ export function useTagSuggestions({ type, ruleDomain, inputValue }) {
       }
     };
 
-    fetchSuggestions();
+    void fetchSuggestions();
     return () => {
       active = false;
     };

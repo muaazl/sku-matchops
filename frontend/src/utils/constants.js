@@ -113,7 +113,6 @@ const ROUTE_TITLES = {
   '/sku-results': 'SKU Results',
   '/rules': 'Rules Engine',
   '/catalog': 'Catalog Search',
-  '/logs': 'Logs',
 };
 
 export function getPageName(pathname) {

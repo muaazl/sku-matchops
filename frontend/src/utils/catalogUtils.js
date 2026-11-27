@@ -23,7 +23,7 @@ export function getCatalogMetricCards(domain) {
 const formatPrice = (value) => {
   if (value == null) return '';
   const num = Number(value);
-  return isNaN(num) ? String(value) : num.toFixed(2);
+  return Number.isNaN(num) ? String(value) : num.toFixed(2);
 };
 
 const formatCount = (value) => (value != null ? value.toLocaleString() : '0');

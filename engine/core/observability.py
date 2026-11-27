@@ -6,7 +6,6 @@ and Prometheus metrics without upward pipeline dependencies.
 import contextvars
 import json
 import logging
-import os
 import re
 import sys
 import uuid
@@ -74,19 +73,9 @@ def configure_logging(
     logger = logger or logging.getLogger()
     if ensure_handlers:
         logger.setLevel(logging.INFO)
-        has_stream = any(
-            isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
-            for h in logger.handlers
-        )
-        has_file = any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+        has_stream = any(isinstance(h, logging.StreamHandler) for h in logger.handlers)
         if not has_stream:
             logger.addHandler(logging.StreamHandler(sys.stdout))
-        if not has_file:
-            try:
-                os.makedirs(config.LOG_DIR, exist_ok=True)
-                logger.addHandler(logging.FileHandler(config.LOG_FILE, encoding="utf-8"))
-            except Exception:
-                pass
 
     formatter = (
         JsonFormatter() if config.LOG_FORMAT == "json" else logging.Formatter(TEXT_LOG_FORMAT)

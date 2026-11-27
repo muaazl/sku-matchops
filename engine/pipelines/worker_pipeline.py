@@ -47,9 +47,6 @@ _sheets_retries = Retry(
     total=3, backoff_factor=1, status_forcelist=[502, 503, 504], allowed_methods=["GET", "POST"]
 )
 _http_session.mount(
-    "http://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_sheets_retries)
-)
-_http_session.mount(
     "https://", HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=_sheets_retries)
 )
 

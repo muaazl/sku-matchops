@@ -255,7 +255,7 @@ class TaxonomyClassifier:
     def _embed_cached(self, texts: list[str], cache_key: str) -> np.ndarray:
         """Embed a list of texts with disk caching, keyed by text content and active EMBEDDING_MODEL."""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        fingerprint = hashlib.md5(
+        fingerprint = hashlib.sha256(
             f"{config.EMBEDDING_MODEL}||{'|'.join(texts)}".encode()
         ).hexdigest()
         cache_file = self.cache_dir / f"{cache_key}_{fingerprint[:12]}.pkl"
@@ -625,7 +625,7 @@ class TaxonomyClassifier:
 
         proba = self._gk_clf.predict_proba(vec_with_price)[0]
         threshold = config.GK_TRAINED_CONFIDENCE_THRESHOLD
-        predicted_indices = np.where(proba >= threshold)[0]
+        predicted_indices = np.nonzero(proba >= threshold)[0]
 
         if len(predicted_indices) == 0:
             return [], 0.0, "zero-shot"
@@ -652,7 +652,7 @@ class TaxonomyClassifier:
         results = []
         for i in range(len(vecs)):
             proba = probas[i]
-            predicted_indices = np.where(proba >= threshold)[0]
+            predicted_indices = np.nonzero(proba >= threshold)[0]
             if len(predicted_indices) == 0:
                 results.append(([], 0.0, "zero-shot"))
             else:

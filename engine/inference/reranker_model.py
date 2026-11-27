@@ -193,8 +193,8 @@ class RerankerModel:
                     proj_out = self.cross_session.run(None, ort_inputs)[0]
 
                 input_ids_row = inputs["input_ids"][0]
-                doc_positions = np.where(input_ids_row == doc_token_id)[0]
-                query_positions = np.where(input_ids_row == query_token_id)[0]
+                doc_positions = np.nonzero(input_ids_row == doc_token_id)[0]
+                query_positions = np.nonzero(input_ids_row == query_token_id)[0]
                 if len(query_positions) == 0 or len(doc_positions) < len(chunk_docs):
                     logger.warning(
                         "[RERANK] LBNL readout token mismatch (docs=%d/%d, query=%d); assigning 0.0 scores for block.",

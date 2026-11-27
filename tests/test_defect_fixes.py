@@ -1,7 +1,5 @@
-from pathlib import Path
 from unittest.mock import patch
 
-import httpx
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,31 +10,37 @@ from engine.pipelines.audit_pipeline import run_sku_audit
 from engine.pipelines.classification_pipeline import tag_all_skus
 from engine.pipelines.request_pipeline import process_request
 from engine.pipelines.runtime_pipeline import get_pipeline
+from engine.pipelines.startup_check_pipeline import check_domain_synced
 
 
 def _require_synced_pipeline(domain: str = "food") -> None:
-    meta_path = Path(config.CACHE_DIR) / f"{domain}_catalog_metadata.pkl"
-    active_marker = Path(config.CACHE_DIR) / "active_embedding_model.txt"
-    synced_emb = active_marker.read_text(encoding="utf-8").strip() if active_marker.exists() else ""
-    if (
-        not Path(config.EMBEDDING_ONNX).exists()
-        or not Path(config.get_bt_arcface_onnx_path(domain)).exists()
-        or not meta_path.exists()
-        or (synced_emb and synced_emb != config.EMBEDDING_MODEL)
-    ):
-        pytest.skip(
-            f"Local ONNX models or synced '{domain}' catalog cache not found or not yet synced for active EMBEDDING_MODEL"
+    errors = check_domain_synced(domain)
+    if errors:
+        pytest.fail(
+            f"Domain '{domain}' is not synced (refusing to sync inside tests):\n- "
+            + "\n- ".join(errors)
         )
-    try:
-        r = httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0)
-        if r.status_code >= 500:
-            pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
-    except Exception:
-        pytest.skip(f"Qdrant not reachable at {config.QDRANT_URL}")
+
+
+def _forbid_sync(*_args, **_kwargs):
+    raise AssertionError("Refusing to sync Qdrant, sheets, or training caches inside a test.")
 
 
 @pytest.mark.usefixtures("pg")
 class TestDefectFixes:
+    @pytest.fixture(autouse=True)
+    def _block_test_sync(self, monkeypatch):
+        from engine.inference.embedding_model import EmbeddingModel
+        from engine.pipelines.classification_pipeline import TaxonomyClassifier
+        from engine.pipelines.ingestion_pipeline import DataIngestion
+        from engine.vector_store.vector_store import VectorStore
+
+        monkeypatch.setattr(VectorStore, "upsert_catalog_points", _forbid_sync)
+        monkeypatch.setattr(VectorStore, "upsert_tag_vectors", _forbid_sync)
+        monkeypatch.setattr(EmbeddingModel, "embed_dictionary_incremental", _forbid_sync)
+        monkeypatch.setattr(TaxonomyClassifier, "_embed_weighted_sku_incremental", _forbid_sync)
+        monkeypatch.setattr(DataIngestion, "load_catalog_from_sheets", _forbid_sync)
+
     @pytest.mark.live_models
     def test_bypass_score_normalization_at_source(self):
         """Verify exact and fuzzy bypass paths write 1.0 instead of 100.0."""

@@ -6,7 +6,7 @@ import { useDebounce } from './useDebounce';
 
 export function useApiRequests({ pathQuery, status, selectedId }) {
   const debouncedPathQuery = useDebounce(pathQuery, 350);
-  const statusCodeParam = status === 'all' ? undefined : parseInt(status, 10);
+  const statusCodeParam = status === 'all' ? undefined : Number.parseInt(status, 10);
 
   const listQuery = useQuery({
     queryKey: ['api-requests', debouncedPathQuery, status],

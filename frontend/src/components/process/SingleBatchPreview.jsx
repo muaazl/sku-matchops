@@ -110,7 +110,7 @@ export function SingleBatchPreview({ previewData, jobName, onJobNameChange, isCr
                         <TableCell sx={{ fontWeight: 500 }}>{row.name || '—'}</TableCell>
                         <TableCell>{row.category || '—'}</TableCell>
                         <TableCell align="right">
-                          {row.price !== undefined ? parseFloat(row.price).toFixed(2) : '0.00'}
+                          {row.price !== undefined ? Number.parseFloat(row.price).toFixed(2) : '0.00'}
                         </TableCell>
                         <TableCell
                           sx={{
@@ -136,7 +136,7 @@ export function SingleBatchPreview({ previewData, jobName, onJobNameChange, isCr
                 page={page}
                 onPageChange={(e, newPage) => setPage(newPage)}
                 onRowsPerPageChange={(e) => {
-                  setRowsPerPage(parseInt(e.target.value, 10));
+                  setRowsPerPage(Number.parseInt(e.target.value, 10));
                   setPage(0);
                 }}
               />

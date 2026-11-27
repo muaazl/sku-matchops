@@ -2,7 +2,7 @@ import { getActiveApiKey, resolveBaseUrl } from './httpClient';
 
 export function subscribeSseStream(path, { onMessage, onError } = {}) {
   const controller = new AbortController();
-  (async () => {
+  void (async () => {
     try {
       const base = await resolveBaseUrl();
       const headers = {

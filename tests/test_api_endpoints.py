@@ -413,8 +413,8 @@ def test_catalog_dictionary_datasets(pg):
             )
 
 
-def test_batches_merchant_fetch_models_logs_and_upload(seeded_data, tmp_path):
-    """Verify /batches/{id}, /merchant-fetch, /load-models, /models-status, /models/reload, /logs, and /upload."""
+def test_batches_merchant_fetch_models_and_upload(seeded_data):
+    """Verify /batches/{id}, /merchant-fetch, /load-models, /models-status, /models/reload, and /upload."""
     batch_ok = client.get("/batches/batch_1")
     assert batch_ok.status_code == 200
     assert batch_ok.json()["filename"] == "supermarket.csv"
@@ -491,13 +491,6 @@ def test_batches_merchant_fetch_models_logs_and_upload(seeded_data, tmp_path):
         assert client.get("/models-status").json() == {"ready": True}
         assert client.post("/models/reload").json() == {"status": "reloaded"}
 
-    fake_log = tmp_path / "backend.log"
-    fake_log.write_text("line1\nline2\nline3\n", encoding="utf-8")
-    with patch("backend.core.config.LOG_FILE", str(fake_log)):
-        logs_resp = client.get("/logs", params={"lines": 2})
-    assert logs_resp.status_code == 200
-    assert logs_resp.json()["logs"] == "line2\nline3\n"
-
     # Empty SKUs rejected on /upload
     assert (
         client.post(
@@ -507,17 +500,32 @@ def test_batches_merchant_fetch_models_logs_and_upload(seeded_data, tmp_path):
         == 400
     )
 
-    # Non-host-managed upload dispatches to engine client
-    with patch("backend.services.engine_gateway_service.dispatch_upload_job") as mock_dispatch:
-        up_resp = client.post(
-            "/upload",
-            json={
-                "outlet_id_or_name": "outlet-1",
-                "domain": "market",
-                "skus": [{"Name": "Butter 200g", "BasicType": "Butter"}],
-                "host_managed": False,
-            },
-        )
+    # Non-host-managed upload enqueues to Redis first without calling gRPC fallback
+    upload_payload = {
+        "outlet_id_or_name": "outlet-1",
+        "domain": "market",
+        "skus": [{"Name": "Butter 200g", "BasicType": "Butter"}],
+        "host_managed": False,
+    }
+    with (
+        patch(
+            "backend.services.job_service.try_enqueue_redis_task",
+            return_value={"status": "queued", "job_id": "1", "task_id": "task-1"},
+        ) as mock_enqueue,
+        patch("backend.services.engine_gateway_service.dispatch_upload_job") as mock_dispatch,
+    ):
+        up_resp = client.post("/upload", json=upload_payload)
     assert up_resp.status_code == 200
     assert up_resp.json()["job_id"]
+    mock_enqueue.assert_called_once()
+    mock_dispatch.assert_not_called()
+
+    # When Redis queue is unavailable, upload falls back to direct engine gRPC dispatch
+    with (
+        patch("backend.services.job_service.try_enqueue_redis_task", return_value=None),
+        patch("backend.services.engine_gateway_service.dispatch_upload_job") as mock_dispatch,
+    ):
+        fb_resp = client.post("/upload", json=upload_payload)
+    assert fb_resp.status_code == 200
+    assert fb_resp.json()["job_id"]
     mock_dispatch.assert_called_once()

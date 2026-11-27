@@ -152,7 +152,7 @@ export default function Jobs() {
           onNavigateProcess={() => navigate('/process-skus')}
           onPageChange={(event, newPage) => setPage(newPage)}
           onRowsPerPageChange={(event) => {
-            setRowsPerPage(parseInt(event.target.value, 10));
+            setRowsPerPage(Number.parseInt(event.target.value, 10));
             setPage(0);
           }}
         />

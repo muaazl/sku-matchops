@@ -155,7 +155,7 @@ export default function SkuResults() {
           onNavigateProcess={() => navigate('/process-skus')}
           onPageChange={(e, newPage) => setPage(newPage)}
           onRowsPerPageChange={(e) => {
-            setRowsPerPage(parseInt(e.target.value, 10));
+            setRowsPerPage(Number.parseInt(e.target.value, 10));
             setPage(0);
           }}
         />
@@ -256,7 +256,7 @@ export default function SkuResults() {
         }}
         onPageChange={(e, newPage) => setSkuPage(newPage)}
         onRowsPerPageChange={(e) => {
-          setSkuRowsPerPage(parseInt(e.target.value, 10));
+          setSkuRowsPerPage(Number.parseInt(e.target.value, 10));
           setSkuPage(0);
         }}
       />

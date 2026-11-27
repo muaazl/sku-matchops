@@ -12,7 +12,6 @@ import {
   Inventory2,
   Search,
   Sensors,
-  Terminal,
   Tune,
 } from '@mui/icons-material';
 import { Logo } from '../common/Logo';
@@ -36,7 +35,6 @@ export const NAV_ITEMS = [
   { title: 'SKU Results', icon: History, to: '/sku-results' },
   { title: 'Rules Engine', icon: Tune, to: '/rules' },
   { title: 'Catalog Search', icon: Search, to: '/catalog' },
-  { title: 'Logs', icon: Terminal, to: '/logs' },
 ];
 
 function SidebarItem({ title, icon, linkTo, active = false }) {

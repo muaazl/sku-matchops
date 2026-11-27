@@ -68,34 +68,43 @@ def test_cross_dish_contamination_filter():
 class TestAuditAlignment:
     @classmethod
     def setup_class(cls):
-        from pathlib import Path
+        from unittest.mock import patch
 
-        import httpx
+        from engine.pipelines.startup_check_pipeline import check_domain_synced
 
-        from engine.core import config
-
-        meta_path = Path(config.CACHE_DIR) / "food_catalog_metadata.pkl"
-        active_marker = Path(config.CACHE_DIR) / "active_embedding_model.txt"
-        synced_emb = (
-            active_marker.read_text(encoding="utf-8").strip() if active_marker.exists() else ""
-        )
-        if (
-            not Path(config.EMBEDDING_ONNX).exists()
-            or not Path(config.get_bt_arcface_onnx_path("food")).exists()
-            or not meta_path.exists()
-            or (synced_emb and synced_emb != config.EMBEDDING_MODEL)
-        ):
-            pytest.skip(
-                "Local ONNX models or synced food catalog cache not found or not yet synced for active EMBEDDING_MODEL"
+        cls._no_sync_patches = []
+        errors = check_domain_synced("food")
+        if errors:
+            pytest.fail(
+                "Food domain is not synced (refusing to sync inside tests):\n- "
+                + "\n- ".join(errors)
             )
-        try:
-            if httpx.get(f"{config.QDRANT_URL.rstrip('/')}/readyz", timeout=1.0).status_code >= 500:
-                pytest.skip(f"Qdrant not ready at {config.QDRANT_URL}")
-        except Exception:
-            pytest.skip(f"Qdrant not reachable at {config.QDRANT_URL}")
-        # Warm up models for food domain
+
+        def _forbid_sync(*_args, **_kwargs):
+            raise AssertionError(
+                "Refusing to sync Qdrant, sheets, or training caches inside a test."
+            )
+
+        for target in (
+            "engine.vector_store.vector_store.VectorStore.upsert_catalog_points",
+            "engine.vector_store.vector_store.VectorStore.upsert_tag_vectors",
+            "engine.inference.embedding_model.EmbeddingModel.embed_dictionary_incremental",
+            "engine.pipelines.classification_pipeline.TaxonomyClassifier._embed_weighted_sku_incremental",
+            "engine.pipelines.ingestion_pipeline.DataIngestion.load_catalog_from_sheets",
+        ):
+            p = patch(target, side_effect=_forbid_sync)
+            p.start()
+            cls._no_sync_patches.append(p)
+
+        # Warm up models for food domain (read-only against pre-synced caches & Qdrant)
         get_classifier("food")
         get_pipeline("food")
+
+    @classmethod
+    def teardown_class(cls):
+        for p in getattr(cls, "_no_sync_patches", ()):
+            p.stop()
+        cls._no_sync_patches = []
 
     def test_classifier_parity_audit_vs_processor(self):
         sku = {

@@ -55,7 +55,7 @@ export async function resolveBaseUrl() {
 }
 
 // Eagerly resolve on load (non-blocking)
-resolveBaseUrl();
+void resolveBaseUrl();
 
 export const httpClient = axios.create({
   baseURL: LOCAL_BACKEND,

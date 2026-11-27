@@ -1,11 +1,8 @@
-"""System startup/shutdown lifecycle, health/readiness probes, and log tailing service."""
+"""System startup/shutdown lifecycle, and health/readiness probes."""
 
 import logging
-from collections import deque
-from pathlib import Path
 from typing import Any
 
-from backend.core import config
 from backend.repositories import (
     database_init_repository,
     job_progress_repository,
@@ -92,16 +89,3 @@ def check_system_readiness() -> tuple[bool, dict[str, Any]]:
         "engine": engine_status,
     }
     return is_ready, payload
-
-
-def read_application_logs(lines: int = 500) -> dict[str, str]:
-    """Reads the last N lines of the configured backend log file."""
-    log_file = Path(config.LOG_FILE)
-    if not log_file.exists():
-        return {"logs": "Log file not found."}
-    try:
-        with log_file.open(encoding="utf-8", errors="ignore") as f:
-            last_lines = deque(f, maxlen=lines)
-            return {"logs": "".join(last_lines)}
-    except Exception as e:
-        return {"logs": f"Error reading log file: {str(e)}"}

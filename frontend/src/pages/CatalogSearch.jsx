@@ -219,7 +219,7 @@ export default function CatalogSearch() {
               onRowsPerPageChange={(e) =>
                 setPaginationModel((prev) => ({
                   ...prev,
-                  pageSize: parseInt(e.target.value, 10),
+                  pageSize: Number.parseInt(e.target.value, 10),
                   page: 0,
                 }))
               }
@@ -239,7 +239,7 @@ export default function CatalogSearch() {
         }
         onConfirm={() => {
           setConfirmOpen(false);
-          syncCache();
+          void syncCache();
         }}
         confirmText="Sync"
       />

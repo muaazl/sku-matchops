@@ -37,7 +37,7 @@ export function useSkuMatch() {
         sku_name: sku,
         domain,
         task,
-        price: price ? parseFloat(price) : 0.0,
+        price: price ? Number.parseFloat(price) : 0.0,
         description,
         category,
       };
@@ -79,7 +79,7 @@ export function useSkuMatch() {
         sku_name: sku,
         domain: result?.domain || domain,
         task: auditTaskToRun,
-        price: price ? parseFloat(price) : 0.0,
+        price: price ? Number.parseFloat(price) : 0.0,
         description,
         category,
       };

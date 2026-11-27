@@ -21,17 +21,21 @@ ROLES = (ADMIN, RULE_ENGINEER, REVIEWER)
 _bearer = HTTPBearer(auto_error=False)
 _api_key = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-DISALLOWED_NETWORKS = [
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-]
+
+def _is_disallowed_ip(ip_addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Returns True when an IP address belongs to a non-global, private, loopback, or link-local range."""
+    mapped = getattr(ip_addr, "ipv4_mapped", None)
+    if mapped is not None and _is_disallowed_ip(mapped):
+        return True
+    return (
+        not ip_addr.is_global
+        or ip_addr.is_private
+        or ip_addr.is_loopback
+        or ip_addr.is_link_local
+        or ip_addr.is_unspecified
+        or ip_addr.is_reserved
+        or ip_addr.is_multicast
+    )
 
 
 def validate_outbound_url(url: str, allowed_domains: tuple[str, ...] | None = None) -> str:
@@ -72,11 +76,10 @@ def validate_outbound_url(url: str, allowed_domains: tuple[str, ...] | None = No
             ip_addrs = [ipaddress.ip_address(sockaddr[0]) for *_, sockaddr in addr_info]
 
         for ip_addr in ip_addrs:
-            for net in DISALLOWED_NETWORKS:
-                if ip_addr in net:
-                    raise ValueError(
-                        f"Access to private/internal network address '{ip_addr}' is prohibited."
-                    )
+            if _is_disallowed_ip(ip_addr):
+                raise ValueError(
+                    f"Access to private/internal network address '{ip_addr}' is prohibited."
+                )
     except socket.gaierror as e:
         logger.warning(f"Could not resolve hostname '{hostname}' during pre-flight SSRF check: {e}")
 

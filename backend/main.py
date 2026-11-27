@@ -2,7 +2,6 @@
 
 import logging
 from contextlib import asynccontextmanager
-from logging.handlers import RotatingFileHandler
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,18 +20,9 @@ from backend.services import system_service
 
 
 def configure_app_logging() -> None:
-    """Configures console and rotating file logging for the Backend Gateway."""
-    config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    """Configures console logging for the Backend Gateway."""
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    if not any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers):
-        file_handler = RotatingFileHandler(
-            config.LOG_FILE,
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5,
-            encoding="utf-8",
-        )
-        root_logger.addHandler(file_handler)
     if not any(type(h) is logging.StreamHandler for h in root_logger.handlers):
         root_logger.addHandler(logging.StreamHandler())
     configure_logging(root_logger, log_format=config.LOG_FORMAT)
@@ -72,6 +62,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(AuditLoggingMiddleware)
+app.add_middleware(ETagMiddleware)
+# Binds trace id before audit logging and every request handler
+app.add_middleware(TraceIdMiddleware)
+# Outermost: ensures CORS headers apply even when inner middleware short-circuits
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -80,10 +75,5 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Total-Count", "X-Request-ID", "ETag"],
 )
-
-app.add_middleware(AuditLoggingMiddleware)
-app.add_middleware(ETagMiddleware)
-# Outermost: binds trace id before audit logging and every request handler
-app.add_middleware(TraceIdMiddleware)
 
 app.include_router(api_router)

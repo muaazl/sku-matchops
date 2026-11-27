@@ -26,9 +26,7 @@ DEFAULT_PORTAL_URL = (
 PORTAL_URL = os.getenv("PORTAL_URL", DEFAULT_PORTAL_URL)
 
 # --- PostgreSQL (owned exclusively by the Backend Gateway) ---
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql+psycopg://matchops:matchops@localhost:5432/matchops"
-)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
 DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "20"))
 DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))
@@ -52,6 +50,4 @@ REVIEW_THRESHOLD = float(os.getenv("REVIEW_THRESHOLD", "0.50"))
 # --- Persistent Data & Logging Paths ---
 DATA_DIR = ROOT_DIR / "data"
 STAGING_DIR = Path(os.getenv("STAGING_DIR", str(DATA_DIR / "staged_sheets")))
-LOG_DIR = Path(os.getenv("LOG_DIR", str(DATA_DIR / "logs")))
-LOG_FILE = Path(os.getenv("LOG_FILE", str(LOG_DIR / "backend.log")))
 LOG_FORMAT = os.getenv("LOG_FORMAT", "text")

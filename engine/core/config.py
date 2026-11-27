@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import warnings
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,22 +28,6 @@ for _thread_var in (
 ):
     os.environ[_thread_var] = str(MAX_CPU_CORES)
 
-# Suppress harmless third-party library warnings
-try:
-    from sklearn.exceptions import InconsistentVersionWarning
-
-    warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
-except ImportError:
-    pass
-
-for _warn_pattern in (
-    ".*Asking to truncate to max_length.*",
-    ".*resume_download is deprecated.*",
-    ".*The sentencepiece tokenizer that you are converting.*",
-    ".*incorrect regex pattern.*",
-):
-    warnings.filterwarnings("ignore", message=_warn_pattern)
-
 
 class _MaxLengthLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -59,8 +42,6 @@ CACHE_DIR = DATA_DIR / "cache"
 STAGING_DIR = DATA_DIR / "staged_sheets"
 QDRANT_DATA_DIR = DATA_DIR / "qdrant"
 
-LOG_DIR = DATA_DIR / "logs"
-LOG_FILE = LOG_DIR / "app.log"
 # "json" emits one JSON object per log line (with trace_id); anything else is plain text
 LOG_FORMAT = "text"
 

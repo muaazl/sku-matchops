@@ -214,7 +214,6 @@ pnpm start
 | `BACKEND_GRPC_URL` | Yes | gRPC callback target of the backend gateway (`127.0.0.1:50052` or `backend:50052`). |
 | `INTERNAL_GRPC_SECRET` | No | Optional shared secret enforced on all internal Gateway <-> Engine gRPC calls. |
 | `QDRANT_URL` | Yes | Qdrant vector database URL. |
-| `QDRANT_API_KEY` | No | Qdrant API key (for secured/cloud deployments). |
 | `EMBEDDING_MODEL` | No | HuggingFace embedding model ID (auto-exported to INT8 ONNX). Defaults to `jinaai/jina-embeddings-v5-text-small`. |
 | `RERANKER_MODEL` | No | HuggingFace reranker model ID (auto-exported to INT8 ONNX). Defaults to `jinaai/jina-reranker-v3.5`. |
 | `FOOD_BT_MODEL` | No | BasicType classifier for Food (`arcface` or `logreg`). Defaults to `arcface`. |

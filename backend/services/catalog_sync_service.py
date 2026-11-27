@@ -243,7 +243,7 @@ def sync_catalog_to_database(
         new_brands_seen.add(uid)
 
         row_str = str(name_val) + str(row.get("Aliases", "")) + CACHE_SALT
-        row_hash = hashlib.md5(row_str.encode("utf-8")).hexdigest()
+        row_hash = hashlib.sha256(row_str.encode("utf-8")).hexdigest()
 
         values = {
             "name": name_val,

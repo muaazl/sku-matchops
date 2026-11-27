@@ -99,11 +99,11 @@ export function generateSampleForRule(rule) {
       } else if (c.condition_type === 'region_is') {
         sampleObj.region = c.negate ? 'Other Region' : val;
       } else if (c.condition_type === 'price_below') {
-        const p = parseFloat(val);
-        if (!isNaN(p)) sampleObj.price = Math.max(0, p - 1);
+        const p = Number.parseFloat(val);
+        if (!Number.isNaN(p)) sampleObj.price = Math.max(0, p - 1);
       } else if (c.condition_type === 'price_above') {
-        const p = parseFloat(val);
-        if (!isNaN(p)) sampleObj.price = p + 5;
+        const p = Number.parseFloat(val);
+        if (!Number.isNaN(p)) sampleObj.price = p + 5;
       } else if (c.condition_type === 'flavor_contains' || c.condition_type === 'flavor_is') {
         if (!c.negate) {
           const lower = val.toLowerCase();

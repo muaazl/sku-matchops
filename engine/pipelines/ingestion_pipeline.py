@@ -164,7 +164,7 @@ class DataIngestion:
                 staged_path.write_text(content, encoding="utf-8")
 
                 file_size_kb = len(content.encode("utf-8")) / 1024.0
-                content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
                 manifest["sheets"][sheet_name] = {
                     "path": str(staged_path),
                     "hash": content_hash,

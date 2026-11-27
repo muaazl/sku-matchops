@@ -23,7 +23,7 @@ UNIT_MAP: dict[str, tuple[float, str, str]] = {
 }
 
 FAST_WEIGHT_REGEX = re.compile(
-    r"(?<![a-z0-9])(\d+(?:\.\d+)?)\s*(mg|milligram|milligrams|kg|kilogram|kilograms|g|gram|grams|ml|millilitre|millilitres|milliliter|milliliters|l|liter|liters|litre|litres|cl|tonne|tonnes)\b",
+    r"(?<![a-z0-9])(\d{1,12}(?:\.\d{1,6})?)\s{0,6}(mg|milligrams?|kg|kilograms?|g|grams?|ml|millilitres?|milliliters?|l|liters?|litres?|cl|tonnes?)\b",
     re.IGNORECASE,
 )
 
@@ -91,7 +91,7 @@ def extract_normalized_weight(text: str) -> tuple[float | None, str | None, str 
 
     # Fallback to basic numeric + unit regex
     try:
-        match = re.search(r"(\d+(\.\d+)?)\s*([a-zA-Z]+)\b", text.lower())
+        match = re.search(r"(?<!\d)(\d{1,12}(\.\d{1,6})?)\s{0,6}([a-zA-Z]{1,24})\b", text.lower())
         if match:
             result = normalize_unit_value(float(match.group(1)), match.group(3))
             if result:
@@ -112,9 +112,13 @@ def standardize_sku_units(text: str) -> str:
     if not isinstance(text, str):
         return ""
     text = text.lower()
-    text = re.sub(r"(\d+)([a-z]+)", r"\1 \2", text)
+    text = re.sub(r"(?<!\d)(\d{1,12})([a-z]{1,24})", r"\1 \2", text)
     # Remove measurement ranges (e.g., '100g - 200g') that confuse matching
-    text = re.sub(r"(\d+(\.\d+)?)\s*[a-z]+\s*-\s*(\d+(\.\d+)?)\s*[a-z]+", "", text)
+    text = re.sub(
+        r"(?<!\d)(\d{1,12}(?:\.\d{1,6})?)\s{0,6}[a-z]{1,24}\s{0,6}-\s{0,6}(\d{1,12}(?:\.\d{1,6})?)\s{0,6}[a-z]{1,24}",
+        "",
+        text,
+    )
 
     def _fmt_num(x: float) -> str:
         if abs(x - round(x)) < 1e-9:
@@ -131,9 +135,13 @@ def standardize_sku_units(text: str) -> str:
             return f"{_fmt_num(val)}{base_unit} "
         return f"{_fmt_num(total)}{unit} "
 
-    text = re.sub(r"(\d+)\s*[xX]\s*(\d+(\.\d+)?)\s*([a-z]+)", _calc_multipack, text)
     text = re.sub(
-        r"(\d+(\.\d+)?)\s*([a-z]+)\s*[xX]\s*(\d+)",
+        r"(?<!\d)(\d{1,12})\s{0,6}[xX]\s{0,6}(\d{1,12}(\.\d{1,6})?)\s{0,6}([a-z]{1,24})",
+        _calc_multipack,
+        text,
+    )
+    text = re.sub(
+        r"(?<!\d)(\d{1,12}(\.\d{1,6})?)\s{0,6}([a-z]{1,24})\s{0,6}[xX]\s{0,6}(\d{1,12})",
         lambda m: _calc_multipack(m, reverse=True),
         text,
     )
@@ -147,7 +155,7 @@ def standardize_sku_units(text: str) -> str:
 
     text = re.sub(r"\b(\d+(\.\d+)?)\s?([a-z]+)\b", _convert_match, text)
     text = re.sub(r"\bpack of (\d+)\b", r"\1pc", text)
-    text = re.sub(r"(\d+)\s*(pcs|pieces|units)\b", r"\1pc", text)
+    text = re.sub(r"(?<!\d)(\d{1,12})\s{0,6}(?:pieces|pcs|units)\b", r"\1pc", text)
     return text.strip()
 
 
@@ -156,7 +164,7 @@ def normalize_sku_text(text: str) -> str:
     if not isinstance(text, str):
         return ""
     text = text.lower()
-    text = re.sub(r"(-|\|)?\s*sku\s*\d+", "", text)
+    text = re.sub(r"(?:[-|]\s{0,6}|(?<!\s)\s{0,6})sku\s{0,6}\d{1,12}", "", text)
     text = re.sub(r"\b\d{4,6}\b", "", text)
     text = re.sub(r"[^\w\s\.\u0D80-\u0DFF\u0B80-\u0BFF]|_", " ", text)
     return re.sub(r"\s+", " ", text).strip()
@@ -268,6 +276,17 @@ def format_catalog_row_for_reranker(row: dict, domain: str = config.DOMAIN_MARKE
     )
 
 
+def _split_word_affixes(word: str) -> tuple[str, str, str]:
+    """Splits leading and trailing non-word punctuation from a token in linear time."""
+    start = 0
+    end = len(word)
+    while start < end and not (word[start].isalnum() or word[start] == "_"):
+        start += 1
+    while end > start and not (word[end - 1].isalnum() or word[end - 1] == "_"):
+        end -= 1
+    return word[:start], word[start:end].lower(), word[end:]
+
+
 def format_title_case(text: str) -> str:
     """Formats tags to title case while keeping minor conjunctions/prepositions lowercase."""
     if not text:
@@ -275,18 +294,10 @@ def format_title_case(text: str) -> str:
 
     capitalized_words = []
     for idx, word in enumerate(text.split()):
-        clean_word = re.sub(r"^\W+|\W+$", "", word).lower()
-        if idx == 0:
-            if clean_word in MINOR_TITLE_WORDS:
-                prefix = re.match(r"^\W*", word).group(0)
-                suffix = re.search(r"\W*$", word).group(0)
-                capitalized_words.append(prefix + clean_word.capitalize() + suffix)
-            else:
-                capitalized_words.append("-".join(p.capitalize() for p in word.split("-")))
-        elif clean_word in MINOR_TITLE_WORDS:
-            prefix = re.match(r"^\W*", word).group(0)
-            suffix = re.search(r"\W*$", word).group(0)
-            capitalized_words.append(prefix + clean_word + suffix)
+        prefix, clean_word, suffix = _split_word_affixes(word)
+        if clean_word in MINOR_TITLE_WORDS:
+            inner = clean_word.capitalize() if idx == 0 else clean_word
+            capitalized_words.append(prefix + inner + suffix)
         else:
             capitalized_words.append("-".join(p.capitalize() for p in word.split("-")))
 

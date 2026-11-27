@@ -524,7 +524,7 @@ class VectorQueryStore:
         include_learned_sparse = config.check_learned_sparse_enabled() and bool(sparse_embs)
         points: list[PointStruct] = []
         for i, (tag, dense) in enumerate(zip(tags, dense_embs)):
-            point_id = hashlib.md5(f"{domain}_{dict_type}_{tag}".encode()).hexdigest()
+            point_id = hashlib.sha256(f"{domain}_{dict_type}_{tag}".encode()).hexdigest()[:32]
 
             payload = {
                 "tag": tag,

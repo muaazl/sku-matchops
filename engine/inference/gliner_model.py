@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import warnings
 from collections import OrderedDict
 from pathlib import Path
 
@@ -14,9 +13,6 @@ import pandas as pd
 from engine.core import config
 from engine.core.observability import ONNX_INFERENCE_SECONDS
 from engine.preprocessing.entity_preprocessor import EntityAliasIndex
-
-warnings.filterwarnings("ignore", message=".*fix_mistral_regex.*")
-warnings.filterwarnings("ignore", message=".*The regex pattern.*")
 
 logger = logging.getLogger("matchops.inference.gliner")
 

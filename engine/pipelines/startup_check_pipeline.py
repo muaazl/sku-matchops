@@ -127,6 +127,60 @@ def check_redis() -> list[str]:
     return errors
 
 
+def _check_qdrant_collection(
+    vs: Any,
+    domain: str,
+    col_name: str,
+    qdrant_state: dict[str, Any],
+    qdrant_state_path: Path,
+    min_points: int = 1,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        if not vs.check_collection_exists(col_name):
+            errors.append(
+                f"Qdrant collection '{col_name}' does not exist. "
+                f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
+            )
+            return errors
+
+        points_count = vs.count_collection_points(col_name)
+        if points_count <= 0:
+            errors.append(
+                f"Qdrant collection '{col_name}' is empty (0 points). "
+                f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
+            )
+        elif points_count < min_points:
+            errors.append(
+                f"Qdrant collection '{col_name}' has {points_count} points, expected at least {min_points}. "
+                f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
+            )
+
+        mismatch = vs.get_collection_schema_mismatch(col_name)
+        if mismatch:
+            errors.append(
+                f"Qdrant collection '{col_name}' schema mismatch ({mismatch}). "
+                f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
+            )
+
+        recorded_model = str(qdrant_state.get(domain, "") or "")
+        if recorded_model and recorded_model != config.EMBEDDING_MODEL:
+            errors.append(
+                f"Qdrant collection '{col_name}' was indexed with '{recorded_model}', "
+                f"but active EMBEDDING_MODEL is '{config.EMBEDDING_MODEL}'. "
+                f"Revert EMBEDDING_MODEL to '{recorded_model}' or run "
+                f"'python -m scripts.sync --qdrant rebuild --domain {domain}'."
+            )
+        elif qdrant_state_path.exists() and not recorded_model:
+            errors.append(
+                f"Qdrant collection '{col_name}' has no recorded embedding model in '{qdrant_state_path}'. "
+                f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
+            )
+    except Exception as e:
+        errors.append(f"Failed to inspect Qdrant collection '{col_name}': {e}")
+    return errors
+
+
 def check_qdrant() -> list[str]:
     errors: list[str] = []
     try:
@@ -154,43 +208,9 @@ def check_qdrant() -> list[str]:
         (config.DOMAIN_FOOD, config.QDRANT_COLLECTION_FOOD),
     )
     for domain, col_name in collections:
-        try:
-            if not vs.check_collection_exists(col_name):
-                errors.append(
-                    f"Qdrant collection '{col_name}' does not exist. "
-                    f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
-                )
-                continue
-
-            points_count = vs.count_collection_points(col_name)
-            if points_count <= 0:
-                errors.append(
-                    f"Qdrant collection '{col_name}' is empty (0 points). "
-                    f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
-                )
-
-            mismatch = vs.get_collection_schema_mismatch(col_name)
-            if mismatch:
-                errors.append(
-                    f"Qdrant collection '{col_name}' schema mismatch ({mismatch}). "
-                    f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
-                )
-
-            recorded_model = str(qdrant_state.get(domain, "") or "")
-            if recorded_model and recorded_model != config.EMBEDDING_MODEL:
-                errors.append(
-                    f"Qdrant collection '{col_name}' was indexed with '{recorded_model}', "
-                    f"but active EMBEDDING_MODEL is '{config.EMBEDDING_MODEL}'. "
-                    f"Revert EMBEDDING_MODEL to '{recorded_model}' or run "
-                    f"'python -m scripts.sync --qdrant rebuild --domain {domain}'."
-                )
-            elif qdrant_state_path.exists() and not recorded_model:
-                errors.append(
-                    f"Qdrant collection '{col_name}' has no recorded embedding model in '{qdrant_state_path}'. "
-                    f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
-                )
-        except Exception as e:
-            errors.append(f"Failed to inspect Qdrant collection '{col_name}': {e}")
+        errors.extend(
+            _check_qdrant_collection(vs, domain, col_name, qdrant_state, qdrant_state_path)
+        )
 
     return errors
 
@@ -296,58 +316,154 @@ def _check_logreg_domain(domain: str) -> list[str]:
     return errors
 
 
-def check_domain_caches_and_classifiers() -> list[str]:
+def _check_domain_caches_and_classifier(domain: str) -> list[str]:
     errors: list[str] = []
     cache_dir = Path(config.CACHE_DIR)
 
-    for domain in (config.DOMAIN_MARKET, config.DOMAIN_FOOD):
-        required_caches = (
-            cache_dir / f"{domain}_catalog_mmap.feather",
-            cache_dir / f"{domain}_brands_mmap.feather",
-            cache_dir / f"{domain}_classifier_dicts.json",
-            cache_dir / f"{domain}_warm_centroids.pkl",
-        )
-        for p in required_caches:
-            if not p.exists() or p.stat().st_size == 0:
+    required_caches = (
+        cache_dir / f"{domain}_catalog_mmap.feather",
+        cache_dir / f"{domain}_brands_mmap.feather",
+        cache_dir / f"{domain}_classifier_dicts.json",
+        cache_dir / f"{domain}_warm_centroids.pkl",
+    )
+    for p in required_caches:
+        if not p.exists() or p.stat().st_size == 0:
+            errors.append(
+                f"[{domain.upper()}] Required cache '{p.name}' is missing or empty. "
+                f"Run 'python -m scripts.sync --cache rebuild --domain {domain}'."
+            )
+
+    centroids_path = cache_dir / f"{domain}_warm_centroids.pkl"
+    if centroids_path.exists() and centroids_path.stat().st_size > 0:
+        try:
+            c_data = joblib.load(centroids_path)
+            c_emb = c_data.get("embedding_model") if isinstance(c_data, dict) else None
+            if c_emb and c_emb != config.EMBEDDING_MODEL:
                 errors.append(
-                    f"[{domain.upper()}] Required cache '{p.name}' is missing or empty. "
+                    f"[{domain.upper()}] Warm centroids cached with '{c_emb}', "
+                    f"but active EMBEDDING_MODEL is '{config.EMBEDDING_MODEL}'. "
                     f"Run 'python -m scripts.sync --cache rebuild --domain {domain}'."
                 )
+        except Exception as e:
+            errors.append(f"[{domain.upper()}] Corrupt warm centroids '{centroids_path}': {e}")
 
-        centroids_path = cache_dir / f"{domain}_warm_centroids.pkl"
-        if centroids_path.exists() and centroids_path.stat().st_size > 0:
-            try:
-                c_data = joblib.load(centroids_path)
-                c_emb = c_data.get("embedding_model") if isinstance(c_data, dict) else None
-                if c_emb and c_emb != config.EMBEDDING_MODEL:
-                    errors.append(
-                        f"[{domain.upper()}] Warm centroids cached with '{c_emb}', "
-                        f"but active EMBEDDING_MODEL is '{config.EMBEDDING_MODEL}'. "
-                        f"Run 'python -m scripts.sync --cache rebuild --domain {domain}'."
-                    )
-            except Exception as e:
-                errors.append(f"[{domain.upper()}] Corrupt warm centroids '{centroids_path}': {e}")
-
-        weighted_path = cache_dir / f"{domain}_weighted_skus_cache.pkl"
-        if weighted_path.exists() and weighted_path.stat().st_size > 0:
-            try:
-                w_data = joblib.load(weighted_path)
-                w_emb = w_data.get("__embedding_model__") if isinstance(w_data, dict) else None
-                if w_emb and w_emb != config.EMBEDDING_MODEL:
-                    errors.append(
-                        f"[{domain.upper()}] Weighted SKU cache built with '{w_emb}', "
-                        f"but active EMBEDDING_MODEL is '{config.EMBEDDING_MODEL}'. "
-                        f"Run 'python -m scripts.sync --cache rebuild --domain {domain}'."
-                    )
-            except Exception as e:
+    weighted_path = cache_dir / f"{domain}_weighted_skus_cache.pkl"
+    if weighted_path.exists() and weighted_path.stat().st_size > 0:
+        try:
+            w_data = joblib.load(weighted_path)
+            w_emb = w_data.get("__embedding_model__") if isinstance(w_data, dict) else None
+            if w_emb and w_emb != config.EMBEDDING_MODEL:
                 errors.append(
-                    f"[{domain.upper()}] Corrupt weighted SKU cache '{weighted_path}': {e}"
+                    f"[{domain.upper()}] Weighted SKU cache built with '{w_emb}', "
+                    f"but active EMBEDDING_MODEL is '{config.EMBEDDING_MODEL}'. "
+                    f"Run 'python -m scripts.sync --cache rebuild --domain {domain}'."
                 )
+        except Exception as e:
+            errors.append(f"[{domain.upper()}] Corrupt weighted SKU cache '{weighted_path}': {e}")
 
-        if config.get_bt_model(domain) == "arcface":
-            errors.extend(_check_arcface_domain(domain))
-        else:
-            errors.extend(_check_logreg_domain(domain))
+    if config.get_bt_model(domain) == "arcface":
+        errors.extend(_check_arcface_domain(domain))
+    else:
+        errors.extend(_check_logreg_domain(domain))
+
+    return errors
+
+
+def check_domain_caches_and_classifiers() -> list[str]:
+    errors: list[str] = []
+    for domain in (config.DOMAIN_MARKET, config.DOMAIN_FOOD):
+        errors.extend(_check_domain_caches_and_classifier(domain))
+    return errors
+
+
+def check_domain_synced(domain: str) -> list[str]:
+    """Verifies ONNX models, disk caches/metadata, and Qdrant catalog/tags are synced for a domain."""
+    errors = (
+        check_onnx_models()
+        + check_active_embedding_model()
+        + _check_domain_caches_and_classifier(domain)
+    )
+    cache_dir = Path(config.CACHE_DIR)
+
+    cat_rows = 1
+    cat_feather = cache_dir / f"{domain}_catalog_mmap.feather"
+    if cat_feather.exists() and cat_feather.stat().st_size > 0:
+        try:
+            import pandas as pd
+
+            cat_rows = max(1, len(pd.read_feather(cat_feather)))
+        except Exception as e:
+            errors.append(f"[{domain.upper()}] Failed to read '{cat_feather.name}': {e}")
+
+    meta_path = cache_dir / f"{domain}_catalog_metadata.pkl"
+    if not meta_path.exists() or meta_path.stat().st_size == 0:
+        errors.append(
+            f"[{domain.upper()}] Missing '{meta_path.name}'. "
+            f"Run 'python -m scripts.sync --cache sync --domain {domain}'."
+        )
+    else:
+        try:
+            meta_df = joblib.load(meta_path)
+            required_cols = ("clean_text", "entities", "clean_no_weights")
+            missing_cols = [c for c in required_cols if c not in meta_df.columns]
+            if missing_cols:
+                errors.append(
+                    f"[{domain.upper()}] Metadata '{meta_path.name}' missing columns {missing_cols}."
+                )
+            elif len(meta_df) < cat_rows or any(meta_df[c].isna().any() for c in required_cols):
+                errors.append(
+                    f"[{domain.upper()}] Metadata '{meta_path.name}' is incomplete or stale. "
+                    f"Run 'python -m scripts.sync --cache rebuild --domain {domain}'."
+                )
+        except Exception as e:
+            errors.append(f"[{domain.upper()}] Corrupt metadata '{meta_path.name}': {e}")
+
+    try:
+        from engine.vector_store.vector_store import VectorStore
+
+        vs = VectorStore()
+        vs.verify_connection()
+    except Exception as e:
+        errors.append(f"Qdrant is unreachable at '{config.QDRANT_URL}': {e}")
+        return errors
+
+    qdrant_state_path = cache_dir / "qdrant_embedding_models.json"
+    qdrant_state: dict[str, Any] = {}
+    if qdrant_state_path.exists():
+        try:
+            qdrant_state = _read_json(qdrant_state_path)
+        except Exception as e:
+            errors.append(f"Corrupt '{qdrant_state_path}': {e}")
+    else:
+        errors.append(
+            f"Missing '{qdrant_state_path}'. Run 'python -m scripts.sync --qdrant rebuild' first."
+        )
+
+    col_name = vs.resolve_catalog_collection_name(domain)
+    errors.extend(
+        _check_qdrant_collection(
+            vs, domain, col_name, qdrant_state, qdrant_state_path, min_points=cat_rows
+        )
+    )
+
+    dicts_path = cache_dir / f"{domain}_classifier_dicts.json"
+    if dicts_path.exists() and dicts_path.stat().st_size > 0:
+        try:
+            dicts = _read_json(dicts_path)
+            third_tag_key = config.get_third_tag_col(domain)
+            for dict_key, dict_type in (
+                ("gk", "gk"),
+                ("bt", "bt"),
+                (third_tag_key, third_tag_key),
+            ):
+                tag_list = dicts.get(dict_key, [])
+                if tag_list and not vs.check_tags_synced(domain, dict_type, len(set(tag_list))):
+                    errors.append(
+                        f"[{domain.upper()}] Qdrant '{dict_type}' tags are not synced. "
+                        f"Run 'python -m scripts.sync --qdrant rebuild --domain {domain}'."
+                    )
+        except Exception as e:
+            errors.append(f"[{domain.upper()}] Failed to verify Qdrant tag sync: {e}")
 
     return errors
 
